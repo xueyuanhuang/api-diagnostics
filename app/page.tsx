@@ -4,7 +4,9 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  Bot,
   CheckCircle2,
+  Code2,
   Eye,
   EyeOff,
   KeyRound,
@@ -31,9 +33,25 @@ import {
 } from '@/components/ui/table';
 import { NORMAL_QUESTIONS } from '@/lib/questions';
 
-const DEFAULT_ENDPOINT = 'https://inference-api.worldrouter.ai/v1/messages';
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
-const SETTINGS_KEY = 'normal-token-check:connection:v1';
+type ApiFormat = 'anthropic' | 'openai';
+
+type ConnectionSettings = {
+  endpoint: string;
+  model: string;
+};
+
+const DEFAULT_CONNECTIONS: Record<ApiFormat, ConnectionSettings> = {
+  anthropic: {
+    endpoint: 'https://inference-api.worldrouter.ai/v1/messages',
+    model: 'claude-sonnet-4-6',
+  },
+  openai: {
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    model: '',
+  },
+};
+const SETTINGS_KEY = 'normal-token-check:connection:v2';
+const LEGACY_SETTINGS_KEY = 'normal-token-check:connection:v1';
 
 type ResultStatus = 'waiting' | 'running' | 'normal' | 'cached' | 'large' | 'error';
 
@@ -64,6 +82,24 @@ const initialResults = (): TestResult[] =>
 
 function numberOrDash(value: number | null | undefined) {
   return typeof value === 'number' ? value.toLocaleString() : '—';
+}
+
+function expectedEndpointPath(apiFormat: ApiFormat) {
+  return apiFormat === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
+}
+
+function clientEndpointError(endpoint: string, apiFormat: ApiFormat) {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return 'Enter a valid endpoint URL.';
+  }
+  if (url.protocol !== 'https:') return 'Only public HTTPS endpoints are supported.';
+  if (!url.pathname.replace(/\/+$/, '').endsWith(expectedEndpointPath(apiFormat))) {
+    return `This format requires an endpoint ending in ${expectedEndpointPath(apiFormat)}.`;
+  }
+  return '';
 }
 
 function classifyResult(result: ApiResponse): ResultStatus {
@@ -113,8 +149,9 @@ function verdict(status: ResultStatus) {
 }
 
 export default function Home() {
-  const [endpoint, setEndpoint] = useState(DEFAULT_ENDPOINT);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [apiFormat, setApiFormat] = useState<ApiFormat>('anthropic');
+  const [connections, setConnections] =
+    useState<Record<ApiFormat, ConnectionSettings>>(DEFAULT_CONNECTIONS);
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
@@ -123,14 +160,51 @@ export default function Home() {
   const [formError, setFormError] = useState('');
   const [runMessage, setRunMessage] = useState('Ready for a new 12-question check.');
   const abortRef = useRef<AbortController | null>(null);
+  const { endpoint, model } = connections[apiFormat];
+
+  function updateConnection(patch: Partial<ConnectionSettings>) {
+    setConnections((current) => ({
+      ...current,
+      [apiFormat]: { ...current[apiFormat], ...patch },
+    }));
+  }
 
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(SETTINGS_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved) as { endpoint?: string; model?: string };
-        if (parsed.endpoint) setEndpoint(parsed.endpoint);
-        if (parsed.model) setModel(parsed.model);
+        const parsed = JSON.parse(saved) as {
+          apiFormat?: ApiFormat;
+          connections?: Partial<Record<ApiFormat, Partial<ConnectionSettings>>>;
+        };
+        if (parsed.apiFormat === 'anthropic' || parsed.apiFormat === 'openai') {
+          setApiFormat(parsed.apiFormat);
+        }
+        if (parsed.connections) {
+          setConnections({
+            anthropic: {
+              endpoint:
+                parsed.connections.anthropic?.endpoint ?? DEFAULT_CONNECTIONS.anthropic.endpoint,
+              model: parsed.connections.anthropic?.model ?? DEFAULT_CONNECTIONS.anthropic.model,
+            },
+            openai: {
+              endpoint: parsed.connections.openai?.endpoint ?? DEFAULT_CONNECTIONS.openai.endpoint,
+              model: parsed.connections.openai?.model ?? DEFAULT_CONNECTIONS.openai.model,
+            },
+          });
+        }
+      } else {
+        const legacy = window.localStorage.getItem(LEGACY_SETTINGS_KEY);
+        if (legacy) {
+          const parsed = JSON.parse(legacy) as { endpoint?: string; model?: string };
+          setConnections((current) => ({
+            ...current,
+            anthropic: {
+              endpoint: parsed.endpoint ?? current.anthropic.endpoint,
+              model: parsed.model ?? current.anthropic.model,
+            },
+          }));
+        }
       }
     } catch {
       // Invalid device-local settings fall back to the safe defaults.
@@ -141,8 +215,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!settingsReady) return;
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ endpoint, model }));
-  }, [endpoint, model, settingsReady]);
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiFormat, connections }));
+  }, [apiFormat, connections, settingsReady]);
 
   const completed = results.filter((result) =>
     ['normal', 'cached', 'large', 'error'].includes(result.status),
@@ -165,7 +239,7 @@ export default function Home() {
       return {
         tone: 'ready',
         title: 'Ready to check',
-        description: 'Normal requests should have small inputs and zero cache usage.',
+        description: 'Normal requests should have small inputs and no unexpected reported cache usage.',
       };
     }
     if (largeCount > 0) {
@@ -199,7 +273,7 @@ export default function Home() {
     return {
       tone: 'success',
       title: 'No large token anomaly detected',
-      description: `All ${normalCount} completed requests used small, uncached inputs in this run. This is not proof of permanent zero injection.`,
+      description: `All ${normalCount} completed requests used small inputs with no reported cache activity in this run. This is not proof of permanent zero injection.`,
     };
   }, [cacheCount, completed, errorCount, isRunning, largeCount, normalCount]);
 
@@ -211,13 +285,24 @@ export default function Home() {
     );
   }
 
+  function chooseFormat(nextFormat: ApiFormat) {
+    if (isRunning || nextFormat === apiFormat) return;
+    setApiFormat(nextFormat);
+    setApiKey('');
+    setShowKey(false);
+    setFormError('');
+    setResults(initialResults());
+    setRunMessage(`Ready for a new ${nextFormat === 'anthropic' ? 'Anthropic' : 'OpenAI'} check.`);
+  }
+
   async function runTests(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isRunning) return;
     setFormError('');
 
-    if (endpoint !== DEFAULT_ENDPOINT) {
-      setFormError('For safety, this public tester only supports the WorldRouter Messages endpoint.');
+    const endpointError = clientEndpointError(endpoint.trim(), apiFormat);
+    if (endpointError) {
+      setFormError(endpointError);
       return;
     }
     if (!apiKey.trim()) {
@@ -246,6 +331,7 @@ export default function Home() {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
+              apiFormat,
               endpoint,
               apiKey: apiKey.trim(),
               model: model.trim(),
@@ -298,8 +384,8 @@ export default function Home() {
               Normal Token Check
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
-              Run twelve ordinary questions and inspect direct, cached, and total input
-              tokens—without synthetic filler prompts.
+              Compare token usage across twelve ordinary questions using Anthropic Messages
+              or OpenAI Chat Completions—without synthetic filler prompts.
             </p>
           </div>
           <Badge variant="outline" className="h-7 gap-1.5 border-emerald-200 bg-emerald-50 px-3 text-emerald-800">
@@ -314,13 +400,42 @@ export default function Home() {
               <div>
                 <p className="text-sm font-semibold">Connection</p>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  Endpoint and model are remembered on this device.
+                  Format, endpoint, and model are remembered on this device.
                 </p>
               </div>
               <ShieldCheck className="size-5 text-emerald-600" />
             </div>
 
             <form onSubmit={runTests} className="space-y-4">
+              <fieldset disabled={isRunning} className="space-y-1.5">
+                <legend className="text-xs font-medium text-muted-foreground">API format</legend>
+                <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted/70 p-1" role="group" aria-label="API format">
+                  <button
+                    type="button"
+                    onClick={() => chooseFormat('anthropic')}
+                    aria-pressed={apiFormat === 'anthropic'}
+                    className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-2 text-xs font-semibold transition-colors ${
+                      apiFormat === 'anthropic'
+                        ? 'bg-white text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Bot className="size-3.5" /> Anthropic
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => chooseFormat('openai')}
+                    aria-pressed={apiFormat === 'openai'}
+                    className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-2 text-xs font-semibold transition-colors ${
+                      apiFormat === 'openai'
+                        ? 'bg-white text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Code2 className="size-3.5" /> OpenAI
+                  </button>
+                </div>
+              </fieldset>
               <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
                 Endpoint
                 <Input
@@ -328,18 +443,23 @@ export default function Home() {
                   type="url"
                   autoComplete="url"
                   value={endpoint}
-                  onChange={(event) => setEndpoint(event.target.value)}
+                  onChange={(event) => updateConnection({ endpoint: event.target.value })}
                   disabled={isRunning}
+                  placeholder={`https://provider.example${expectedEndpointPath(apiFormat)}`}
                   className="h-10 bg-background font-mono text-xs"
                 />
+                <span className="block font-normal text-[10px] leading-4 text-muted-foreground">
+                  Any safe public HTTPS endpoint ending in {expectedEndpointPath(apiFormat)}
+                </span>
               </label>
               <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
                 Model
                 <Input
                   name="model"
                   value={model}
-                  onChange={(event) => setModel(event.target.value)}
+                  onChange={(event) => updateConnection({ model: event.target.value })}
                   disabled={isRunning}
+                  placeholder={apiFormat === 'anthropic' ? 'e.g. claude-sonnet-4-6' : 'Enter the provider model name'}
                   className="h-10 bg-background font-mono text-xs"
                 />
               </label>
@@ -395,7 +515,7 @@ export default function Home() {
             </form>
 
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/75 p-3 text-xs leading-5 text-amber-950">
-              <strong className="font-semibold">Key handling:</strong> WorldRouter blocks direct browser calls, so your key passes through this site’s stateless relay while each test runs. It is never saved or returned. Use a temporary, low-limit key.
+              <strong className="font-semibold">Key handling:</strong> Many API providers block direct browser calls, so your key passes through this site’s stateless relay while each test runs. It is never saved or returned. Use a temporary, low-limit key.
             </div>
 
             <div className="mt-3 flex items-center justify-between gap-3 text-[11px] leading-4 text-muted-foreground">
@@ -448,7 +568,16 @@ export default function Home() {
                   <h2 className="text-sm font-semibold">Question-by-question usage</h2>
                   <p className="mt-1 text-xs text-muted-foreground">{runMessage}</p>
                 </div>
-                <div className="font-mono text-[10px] text-muted-foreground">TOTAL INPUT = DIRECT + CACHE WRITE + CACHE READ</div>
+                <div className="flex flex-col items-start gap-1 sm:items-end">
+                  <Badge variant="outline" className="bg-background text-[10px]">
+                    {apiFormat === 'anthropic' ? 'Anthropic Messages' : 'OpenAI Chat Completions'}
+                  </Badge>
+                  <div className="font-mono text-[10px] text-muted-foreground">
+                    {apiFormat === 'anthropic'
+                      ? 'TOTAL INPUT = DIRECT + CACHE WRITE + CACHE READ'
+                      : 'TOTAL INPUT = DIRECT + CACHED PROMPT · CACHE WRITE N/A'}
+                  </div>
+                </div>
               </div>
 
               <Table>
@@ -457,7 +586,9 @@ export default function Home() {
                     <TableHead className="min-w-[360px] pl-5">Question</TableHead>
                     <TableHead className="text-right">Direct</TableHead>
                     <TableHead className="text-right">Cache write</TableHead>
-                    <TableHead className="text-right">Cache read</TableHead>
+                    <TableHead className="text-right">
+                      {apiFormat === 'anthropic' ? 'Cache read' : 'Cached prompt'}
+                    </TableHead>
                     <TableHead className="text-right">Total input</TableHead>
                     <TableHead className="text-right">Output</TableHead>
                     <TableHead className="pr-5 text-right">Verdict</TableHead>
