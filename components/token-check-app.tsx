@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Clock3,
   Code2,
+  Download,
   Eye,
   EyeOff,
   History,
@@ -42,6 +43,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import {
+  downloadEvidenceArchive,
+  type EvidenceRun,
+} from '@/lib/evidence-export';
 import { NORMAL_QUESTIONS } from '@/lib/questions';
 
 type ApiType = 'anthropic' | 'openai';
@@ -58,6 +63,15 @@ type ResultsView = 'tokens' | 'performance';
 
 type ConnectionSettings = { baseUrl: string; model: string };
 type User = { displayName: string; email: string } | null;
+type RunContext = {
+  id?: string | null;
+  source: 'current' | 'saved';
+  profileName?: string | null;
+  apiType: ApiType;
+  baseUrl: string;
+  modelName: string;
+  createdAt: number;
+};
 
 type Profile = {
   id: string;
@@ -106,6 +120,11 @@ type TestResult = {
   generationMs?: number | null;
   totalTimeMs?: number | null;
   outputTokensPerSecond?: number | null;
+  requestMethod?: string | null;
+  requestUrl?: string | null;
+  requestHeaders?: string | null;
+  requestBody?: string | null;
+  responseHeaders?: string | null;
   requestId?: string | null;
   answer?: string | null;
   rawResponse?: string | null;
@@ -267,6 +286,46 @@ function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   });
 }
 
+function evidenceRun(context: RunContext, results: TestResult[]): EvidenceRun {
+  const normalCount = results.filter(
+    (result) => result.status === 'normal',
+  ).length;
+  const cacheCount = results.filter(
+    (result) => result.status === 'cached',
+  ).length;
+  const largeCount = results.filter(
+    (result) => result.status === 'large',
+  ).length;
+  const unavailableCount = results.filter(
+    (result) => result.status === 'unavailable',
+  ).length;
+  const errorCount = results.filter(
+    (result) => result.status === 'error',
+  ).length;
+  return {
+    ...context,
+    verdict: largeCount
+      ? 'large'
+      : cacheCount
+        ? 'cached'
+        : errorCount || unavailableCount
+          ? 'incomplete'
+          : 'normal',
+    normalCount,
+    cacheCount,
+    largeCount,
+    unavailableCount,
+    errorCount,
+    medianTtftMs: median(results.map((result) => result.ttftMs)),
+    medianGenerationMs: median(results.map((result) => result.generationMs)),
+    medianTotalTimeMs: median(results.map((result) => result.totalTimeMs)),
+    medianOutputTokensPerSecond: median(
+      results.map((result) => result.outputTokensPerSecond),
+      2,
+    ),
+  };
+}
+
 export function TokenCheckApp({
   signInPath,
   signOutPath,
@@ -299,6 +358,7 @@ export function TokenCheckApp({
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('current');
   const [resultsView, setResultsView] = useState<ResultsView>('tokens');
+  const [runContext, setRunContext] = useState<RunContext | null>(null);
   const [selectedRunId, setSelectedRunId] = useState('');
   const [historyBusy, setHistoryBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -665,11 +725,54 @@ export function TokenCheckApp({
         }),
       });
       setRuns((current) => [data.run, ...current]);
+      setRunContext((current) =>
+        current ? { ...current, id: data.run.id } : current,
+      );
       setRunMessage('Test complete and saved to your private history.');
     } catch (error) {
       setRunMessage(
         `Test complete, but saving failed: ${error instanceof Error ? error.message : 'try again later.'}`,
       );
+    }
+  }
+
+  function exportEvidence(context: RunContext, exportedResults: TestResult[]) {
+    downloadEvidenceArchive(
+      evidenceRun(context, exportedResults),
+      exportedResults,
+    );
+    setRunMessage(
+      'Evidence ZIP exported. API keys and cookie values were not included.',
+    );
+  }
+
+  async function exportSavedRun(run: RunSummary) {
+    setHistoryBusy(true);
+    try {
+      const data = await jsonFetch<{
+        run: RunSummary;
+        results: Array<TestResult & { questionId: string }>;
+      }>(`/api/runs/${run.id}`);
+      exportEvidence(
+        {
+          id: data.run.id,
+          source: 'saved',
+          profileName: data.run.profileName,
+          apiType: data.run.apiType,
+          baseUrl: data.run.baseUrl,
+          modelName: data.run.modelName,
+          createdAt: data.run.createdAt,
+        },
+        data.results.map((result) => ({ ...result, id: result.questionId })),
+      );
+    } catch (error) {
+      setProfileMessage(
+        error instanceof Error
+          ? error.message
+          : 'Could not export this saved run.',
+      );
+    } finally {
+      setHistoryBusy(false);
     }
   }
 
@@ -691,6 +794,14 @@ export function TokenCheckApp({
     setViewMode('current');
     setSelectedRunId('');
     setShownApiType(apiType);
+    setRunContext({
+      source: 'current',
+      profileName: selectedProfile?.name ?? null,
+      apiType,
+      baseUrl: baseUrl.trim(),
+      modelName: model.trim(),
+      createdAt: Date.now(),
+    });
     setRunMessage('Running ordinary questions one at a time…');
     const finishedResults = initialResults();
     setResults(finishedResults);
@@ -757,6 +868,15 @@ export function TokenCheckApp({
         data.results.map((result) => ({ ...result, id: result.questionId })),
       );
       setShownApiType(data.run.apiType);
+      setRunContext({
+        id: data.run.id,
+        source: 'saved',
+        profileName: data.run.profileName,
+        apiType: data.run.apiType,
+        baseUrl: data.run.baseUrl,
+        modelName: data.run.modelName,
+        createdAt: data.run.createdAt,
+      });
       setSelectedRunId(run.id);
       setRunMessage(
         `Saved run from ${new Date(run.createdAt).toLocaleString()}.`,
@@ -783,6 +903,7 @@ export function TokenCheckApp({
       if (selectedRunId === id) {
         setSelectedRunId('');
         setResults(initialResults());
+        setRunContext(null);
         setRunMessage('Saved run deleted.');
       }
     } catch (error) {
@@ -797,6 +918,7 @@ export function TokenCheckApp({
   function resetResults() {
     if (isRunning) return;
     setResults(initialResults());
+    setRunContext(null);
     setSelectedRunId('');
     setShownApiType(apiType);
     setRunMessage('Ready for a new 12-question check.');
@@ -1197,14 +1319,28 @@ export function TokenCheckApp({
                 </button>
               </div>
               {viewMode === 'current' ? (
-                <button
-                  type="button"
-                  onClick={resetResults}
-                  disabled={isRunning}
-                  className="mr-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-                >
-                  <RotateCcw className="size-3" /> Reset
-                </button>
+                <div className="mr-1 flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (runContext) exportEvidence(runContext, results);
+                    }}
+                    disabled={isRunning || !runContext || completed === 0}
+                    className="h-8 gap-1.5 px-2.5 text-[11px]"
+                  >
+                    <Download className="size-3" /> Export evidence
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={resetResults}
+                    disabled={isRunning}
+                    className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                  >
+                    <RotateCcw className="size-3" /> Reset
+                  </button>
+                </div>
               ) : null}
             </div>
 
@@ -1275,6 +1411,16 @@ export function TokenCheckApp({
                               <Clock3 className="size-3" />{' '}
                               {new Date(run.createdAt).toLocaleString()}
                             </p>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void exportSavedRun(run)}
+                            disabled={historyBusy}
+                            className="grid size-8 place-items-center rounded-lg text-muted-foreground hover:bg-blue-50 hover:text-blue-700"
+                            aria-label="Export saved run evidence"
+                            title="Export evidence ZIP"
+                          >
+                            <Download className="size-4" />
                           </button>
                           <button
                             type="button"

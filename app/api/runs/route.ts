@@ -147,9 +147,14 @@ export async function POST(request: NextRequest) {
       generationMs: nullableNumber(record.generationMs),
       totalTimeMs: nullableNumber(record.totalTimeMs),
       outputTokensPerSecond: nullableFloat(record.outputTokensPerSecond),
+      requestMethod: nullableText(record.requestMethod, 16),
+      requestUrl: nullableText(record.requestUrl, 2_048),
+      requestHeaders: nullableText(record.requestHeaders, 20_000),
+      requestBody: nullableText(record.requestBody, 20_000),
+      responseHeaders: nullableText(record.responseHeaders, 100_000),
       requestId: nullableText(record.requestId, 500),
       answer: nullableText(record.answer, 20_000),
-      rawResponse: nullableText(record.rawResponse, 250_000),
+      rawResponse: nullableText(record.rawResponse, 1_000_000),
       error: nullableText(record.error, 2_000),
     };
   });
@@ -213,7 +218,7 @@ export async function POST(request: NextRequest) {
       ),
       ...results.map((result) =>
         env.DB.prepare(
-          'INSERT INTO test_results (id, run_id, position, question_id, category, prompt, status, http_status, returned_model, input_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_input_tokens, output_tokens, ttft_ms, generation_ms, total_time_ms, output_tokens_per_second, request_id, answer, raw_response, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO test_results (id, run_id, position, question_id, category, prompt, status, http_status, returned_model, input_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_input_tokens, output_tokens, ttft_ms, generation_ms, total_time_ms, output_tokens_per_second, request_method, request_url, request_headers, request_body, response_headers, request_id, answer, raw_response, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).bind(
           crypto.randomUUID(),
           runId,
@@ -233,6 +238,11 @@ export async function POST(request: NextRequest) {
           result.generationMs,
           result.totalTimeMs,
           result.outputTokensPerSecond,
+          result.requestMethod,
+          result.requestUrl,
+          result.requestHeaders,
+          result.requestBody,
+          result.responseHeaders,
           result.requestId,
           result.answer,
           result.rawResponse,

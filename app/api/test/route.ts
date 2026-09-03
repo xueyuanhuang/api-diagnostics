@@ -26,6 +26,37 @@ function numberField(record: Record<string, unknown>, key: string) {
   return typeof record[key] === 'number' ? record[key] : null;
 }
 
+function redactSecret(
+  value: string,
+  apiKey: string,
+  replacement = '[REDACTED]',
+) {
+  return apiKey ? value.split(apiKey).join(replacement) : value;
+}
+
+function exportedRequestHeaders(
+  headers: Record<string, string>,
+  apiKey: string,
+) {
+  return JSON.stringify(
+    Object.entries(headers).map(([name, value]) => [
+      name,
+      redactSecret(value, apiKey, '$API_KEY'),
+    ]),
+  );
+}
+
+function exportedResponseHeaders(headers: Headers, apiKey: string) {
+  return JSON.stringify(
+    [...headers.entries()].map(([name, value]) => [
+      name,
+      name === 'set-cookie' || name === 'set-cookie2'
+        ? '[REDACTED]'
+        : redactSecret(value, apiKey),
+    ]),
+  );
+}
+
 async function resolveConnection(payload: RequestPayload) {
   const model = typeof payload.model === 'string' ? payload.model.trim() : '';
   if (!model || model.length > 120)
@@ -128,20 +159,22 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const requestUrl = endpointFromBaseUrl(baseUrl, apiType);
+    const requestBody = JSON.stringify({
+      model,
+      max_tokens: 96,
+      temperature: 0,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+      ...(apiType === 'openai'
+        ? { stream_options: { include_usage: true } }
+        : {}),
+    });
     const startedAt = performance.now();
-    const upstream = await fetch(endpointFromBaseUrl(baseUrl, apiType), {
+    const upstream = await fetch(requestUrl, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        model,
-        max_tokens: 96,
-        temperature: 0,
-        messages: [{ role: 'user', content: prompt }],
-        stream: true,
-        ...(apiType === 'openai'
-          ? { stream_options: { include_usage: true } }
-          : {}),
-      }),
+      body: requestBody,
       cache: 'no-store',
       redirect: 'manual',
       signal: AbortSignal.timeout(45_000),
@@ -215,6 +248,11 @@ export async function POST(request: NextRequest) {
       generationMs: streamed.generationMs,
       totalTimeMs: streamed.totalTimeMs,
       outputTokensPerSecond,
+      requestMethod: 'POST',
+      requestUrl,
+      requestHeaders: exportedRequestHeaders(headers, apiKey),
+      requestBody,
+      responseHeaders: exportedResponseHeaders(upstream.headers, apiKey),
       requestId:
         upstream.headers.get('x-request-id') ??
         upstream.headers.get('request-id') ??

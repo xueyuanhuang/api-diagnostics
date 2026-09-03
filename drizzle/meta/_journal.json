@@ -15,6 +15,13 @@
       "when": 1788369230727,
       "tag": "0001_keen_mephistopheles",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788405464898,
+      "tag": "0002_dapper_magdalene",
+      "breakpoints": true
     }
   ]
 }
