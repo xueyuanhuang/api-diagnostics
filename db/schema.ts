@@ -45,6 +45,50 @@ export const profileModels = sqliteTable(
   ],
 );
 
+export const profileApiConfigs = sqliteTable(
+  'profile_api_configs',
+  {
+    id: text('id').primaryKey(),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => connectionProfiles.id, { onDelete: 'cascade' }),
+    apiType: text('api_type', { enum: ['anthropic', 'openai'] }).notNull(),
+    baseUrl: text('base_url').notNull(),
+    modelName: text('model_name').notNull(),
+    encryptedApiKey: text('encrypted_api_key').notNull(),
+    keyIv: text('key_iv').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('profile_api_configs_profile_type_unique').on(
+      table.profileId,
+      table.apiType,
+    ),
+    index('profile_api_configs_profile_idx').on(table.profileId),
+  ],
+);
+
+export const profileApiModels = sqliteTable(
+  'profile_api_models',
+  {
+    id: text('id').primaryKey(),
+    configId: text('config_id')
+      .notNull()
+      .references(() => profileApiConfigs.id, { onDelete: 'cascade' }),
+    modelName: text('model_name').notNull(),
+    position: integer('position').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('profile_api_models_config_name_unique').on(
+      table.configId,
+      table.modelName,
+    ),
+    index('profile_api_models_config_idx').on(table.configId),
+  ],
+);
+
 export const testRuns = sqliteTable(
   'test_runs',
   {

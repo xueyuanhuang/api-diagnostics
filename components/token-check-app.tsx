@@ -63,6 +63,12 @@ type ViewMode = 'current' | 'saved';
 type ResultsView = 'tokens' | 'performance';
 
 type ConnectionSettings = { baseUrl: string; model: string };
+type ApiKeys = Record<ApiType, string>;
+type ProfileModels = Record<ApiType, string[]>;
+type DraftTouched = Record<
+  ApiType,
+  { baseUrl: boolean; model: boolean; apiKey: boolean; models: boolean }
+>;
 type User = { displayName: string; email: string } | null;
 type RunContext = {
   id?: string | null;
@@ -74,12 +80,18 @@ type RunContext = {
   createdAt: number;
 };
 
+type ProfileConfig = {
+  baseUrl: string;
+  model: string;
+  models: string[];
+  hasSavedKey: boolean;
+};
+
 type Profile = {
   id: string;
   name: string;
-  apiType: ApiType;
-  baseUrl: string;
-  models: string[];
+  defaultApiType: ApiType;
+  configs: Record<ApiType, ProfileConfig>;
   hasSavedKey: boolean;
   createdAt: number;
   updatedAt: number;
@@ -143,9 +155,56 @@ const DEFAULT_CONNECTIONS: Record<ApiType, ConnectionSettings> = {
   },
   openai: { baseUrl: 'https://api.openai.com/v1', model: '' },
 };
-const SETTINGS_KEY = 'normal-token-check:connection:v3';
+const EMPTY_API_KEYS: ApiKeys = { anthropic: '', openai: '' };
+const EMPTY_PROFILE_MODELS: ProfileModels = { anthropic: [], openai: [] };
+const EMPTY_DRAFT_TOUCHED: DraftTouched = {
+  anthropic: {
+    baseUrl: false,
+    model: false,
+    apiKey: false,
+    models: false,
+  },
+  openai: {
+    baseUrl: false,
+    model: false,
+    apiKey: false,
+    models: false,
+  },
+};
+const SETTINGS_KEY = 'normal-token-check:connection:v4';
+const V3_SETTINGS_KEY = 'normal-token-check:connection:v3';
 const OLD_SETTINGS_KEY = 'normal-token-check:connection:v2';
 const LEGACY_SETTINGS_KEY = 'normal-token-check:connection:v1';
+
+function migratedDraftTouched(
+  connections: Record<ApiType, ConnectionSettings>,
+  activeType: ApiType,
+): DraftTouched {
+  function customized(type: ApiType, field: keyof ConnectionSettings) {
+    return (
+      Boolean(connections[type][field]) &&
+      connections[type][field] !== DEFAULT_CONNECTIONS[type][field]
+    );
+  }
+
+  return Object.fromEntries(
+    (['anthropic', 'openai'] as const).map((type) => {
+      const otherType = type === 'anthropic' ? 'openai' : 'anthropic';
+      return [
+        type,
+        {
+          ...EMPTY_DRAFT_TOUCHED[type],
+          baseUrl:
+            customized(type, 'baseUrl') ||
+            (type === activeType && customized(otherType, 'baseUrl')),
+          model:
+            customized(type, 'model') ||
+            (type === activeType && customized(otherType, 'model')),
+        },
+      ];
+    }),
+  ) as DraftTouched;
+}
 
 const initialResults = (): TestResult[] =>
   NORMAL_QUESTIONS.map((question) => ({ ...question, status: 'waiting' }));
@@ -537,7 +596,9 @@ export function TokenCheckApp({
   const [shownApiType, setShownApiType] = useState<ApiType>('anthropic');
   const [connections, setConnections] =
     useState<Record<ApiType, ConnectionSettings>>(DEFAULT_CONNECTIONS);
-  const [apiKey, setApiKey] = useState('');
+  const [apiKeys, setApiKeys] = useState<ApiKeys>(EMPTY_API_KEYS);
+  const [draftTouched, setDraftTouched] =
+    useState<DraftTouched>(EMPTY_DRAFT_TOUCHED);
   const [showKey, setShowKey] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
   const [results, setResults] = useState<TestResult[]>(initialResults);
@@ -549,7 +610,8 @@ export function TokenCheckApp({
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [profileName, setProfileName] = useState('');
-  const [profileModels, setProfileModels] = useState<string[]>([]);
+  const [profileModels, setProfileModels] =
+    useState<ProfileModels>(EMPTY_PROFILE_MODELS);
   const [newModel, setNewModel] = useState('');
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileDirty, setProfileDirty] = useState(false);
@@ -557,6 +619,9 @@ export function TokenCheckApp({
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [savedConnectionFilter, setSavedConnectionFilter] = useState('');
   const [savedModelFilter, setSavedModelFilter] = useState('');
+  const [savedApiTypeFilter, setSavedApiTypeFilter] = useState<'' | ApiType>(
+    '',
+  );
   const [viewMode, setViewMode] = useState<ViewMode>('current');
   const [resultsView, setResultsView] = useState<ResultsView>('tokens');
   const [runContext, setRunContext] = useState<RunContext | null>(null);
@@ -564,8 +629,11 @@ export function TokenCheckApp({
   const [historyBusy, setHistoryBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const { baseUrl, model } = connections[apiType];
+  const apiKey = apiKeys[apiType];
+  const activeProfileModels = profileModels[apiType];
   const selectedProfile =
     profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const selectedProfileConfig = selectedProfile?.configs[apiType] ?? null;
   const savedConnectionNames = useMemo(
     () =>
       Array.from(
@@ -589,12 +657,15 @@ export function TokenCheckApp({
         return (
           (!savedConnectionFilter ||
             connectionName === savedConnectionFilter) &&
-          (!savedModelFilter || run.modelName === savedModelFilter)
+          (!savedModelFilter || run.modelName === savedModelFilter) &&
+          (!savedApiTypeFilter || run.apiType === savedApiTypeFilter)
         );
       }),
-    [runs, savedConnectionFilter, savedModelFilter],
+    [runs, savedApiTypeFilter, savedConnectionFilter, savedModelFilter],
   );
-  const hasSavedRunFilters = Boolean(savedConnectionFilter || savedModelFilter);
+  const hasSavedRunFilters = Boolean(
+    savedConnectionFilter || savedModelFilter || savedApiTypeFilter,
+  );
 
   function updateConnection(
     patch: Partial<ConnectionSettings>,
@@ -606,6 +677,29 @@ export function TokenCheckApp({
     }));
   }
 
+  function markDraftTouched(
+    fields: Array<keyof DraftTouched[ApiType]>,
+    forType = apiType,
+  ) {
+    setDraftTouched((current) => ({
+      ...current,
+      [forType]: {
+        ...current[forType],
+        ...Object.fromEntries(fields.map((field) => [field, true])),
+      },
+    }));
+  }
+
+  function updateApiKey(value: string, forType = apiType) {
+    setApiKeys((current) => ({ ...current, [forType]: value }));
+    markDraftTouched(['apiKey'], forType);
+  }
+
+  function updateProfileModels(models: string[], forType = apiType) {
+    setProfileModels((current) => ({ ...current, [forType]: models }));
+    markDraftTouched(['models'], forType);
+  }
+
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(SETTINGS_KEY);
@@ -613,6 +707,12 @@ export function TokenCheckApp({
         const parsed = JSON.parse(saved) as {
           apiType?: ApiType;
           connections?: Partial<Record<ApiType, Partial<ConnectionSettings>>>;
+          touched?: Partial<
+            Record<
+              ApiType,
+              Partial<Pick<DraftTouched[ApiType], 'baseUrl' | 'model'>>
+            >
+          >;
         };
         if (parsed.apiType === 'anthropic' || parsed.apiType === 'openai') {
           setApiType(parsed.apiType);
@@ -630,10 +730,41 @@ export function TokenCheckApp({
             },
           });
         }
+        setDraftTouched({
+          anthropic: {
+            ...EMPTY_DRAFT_TOUCHED.anthropic,
+            ...parsed.touched?.anthropic,
+          },
+          openai: {
+            ...EMPTY_DRAFT_TOUCHED.openai,
+            ...parsed.touched?.openai,
+          },
+        });
       } else {
+        const v3 = window.localStorage.getItem(V3_SETTINGS_KEY);
         const old = window.localStorage.getItem(OLD_SETTINGS_KEY);
         const legacy = window.localStorage.getItem(LEGACY_SETTINGS_KEY);
-        if (old) {
+        if (v3) {
+          const parsed = JSON.parse(v3) as {
+            apiType?: ApiType;
+            connections?: Partial<Record<ApiType, Partial<ConnectionSettings>>>;
+          };
+          const nextType = parsed.apiType === 'openai' ? 'openai' : 'anthropic';
+          setApiType(nextType);
+          setShownApiType(nextType);
+          const migratedConnections = {
+            anthropic: {
+              ...DEFAULT_CONNECTIONS.anthropic,
+              ...parsed.connections?.anthropic,
+            },
+            openai: {
+              ...DEFAULT_CONNECTIONS.openai,
+              ...parsed.connections?.openai,
+            },
+          };
+          setConnections(migratedConnections);
+          setDraftTouched(migratedDraftTouched(migratedConnections, nextType));
+        } else if (old) {
           const parsed = JSON.parse(old) as {
             apiFormat?: ApiType;
             connections?: Partial<
@@ -644,7 +775,7 @@ export function TokenCheckApp({
             parsed.apiFormat === 'openai' ? 'openai' : 'anthropic';
           setApiType(nextType);
           setShownApiType(nextType);
-          setConnections({
+          const migratedConnections = {
             anthropic: {
               baseUrl: stripEndpoint(
                 parsed.connections?.anthropic?.endpoint ??
@@ -665,22 +796,28 @@ export function TokenCheckApp({
                 parsed.connections?.openai?.model ??
                 DEFAULT_CONNECTIONS.openai.model,
             },
-          });
+          };
+          setConnections(migratedConnections);
+          setDraftTouched(migratedDraftTouched(migratedConnections, nextType));
         } else if (legacy) {
           const parsed = JSON.parse(legacy) as {
             endpoint?: string;
             model?: string;
           };
-          setConnections((current) => ({
-            ...current,
+          const migratedConnections = {
+            ...DEFAULT_CONNECTIONS,
             anthropic: {
               baseUrl: stripEndpoint(
-                parsed.endpoint ?? current.anthropic.baseUrl,
+                parsed.endpoint ?? DEFAULT_CONNECTIONS.anthropic.baseUrl,
                 'anthropic',
               ),
-              model: parsed.model ?? current.anthropic.model,
+              model: parsed.model ?? DEFAULT_CONNECTIONS.anthropic.model,
             },
-          }));
+          };
+          setConnections(migratedConnections);
+          setDraftTouched(
+            migratedDraftTouched(migratedConnections, 'anthropic'),
+          );
         }
       }
     } catch {
@@ -708,12 +845,25 @@ export function TokenCheckApp({
   }, []);
 
   useEffect(() => {
-    if (!settingsReady) return;
+    if (!settingsReady || selectedProfileId) return;
     window.localStorage.setItem(
       SETTINGS_KEY,
-      JSON.stringify({ apiType, connections }),
+      JSON.stringify({
+        apiType,
+        connections,
+        touched: {
+          anthropic: {
+            baseUrl: draftTouched.anthropic.baseUrl,
+            model: draftTouched.anthropic.model,
+          },
+          openai: {
+            baseUrl: draftTouched.openai.baseUrl,
+            model: draftTouched.openai.model,
+          },
+        },
+      }),
     );
-  }, [apiType, connections, settingsReady]);
+  }, [apiType, connections, draftTouched, selectedProfileId, settingsReady]);
 
   useEffect(() => {
     if (
@@ -833,9 +983,49 @@ export function TokenCheckApp({
 
   function chooseType(nextType: ApiType) {
     if (isRunning || nextType === apiType) return;
+    const sourceType = apiType;
+    const targetTouched = draftTouched[nextType];
+    const copyBaseUrl = !targetTouched.baseUrl;
+    const copyModel = !targetTouched.model;
+    const copyApiKey = !targetTouched.apiKey && Boolean(apiKeys[sourceType]);
+    const copyModels =
+      !targetTouched.models && profileModels[sourceType].length > 0;
+    setConnections((current) => ({
+      ...current,
+      [nextType]: {
+        baseUrl: copyBaseUrl
+          ? current[sourceType].baseUrl
+          : current[nextType].baseUrl,
+        model: copyModel ? current[sourceType].model : current[nextType].model,
+      },
+    }));
+    if (copyApiKey) {
+      setApiKeys((current) => ({
+        ...current,
+        [nextType]: current[sourceType],
+      }));
+    }
+    if (copyModels) {
+      setProfileModels((current) => ({
+        ...current,
+        [nextType]: [...current[sourceType]],
+      }));
+    }
+    const sourceFields = [
+      ...(copyBaseUrl ? (['baseUrl'] as const) : []),
+      ...(copyModel && connections[sourceType].model
+        ? (['model'] as const)
+        : []),
+      ...(copyApiKey ? (['apiKey'] as const) : []),
+      ...(copyModels ? (['models'] as const) : []),
+    ];
+    if (sourceFields.length) {
+      // The source becomes the stable value; the untouched target can keep
+      // following it until the user edits that target directly.
+      markDraftTouched(sourceFields, sourceType);
+    }
     setApiType(nextType);
-    if (selectedProfileId) setProfileDirty(true);
-    else setApiKey('');
+    setShowKey(false);
     setFormError('');
   }
 
@@ -844,46 +1034,97 @@ export function TokenCheckApp({
     setSelectedProfileId(id);
     setProfileMessage('');
     setProfileDirty(false);
-    setApiKey('');
+    setApiKeys(EMPTY_API_KEYS);
+    setShowKey(false);
     if (!id) {
       setProfileName('');
-      setProfileModels([]);
+      setProfileModels(EMPTY_PROFILE_MODELS);
+      setDraftTouched(EMPTY_DRAFT_TOUCHED);
       return;
     }
     const profile = profiles.find((item) => item.id === id);
     if (!profile) return;
     setProfileName(profile.name);
-    setProfileModels(profile.models);
-    setApiType(profile.apiType);
-    updateConnection(
-      { baseUrl: profile.baseUrl, model: profile.models[0] ?? '' },
-      profile.apiType,
-    );
+    setProfileModels({
+      anthropic: profile.configs.anthropic.models,
+      openai: profile.configs.openai.models,
+    });
+    setConnections({
+      anthropic: {
+        baseUrl: profile.configs.anthropic.baseUrl,
+        model: profile.configs.anthropic.model,
+      },
+      openai: {
+        baseUrl: profile.configs.openai.baseUrl,
+        model: profile.configs.openai.model,
+      },
+    });
+    setDraftTouched({
+      anthropic: {
+        baseUrl: true,
+        model: true,
+        apiKey: true,
+        models: true,
+      },
+      openai: {
+        baseUrl: true,
+        model: true,
+        apiKey: true,
+        models: true,
+      },
+    });
+    setApiType(profile.defaultApiType);
   }
 
   function addModel() {
     const next = newModel.trim();
     if (!next || next.length > 120) return;
-    setProfileModels((current) => [...new Set([...current, next])]);
+    updateProfileModels([...new Set([...activeProfileModels, next])]);
     if (selectedProfileId) setProfileDirty(true);
     updateConnection({ model: next });
+    markDraftTouched(['model']);
     setNewModel('');
   }
 
   function removeModel(item: string) {
-    const next = profileModels.filter((modelName) => modelName !== item);
-    setProfileModels(next);
+    const next = activeProfileModels.filter((modelName) => modelName !== item);
+    updateProfileModels(next);
     if (selectedProfileId) setProfileDirty(true);
-    if (model === item) updateConnection({ model: next[0] ?? '' });
+    if (model === item) {
+      updateConnection({ model: next[0] ?? '' });
+      markDraftTouched(['model']);
+    }
+  }
+
+  function profileConfigDraft(type: ApiType) {
+    const useOwn = type === apiType;
+    const touched = draftTouched[type];
+    const baseUrlValue =
+      useOwn || touched.baseUrl ? connections[type].baseUrl : baseUrl;
+    const modelValue =
+      useOwn || touched.model ? connections[type].model : model;
+    const modelList =
+      useOwn || touched.models || touched.model
+        ? profileModels[type]
+        : activeProfileModels;
+    const keyValue =
+      useOwn || touched.apiKey ? apiKeys[type] : apiKeys[apiType];
+    return {
+      baseUrl: baseUrlValue,
+      model: modelValue,
+      models: [...new Set([...modelList, modelValue].filter(Boolean))],
+      apiKey: keyValue,
+    };
   }
 
   async function saveProfile() {
     if (!user) return;
     setProfileMessage('');
     setProfileBusy(true);
-    const models = [
-      ...new Set([...profileModels, model.trim()].filter(Boolean)),
-    ];
+    const configs = {
+      anthropic: profileConfigDraft('anthropic'),
+      openai: profileConfigDraft('openai'),
+    };
     try {
       const data = await jsonFetch<{ profile: Profile }>(
         selectedProfileId
@@ -894,10 +1135,8 @@ export function TokenCheckApp({
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             name: profileName,
-            apiType,
-            baseUrl,
-            apiKey,
-            models,
+            defaultApiType: apiType,
+            configs,
           }),
         },
       );
@@ -906,8 +1145,35 @@ export function TokenCheckApp({
         ...current.filter((item) => item.id !== data.profile.id),
       ]);
       setSelectedProfileId(data.profile.id);
-      setProfileModels(data.profile.models);
-      setApiKey('');
+      setConnections({
+        anthropic: {
+          baseUrl: data.profile.configs.anthropic.baseUrl,
+          model: data.profile.configs.anthropic.model,
+        },
+        openai: {
+          baseUrl: data.profile.configs.openai.baseUrl,
+          model: data.profile.configs.openai.model,
+        },
+      });
+      setProfileModels({
+        anthropic: data.profile.configs.anthropic.models,
+        openai: data.profile.configs.openai.models,
+      });
+      setApiKeys(EMPTY_API_KEYS);
+      setDraftTouched({
+        anthropic: {
+          baseUrl: true,
+          model: true,
+          apiKey: true,
+          models: true,
+        },
+        openai: {
+          baseUrl: true,
+          model: true,
+          apiKey: true,
+          models: true,
+        },
+      });
       setProfileDirty(false);
       setProfileMessage(
         selectedProfileId ? 'Profile updated.' : 'Profile saved securely.',
@@ -934,8 +1200,9 @@ export function TokenCheckApp({
       );
       setSelectedProfileId('');
       setProfileName('');
-      setProfileModels([]);
-      setApiKey('');
+      setProfileModels(EMPTY_PROFILE_MODELS);
+      setApiKeys(EMPTY_API_KEYS);
+      setDraftTouched(EMPTY_DRAFT_TOUCHED);
       setProfileDirty(false);
       setProfileMessage(
         'Profile deleted. Existing saved runs remain available.',
@@ -1066,7 +1333,7 @@ export function TokenCheckApp({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               profileId: selectedProfileId || undefined,
-              apiType: selectedProfileId ? undefined : apiType,
+              apiType,
               baseUrl: selectedProfileId ? undefined : baseUrl,
               apiKey: selectedProfileId ? undefined : apiKey.trim(),
               model: model.trim(),
@@ -1261,10 +1528,13 @@ export function TokenCheckApp({
                       if (selectedProfileId) setProfileDirty(true);
                     }}
                     disabled={isRunning || profileBusy}
-                    placeholder="e.g. My Anthropic gateway"
+                    placeholder="e.g. WorldRouter"
                     className="h-9 bg-white text-xs"
                   />
                 </label>
+                <p className="text-[10px] leading-4 text-emerald-900/75">
+                  One saved connection stores both API types.
+                </p>
               </div>
             ) : (
               <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-xs leading-5 text-blue-950">
@@ -1304,7 +1574,8 @@ export function TokenCheckApp({
                   ))}
                 </div>
                 <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
-                  This chooses the request format and how token usage is read.
+                  Switching keeps your connection details. Each API type can be
+                  edited and saved separately.
                 </span>
               </fieldset>
 
@@ -1321,6 +1592,7 @@ export function TokenCheckApp({
                   value={baseUrl}
                   onChange={(event) => {
                     updateConnection({ baseUrl: event.target.value });
+                    markDraftTouched(['baseUrl']);
                     if (selectedProfileId) setProfileDirty(true);
                   }}
                   disabled={isRunning}
@@ -1342,17 +1614,19 @@ export function TokenCheckApp({
                 className="block space-y-1.5 text-xs font-medium text-muted-foreground"
               >
                 Model
-                {selectedProfileId && profileModels.length ? (
+                {selectedProfileId && activeProfileModels.length ? (
                   <select
                     id="model-name"
                     value={model}
-                    onChange={(event) =>
-                      updateConnection({ model: event.target.value })
-                    }
+                    onChange={(event) => {
+                      updateConnection({ model: event.target.value });
+                      markDraftTouched(['model']);
+                      setProfileDirty(true);
+                    }}
                     disabled={isRunning}
                     className="h-10 w-full rounded-lg border border-input bg-background px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring/30"
                   >
-                    {profileModels.map((item) => (
+                    {activeProfileModels.map((item) => (
                       <option key={item} value={item}>
                         {item}
                       </option>
@@ -1363,9 +1637,11 @@ export function TokenCheckApp({
                     id="model-name"
                     name="model"
                     value={model}
-                    onChange={(event) =>
-                      updateConnection({ model: event.target.value })
-                    }
+                    onChange={(event) => {
+                      updateConnection({ model: event.target.value });
+                      markDraftTouched(['model']);
+                      if (selectedProfileId) setProfileDirty(true);
+                    }}
                     disabled={isRunning}
                     placeholder={
                       apiType === 'anthropic'
@@ -1380,11 +1656,12 @@ export function TokenCheckApp({
               {user ? (
                 <div className="space-y-2 rounded-xl border border-border/70 bg-muted/35 p-3">
                   <p className="text-xs font-medium">
-                    Models saved in this profile
+                    Models saved for{' '}
+                    {apiType === 'anthropic' ? 'Anthropic' : 'OpenAI'}
                   </p>
-                  {profileModels.length ? (
+                  {activeProfileModels.length ? (
                     <div className="flex flex-wrap gap-1.5">
-                      {profileModels.map((item) => (
+                      {activeProfileModels.map((item) => (
                         <span
                           key={item}
                           className="inline-flex items-center gap-1 rounded-md border border-border bg-white px-2 py-1 font-mono text-[10px]"
@@ -1448,12 +1725,12 @@ export function TokenCheckApp({
                     autoComplete="off"
                     value={apiKey}
                     onChange={(event) => {
-                      setApiKey(event.target.value);
+                      updateApiKey(event.target.value);
                       if (selectedProfileId) setProfileDirty(true);
                     }}
                     disabled={isRunning}
                     placeholder={
-                      selectedProfile
+                      selectedProfileConfig?.hasSavedKey
                         ? 'Saved securely — enter only to replace'
                         : 'Paste your own key'
                     }
@@ -1484,7 +1761,10 @@ export function TokenCheckApp({
                       profileBusy ||
                       isRunning ||
                       !profileName.trim() ||
-                      (!selectedProfileId && !apiKey.trim())
+                      !baseUrl.trim() ||
+                      !model.trim() ||
+                      (!selectedProfileId && !apiKey.trim()) ||
+                      (Boolean(selectedProfileId) && !profileDirty)
                     }
                     className="h-9 gap-2"
                   >
@@ -1603,7 +1883,7 @@ export function TokenCheckApp({
                       : 'Completed tests are saved automatically when you are signed in.'}
                   </p>
                   {user && runs.length ? (
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:max-w-2xl">
+                    <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:max-w-4xl">
                       <label className="grid gap-1.5 text-xs font-medium text-foreground">
                         Connection name
                         <select
@@ -1619,6 +1899,22 @@ export function TokenCheckApp({
                               {name}
                             </option>
                           ))}
+                        </select>
+                      </label>
+                      <label className="grid gap-1.5 text-xs font-medium text-foreground">
+                        API type
+                        <select
+                          value={savedApiTypeFilter}
+                          onChange={(event) =>
+                            setSavedApiTypeFilter(
+                              event.target.value as '' | ApiType,
+                            )
+                          }
+                          className="h-10 min-w-0 rounded-lg border border-input bg-background px-3 text-sm font-normal shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+                        >
+                          <option value="">All API types</option>
+                          <option value="anthropic">Anthropic</option>
+                          <option value="openai">OpenAI</option>
                         </select>
                       </label>
                       <label className="grid gap-1.5 text-xs font-medium text-foreground">
@@ -1668,7 +1964,7 @@ export function TokenCheckApp({
                         No saved runs match these filters
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Choose a different connection or model.
+                        Choose a different connection, API type, or model.
                       </p>
                       {hasSavedRunFilters ? (
                         <Button
@@ -1679,6 +1975,7 @@ export function TokenCheckApp({
                           onClick={() => {
                             setSavedConnectionFilter('');
                             setSavedModelFilter('');
+                            setSavedApiTypeFilter('');
                           }}
                         >
                           Clear filters
@@ -1705,6 +2002,18 @@ export function TokenCheckApp({
                               <span className="font-semibold">
                                 {run.profileName ?? 'One-time connection'}
                               </span>
+                              <Badge
+                                variant="outline"
+                                className={
+                                  run.apiType === 'anthropic'
+                                    ? 'border-violet-200 bg-violet-50 text-violet-800'
+                                    : 'border-blue-200 bg-blue-50 text-blue-800'
+                                }
+                              >
+                                {run.apiType === 'anthropic'
+                                  ? 'Anthropic'
+                                  : 'OpenAI'}
+                              </Badge>
                               <Badge
                                 variant="outline"
                                 className={runVerdict.className}

@@ -22,6 +22,13 @@
       "when": 1788405464898,
       "tag": "0002_dapper_magdalene",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788423422178,
+      "tag": "0003_sleepy_reaper",
+      "breakpoints": true
     }
   ]
 }

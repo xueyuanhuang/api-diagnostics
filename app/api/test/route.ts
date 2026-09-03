@@ -1,16 +1,14 @@
-import { and, eq } from 'drizzle-orm';
 import { NextRequest } from 'next/server';
 
 import { getChatGPTUser } from '@/app/chatgpt-auth';
-import { getDb } from '@/db';
-import { connectionProfiles, profileModels } from '@/db/schema';
 import {
-  ApiType,
+  type ApiType,
   endpointFromBaseUrl,
   validateBaseUrl,
 } from '@/lib/server/connection';
 import { decryptApiKey } from '@/lib/server/encryption';
 import { noStore } from '@/lib/server/http';
+import { getOwnedProfileConfig } from '@/lib/server/profile-config';
 import { readProviderStream } from '@/lib/server/provider-stream';
 
 type RequestPayload = {
@@ -98,36 +96,32 @@ async function resolveConnection(payload: RequestPayload) {
         error: 'Sign in again to use this saved profile.',
         status: 401,
       } as const;
-    const rows = await getDb()
-      .select({
-        apiType: connectionProfiles.apiType,
-        baseUrl: connectionProfiles.baseUrl,
-        encryptedApiKey: connectionProfiles.encryptedApiKey,
-        keyIv: connectionProfiles.keyIv,
-      })
-      .from(connectionProfiles)
-      .innerJoin(
-        profileModels,
-        eq(profileModels.profileId, connectionProfiles.id),
-      )
-      .where(
-        and(
-          eq(connectionProfiles.id, payload.profileId),
-          eq(connectionProfiles.userId, user.userId),
-          eq(profileModels.modelName, model),
-        ),
-      )
-      .limit(1);
-    if (!rows.length)
+    let requestedApiType: ApiType | undefined;
+    if (payload.apiType === undefined || payload.apiType === null) {
+      requestedApiType = undefined;
+    } else if (
+      payload.apiType === 'anthropic' ||
+      payload.apiType === 'openai'
+    ) {
+      requestedApiType = payload.apiType;
+    } else {
+      return { error: 'Choose a valid API type.', status: 400 } as const;
+    }
+    const config = await getOwnedProfileConfig({
+      userId: user.userId,
+      profileId: payload.profileId,
+      apiType: requestedApiType,
+      requestedModel: model,
+    });
+    if (!config)
       return {
-        error: 'Saved profile or model not found.',
+        error: 'Saved profile, API type, or model not found.',
         status: 404,
       } as const;
-    const row = rows[0];
     return {
-      apiType: row.apiType as ApiType,
-      baseUrl: row.baseUrl,
-      apiKey: await decryptApiKey(row.encryptedApiKey, row.keyIv),
+      apiType: config.apiType,
+      baseUrl: config.baseUrl,
+      apiKey: await decryptApiKey(config.encryptedApiKey, config.keyIv),
       model,
     } as const;
   }

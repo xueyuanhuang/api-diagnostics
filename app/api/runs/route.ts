@@ -1,12 +1,13 @@
 import { env } from 'cloudflare:workers';
-import { and, desc, eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { NextRequest } from 'next/server';
 
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { getDb } from '@/db';
-import { connectionProfiles, testRuns } from '@/db/schema';
+import { testRuns } from '@/db/schema';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { noStore, serverError } from '@/lib/server/http';
+import { getOwnedProfileConfig } from '@/lib/server/profile-config';
 import { NORMAL_QUESTIONS } from '@/lib/questions';
 
 type StoredStatus = 'normal' | 'cached' | 'large' | 'unavailable' | 'error';
@@ -73,30 +74,38 @@ export async function POST(request: NextRequest) {
     typeof payload.profileId === 'string' && payload.profileId
       ? payload.profileId
       : null;
+  const model = typeof payload.model === 'string' ? payload.model.trim() : '';
+  if (!model || model.length > 120)
+    return noStore({ error: 'Invalid model name.' }, { status: 400 });
   let apiType = payload.apiType;
   let rawBaseUrl =
     typeof payload.baseUrl === 'string' ? payload.baseUrl.trim() : '';
   let profileName: string | null = null;
   if (profileId) {
-    const profile = await getDb()
-      .select({
-        name: connectionProfiles.name,
-        apiType: connectionProfiles.apiType,
-        baseUrl: connectionProfiles.baseUrl,
-      })
-      .from(connectionProfiles)
-      .where(
-        and(
-          eq(connectionProfiles.id, profileId),
-          eq(connectionProfiles.userId, user.userId),
-        ),
-      )
-      .limit(1);
-    if (!profile.length)
-      return noStore({ error: 'Saved profile not found.' }, { status: 404 });
-    profileName = profile[0].name;
-    apiType = profile[0].apiType;
-    rawBaseUrl = profile[0].baseUrl;
+    if (
+      apiType !== undefined &&
+      apiType !== null &&
+      apiType !== 'anthropic' &&
+      apiType !== 'openai'
+    ) {
+      return noStore({ error: 'Invalid API type.' }, { status: 400 });
+    }
+    const requestedApiType =
+      apiType === 'anthropic' || apiType === 'openai' ? apiType : undefined;
+    const config = await getOwnedProfileConfig({
+      userId: user.userId,
+      profileId,
+      apiType: requestedApiType,
+      requestedModel: model,
+    });
+    if (!config)
+      return noStore(
+        { error: 'Saved profile, API type, or model not found.' },
+        { status: 404 },
+      );
+    profileName = config.profileName;
+    apiType = config.apiType;
+    rawBaseUrl = config.baseUrl;
   }
   if (apiType !== 'anthropic' && apiType !== 'openai') {
     return noStore({ error: 'Invalid API type.' }, { status: 400 });
@@ -104,9 +113,6 @@ export async function POST(request: NextRequest) {
   const validated = validateBaseUrl(rawBaseUrl);
   if ('error' in validated)
     return noStore({ error: validated.error }, { status: 400 });
-  const model = typeof payload.model === 'string' ? payload.model.trim() : '';
-  if (!model || model.length > 120)
-    return noStore({ error: 'Invalid model name.' }, { status: 400 });
   const incoming = Array.isArray(payload.results) ? payload.results : [];
   if (incoming.length !== NORMAL_QUESTIONS.length) {
     return noStore(
