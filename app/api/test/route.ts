@@ -57,6 +57,35 @@ function exportedResponseHeaders(headers: Headers, apiKey: string) {
   );
 }
 
+function asRecord(value: unknown) {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function providerErrorMessage(rawResponse: string) {
+  const candidates = [
+    rawResponse,
+    ...rawResponse
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim()),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || candidate === '[DONE]') continue;
+    try {
+      const body = asRecord(JSON.parse(candidate));
+      const error = asRecord(body?.error);
+      if (typeof error?.message === 'string') return error.message;
+      if (typeof body?.message === 'string') return body.message;
+    } catch {
+      // Keep looking for a structured error in another response line.
+    }
+  }
+  return null;
+}
+
 async function resolveConnection(payload: RequestPayload) {
   const model = typeof payload.model === 'string' ? payload.model.trim() : '';
   if (!model || model.length > 120)
@@ -158,19 +187,20 @@ export async function POST(request: NextRequest) {
     headers.authorization = `Bearer ${apiKey}`;
   }
 
+  const requestUrl = endpointFromBaseUrl(baseUrl, apiType);
+  const requestBody = JSON.stringify({
+    model,
+    max_tokens: 96,
+    messages: [{ role: 'user', content: prompt }],
+    stream: true,
+    ...(apiType === 'openai'
+      ? { stream_options: { include_usage: true } }
+      : {}),
+  });
+  const requestHeaders = exportedRequestHeaders(headers, apiKey);
+  const startedAt = performance.now();
+
   try {
-    const requestUrl = endpointFromBaseUrl(baseUrl, apiType);
-    const requestBody = JSON.stringify({
-      model,
-      max_tokens: 96,
-      temperature: 0,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      ...(apiType === 'openai'
-        ? { stream_options: { include_usage: true } }
-        : {}),
-    });
-    const startedAt = performance.now();
     const upstream = await fetch(requestUrl, {
       method: 'POST',
       headers,
@@ -235,6 +265,10 @@ export async function POST(request: NextRequest) {
       streamed.generationMs > 0
         ? Number((outputTokens / (streamed.generationMs / 1_000)).toFixed(2))
         : null;
+    const providerError = upstream.ok
+      ? null
+      : (providerErrorMessage(streamed.rawResponse) ??
+        `The provider returned HTTP ${upstream.status}.`);
 
     return noStore({
       httpStatus: upstream.status,
@@ -250,7 +284,7 @@ export async function POST(request: NextRequest) {
       outputTokensPerSecond,
       requestMethod: 'POST',
       requestUrl,
-      requestHeaders: exportedRequestHeaders(headers, apiKey),
+      requestHeaders,
       requestBody,
       responseHeaders: exportedResponseHeaders(upstream.headers, apiKey),
       requestId:
@@ -259,16 +293,30 @@ export async function POST(request: NextRequest) {
         upstream.headers.get('anthropic-request-id'),
       answer: streamed.answer,
       rawResponse: streamed.rawResponse,
+      error: providerError,
     });
   } catch (error) {
+    const isTimeout =
+      error instanceof Error &&
+      (error.name === 'TimeoutError' || error.name === 'AbortError');
+    const responseTooLarge =
+      error instanceof Error && error.message === 'Response too large';
     return noStore(
       {
-        error:
-          error instanceof Error && error.message === 'Response too large'
-            ? 'The provider returned a response larger than this tester allows.'
-            : 'The relay could not reach the provider. Check the base URL and try again.',
+        error: responseTooLarge
+          ? 'The provider returned a response larger than this tester allows.'
+          : isTimeout
+            ? 'The provider did not complete the response within the 45-second test limit.'
+            : 'The tester relay could not complete the connection to the provider.',
+        totalTimeMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        requestMethod: 'POST',
+        requestUrl,
+        requestHeaders,
+        requestBody,
+        responseHeaders: null,
+        rawResponse: null,
       },
-      { status: 502 },
+      { status: isTimeout ? 504 : 502 },
     );
   }
 }

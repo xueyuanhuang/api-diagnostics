@@ -159,6 +159,26 @@ function curlScript(result: EvidenceResult, headers: HeaderEntry[] | null) {
   return lines.join('\n');
 }
 
+export function buildInlineCurlCommand(result: EvidenceResult) {
+  const headers = parseHeaderEntries(result.requestHeaders);
+  if (
+    !result.requestMethod ||
+    !result.requestUrl ||
+    !result.requestBody ||
+    !headers
+  ) {
+    return null;
+  }
+  const lines = [
+    `curl --no-buffer --request ${shellQuote(result.requestMethod)} ${shellQuote(result.requestUrl)} \\`,
+  ];
+  for (const [name, value] of headers) {
+    lines.push(`  --header ${shellHeader(name, value)} \\`);
+  }
+  lines.push(`  --data-raw ${shellQuote(result.requestBody)}`);
+  return lines.join('\n');
+}
+
 function crc32(bytes: Uint8Array) {
   let crc = 0xffffffff;
   for (const byte of bytes) {

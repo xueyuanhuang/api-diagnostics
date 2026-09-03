@@ -44,6 +44,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
+  buildInlineCurlCommand,
   downloadEvidenceArchive,
   type EvidenceRun,
 } from '@/lib/evidence-export';
@@ -251,7 +252,9 @@ function verdict(status: ResultStatus) {
 function savedVerdict(run: RunSummary) {
   if (run.largeCount)
     return {
-      label: 'Large context',
+      label: run.errorCount
+        ? `Large context · ${run.errorCount} failed`
+        : 'Large context',
       className: 'border-rose-200 bg-rose-50 text-rose-800',
     };
   if (run.cacheCount)
@@ -284,6 +287,202 @@ function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
       );
     return data;
   });
+}
+
+async function testFetch(init: RequestInit): Promise<ApiResponse> {
+  const response = await fetch('/api/test', { cache: 'no-store', ...init });
+  const data = (await response.json()) as ApiResponse;
+  if (!response.ok && !data.requestBody) {
+    throw new Error(
+      data.error || `Request failed with status ${response.status}.`,
+    );
+  }
+  return data;
+}
+
+function formattedJson(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function errorFromRawResponse(value: string | null | undefined) {
+  if (!value) return null;
+  const candidates = [
+    value,
+    ...value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim()),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as {
+        message?: unknown;
+        error?: { message?: unknown };
+      };
+      if (typeof parsed.error?.message === 'string')
+        return parsed.error.message;
+      if (typeof parsed.message === 'string') return parsed.message;
+    } catch {
+      // Older records can contain SSE or non-JSON provider responses.
+    }
+  }
+  return null;
+}
+
+function resultErrorMessage(result: TestResult) {
+  return result.error || errorFromRawResponse(result.rawResponse);
+}
+
+function errorSolution(result: TestResult, message: string | null) {
+  if (result.status !== 'error') return null;
+  const detail = `${message ?? ''} ${result.rawResponse ?? ''}`.toLowerCase();
+  if (
+    detail.includes('temperature') ||
+    detail.includes('top_p') ||
+    detail.includes('top_k')
+  ) {
+    return 'Remove temperature, top_p, and top_k. This tester now omits all three.';
+  }
+  if (detail.includes('45-second') || detail.includes('timed out')) {
+    return 'Retry once. If it repeats, the provider or one of its upstream routes is taking longer than the test limit.';
+  }
+  if (result.httpStatus === 400) {
+    return 'The provider rejected a request parameter. Compare the exact JSON and cURL below with that provider’s model documentation.';
+  }
+  if (result.httpStatus === 401 || result.httpStatus === 403) {
+    return 'Check that the API key is valid and allowed to use this model.';
+  }
+  if (result.httpStatus === 404) {
+    return 'Check the base URL, API format, generated endpoint path, and model name.';
+  }
+  if (result.httpStatus === 429) {
+    return 'The provider is rate-limiting the request or the account has reached a quota. Wait, reduce concurrency, or check balance.';
+  }
+  if (typeof result.httpStatus === 'number' && result.httpStatus >= 500) {
+    return 'The provider or its upstream service failed. Retry later and send the request ID to the provider if it continues.';
+  }
+  if (!result.httpStatus) {
+    return 'Retry once, then verify the base URL and provider availability. No upstream HTTP response was available.';
+  }
+  return 'Review the provider response and request ID below, then compare the exact request with the provider documentation.';
+}
+
+function RequestResponseDetails({ result }: { result: TestResult }) {
+  const errorMessage = resultErrorMessage(result);
+  const solution = errorSolution(result, errorMessage);
+  const requestHeaders = formattedJson(result.requestHeaders);
+  const requestBody = formattedJson(result.requestBody);
+  const curl = buildInlineCurlCommand(result);
+  const hasRequest =
+    Boolean(result.requestMethod) ||
+    Boolean(result.requestUrl) ||
+    Boolean(result.requestBody);
+  const hasDetails =
+    Boolean(result.answer) ||
+    Boolean(errorMessage) ||
+    Boolean(result.rawResponse) ||
+    hasRequest;
+  if (!hasDetails) return null;
+
+  return (
+    <details className="mt-2 text-xs text-muted-foreground">
+      <summary className="cursor-pointer select-none font-medium text-foreground/70 hover:text-foreground">
+        Request & response details
+      </summary>
+      <div className="mt-2 space-y-3 rounded-lg bg-muted/60 p-3 leading-5">
+        {errorMessage ? (
+          <div className="rounded-md border border-rose-200 bg-rose-50 p-2.5">
+            <p className="font-semibold text-rose-800">Error</p>
+            <p className="mt-1 whitespace-pre-wrap text-rose-700">
+              {errorMessage}
+            </p>
+            {solution ? (
+              <p className="mt-2 text-amber-900">
+                <span className="font-semibold">How to fix:</span> {solution}
+              </p>
+            ) : null}
+          </div>
+        ) : result.answer ? (
+          <div>
+            <p className="font-semibold text-foreground">Answer</p>
+            <p className="mt-1 whitespace-pre-wrap">{result.answer}</p>
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px]">
+          {result.httpStatus ? <span>HTTP {result.httpStatus}</span> : null}
+          {result.returnedModel ? (
+            <span>Model: {result.returnedModel}</span>
+          ) : null}
+          {result.requestId ? (
+            <span className="break-all">Request ID: {result.requestId}</span>
+          ) : null}
+        </div>
+
+        {hasRequest ? (
+          <details>
+            <summary className="cursor-pointer font-semibold text-foreground">
+              Exact request
+            </summary>
+            <div className="mt-2 space-y-2">
+              <p className="break-all font-mono text-[10px] text-foreground">
+                {result.requestMethod || 'POST'} {result.requestUrl}
+              </p>
+              <p className="text-[10px]">
+                Not sent: system, tools, explicit cache settings, temperature,
+                top_p, or top_k. The API key is replaced with $API_KEY.
+              </p>
+              {requestHeaders ? (
+                <>
+                  <p className="font-semibold text-foreground">
+                    Request headers
+                  </p>
+                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">
+                    {requestHeaders}
+                  </pre>
+                </>
+              ) : null}
+              {requestBody ? (
+                <>
+                  <p className="font-semibold text-foreground">JSON body</p>
+                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">
+                    {requestBody}
+                  </pre>
+                </>
+              ) : null}
+              {curl ? (
+                <>
+                  <p className="font-semibold text-foreground">
+                    Reproducible cURL
+                  </p>
+                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">
+                    {curl}
+                  </pre>
+                </>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
+
+        {result.rawResponse ? (
+          <details>
+            <summary className="cursor-pointer font-semibold text-foreground">
+              Raw provider response
+            </summary>
+            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">
+              {result.rawResponse}
+            </pre>
+          </details>
+        ) : null}
+      </div>
+    </details>
+  );
 }
 
 function evidenceRun(context: RunContext, results: TestResult[]): EvidenceRun {
@@ -540,8 +739,10 @@ export function TokenCheckApp({
     if (largeCount)
       return {
         tone: 'danger',
-        title: 'Large hidden context detected',
-        description: `${largeCount} request${largeCount === 1 ? '' : 's'} reported at least 1,000 total input tokens.`,
+        title: errorCount
+          ? 'Large hidden context and request failures'
+          : 'Large hidden context detected',
+        description: `${largeCount} request${largeCount === 1 ? '' : 's'} reported at least 1,000 total input tokens.${errorCount ? ` ${errorCount} request${errorCount === 1 ? '' : 's'} also failed; open the affected rows for the exact error and request.` : ''}`,
       };
     if (cacheCount)
       return {
@@ -812,7 +1013,7 @@ export function TokenCheckApp({
         const question = NORMAL_QUESTIONS[index];
         updateResult(index, { status: 'running' });
         try {
-          const data = await jsonFetch<ApiResponse>('/api/test', {
+          const data = await testFetch({
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -1453,7 +1654,7 @@ export function TokenCheckApp({
                     <p className="mt-1 min-h-12 text-sm leading-6 text-muted-foreground">
                       {overall.description}
                     </p>
-                    <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                    <div className="mt-4 grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
                       <div className="rounded-xl border border-border/70 bg-white/65 px-3 py-2.5">
                         <div className="font-mono text-lg font-semibold">
                           {completed}
@@ -1476,6 +1677,14 @@ export function TokenCheckApp({
                         </div>
                         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
                           Anomaly
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-white/65 px-3 py-2.5">
+                        <div className="font-mono text-lg font-semibold text-rose-700">
+                          {errorCount}
+                        </div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Failed
                         </div>
                       </div>
                     </div>
@@ -1579,6 +1788,20 @@ export function TokenCheckApp({
                       </div>
                     </div>
                   </div>
+                  <div className="border-b border-border/70 bg-slate-50/60 px-5 py-3 font-mono text-[10px] leading-5 text-muted-foreground">
+                    <p>
+                      REQUEST · POST · model=
+                      {runContext?.modelName || model.trim() || '—'} ·
+                      max_tokens=96 · stream=true
+                      {shownApiType === 'openai'
+                        ? ' · stream_options.include_usage=true'
+                        : ''}
+                    </p>
+                    <p>
+                      OMITTED · system · tools · explicit cache settings ·
+                      temperature · top_p · top_k
+                    </p>
+                  </div>
                   {resultsView === 'tokens' ? (
                     <>
                       <div className="border-b border-border/70 px-5 py-2 font-mono text-[10px] text-muted-foreground">
@@ -1635,49 +1858,7 @@ export function TokenCheckApp({
                                       <p className="text-sm leading-5">
                                         {result.prompt}
                                       </p>
-                                      {result.answer || result.error ? (
-                                        <details className="mt-2 text-xs text-muted-foreground">
-                                          <summary className="cursor-pointer select-none font-medium text-foreground/70 hover:text-foreground">
-                                            View response details
-                                          </summary>
-                                          <div className="mt-2 rounded-lg bg-muted/60 p-3 leading-5">
-                                            {result.error ? (
-                                              <p className="text-rose-700">
-                                                {result.error}
-                                              </p>
-                                            ) : (
-                                              <p className="whitespace-pre-wrap">
-                                                {result.answer}
-                                              </p>
-                                            )}
-                                            {result.httpStatus ? (
-                                              <p className="mt-2 font-mono text-[10px]">
-                                                HTTP: {result.httpStatus}
-                                              </p>
-                                            ) : null}
-                                            {result.requestId ? (
-                                              <p className="mt-1 break-all font-mono text-[10px]">
-                                                Request ID: {result.requestId}
-                                              </p>
-                                            ) : null}
-                                            {result.returnedModel ? (
-                                              <p className="mt-1 font-mono text-[10px]">
-                                                Model: {result.returnedModel}
-                                              </p>
-                                            ) : null}
-                                            {result.rawResponse ? (
-                                              <details className="mt-2">
-                                                <summary className="cursor-pointer">
-                                                  Raw response
-                                                </summary>
-                                                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">
-                                                  {result.rawResponse}
-                                                </pre>
-                                              </details>
-                                            ) : null}
-                                          </div>
-                                        </details>
-                                      ) : null}
+                                      <RequestResponseDetails result={result} />
                                     </div>
                                   </div>
                                 </TableCell>
@@ -1767,13 +1948,14 @@ export function TokenCheckApp({
                                     <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md bg-muted font-mono text-[10px] text-muted-foreground">
                                       {String(index + 1).padStart(2, '0')}
                                     </span>
-                                    <div>
+                                    <div className="min-w-0">
                                       <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
                                         {result.category}
                                       </div>
                                       <p className="text-sm leading-5">
                                         {result.prompt}
                                       </p>
+                                      <RequestResponseDetails result={result} />
                                     </div>
                                   </div>
                                 </TableCell>
