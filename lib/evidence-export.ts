@@ -67,6 +67,28 @@ function safeSegment(value: string) {
   );
 }
 
+function safeFileNameSegment(value: string, fallback: string) {
+  return (
+    value
+      .normalize('NFKC')
+      .replace(/[<>:"/\\|?*]/g, '-')
+      .replace(/\p{Cc}/gu, '-')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^[.\s-]+|[.\s-]+$/g, '')
+      .slice(0, 64) || fallback
+  );
+}
+
+function localTimestamp(value: number) {
+  const date = new Date(value);
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`,
+  ].join('_');
+}
+
 function parseHeaderEntries(
   value: string | null | undefined,
 ): HeaderEntry[] | null {
@@ -337,10 +359,15 @@ export function buildEvidenceArchive(
   });
 
   const bytes = zip(entries, exportedAt);
-  const timestamp = new Date(run.createdAt).toISOString().replace(/[:.]/g, '-');
+  const profile = safeFileNameSegment(
+    run.profileName?.trim() || run.apiType,
+    'connection',
+  );
+  const model = safeFileNameSegment(run.modelName, 'model');
+  const timestamp = localTimestamp(run.createdAt);
   return {
     bytes,
-    fileName: `normal-token-check-evidence-${timestamp}.zip`,
+    fileName: `${profile}_${model}_${timestamp}.zip`,
   };
 }
 
