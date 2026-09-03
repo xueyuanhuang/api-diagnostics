@@ -555,6 +555,8 @@ export function TokenCheckApp({
   const [profileDirty, setProfileDirty] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [savedConnectionFilter, setSavedConnectionFilter] = useState('');
+  const [savedModelFilter, setSavedModelFilter] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('current');
   const [resultsView, setResultsView] = useState<ResultsView>('tokens');
   const [runContext, setRunContext] = useState<RunContext | null>(null);
@@ -564,6 +566,35 @@ export function TokenCheckApp({
   const { baseUrl, model } = connections[apiType];
   const selectedProfile =
     profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const savedConnectionNames = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          runs.map((run) => run.profileName?.trim() || 'One-time connection'),
+        ),
+      ).sort((left, right) => left.localeCompare(right)),
+    [runs],
+  );
+  const savedModelNames = useMemo(
+    () =>
+      Array.from(new Set(runs.map((run) => run.modelName))).sort(
+        (left, right) => left.localeCompare(right),
+      ),
+    [runs],
+  );
+  const filteredRuns = useMemo(
+    () =>
+      runs.filter((run) => {
+        const connectionName = run.profileName?.trim() || 'One-time connection';
+        return (
+          (!savedConnectionFilter ||
+            connectionName === savedConnectionFilter) &&
+          (!savedModelFilter || run.modelName === savedModelFilter)
+        );
+      }),
+    [runs, savedConnectionFilter, savedModelFilter],
+  );
+  const hasSavedRunFilters = Boolean(savedConnectionFilter || savedModelFilter);
 
   function updateConnection(
     patch: Partial<ConnectionSettings>,
@@ -683,6 +714,23 @@ export function TokenCheckApp({
       JSON.stringify({ apiType, connections }),
     );
   }, [apiType, connections, settingsReady]);
+
+  useEffect(() => {
+    if (
+      savedConnectionFilter &&
+      !savedConnectionNames.includes(savedConnectionFilter)
+    ) {
+      setSavedConnectionFilter('');
+    }
+    if (savedModelFilter && !savedModelNames.includes(savedModelFilter)) {
+      setSavedModelFilter('');
+    }
+  }, [
+    savedConnectionFilter,
+    savedConnectionNames,
+    savedModelFilter,
+    savedModelNames,
+  ]);
 
   const completed = results.filter((result) =>
     ['normal', 'cached', 'large', 'unavailable', 'error'].includes(
@@ -1550,9 +1598,48 @@ export function TokenCheckApp({
                 <div className="border-b border-border px-5 py-4">
                   <h2 className="text-sm font-semibold">Private saved runs</h2>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Completed tests are saved automatically when you are signed
-                    in.
+                    {user && runs.length
+                      ? `Showing ${filteredRuns.length} of ${runs.length} saved runs.`
+                      : 'Completed tests are saved automatically when you are signed in.'}
                   </p>
+                  {user && runs.length ? (
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:max-w-2xl">
+                      <label className="grid gap-1.5 text-xs font-medium text-foreground">
+                        Connection name
+                        <select
+                          value={savedConnectionFilter}
+                          onChange={(event) =>
+                            setSavedConnectionFilter(event.target.value)
+                          }
+                          className="h-10 min-w-0 rounded-lg border border-input bg-background px-3 text-sm font-normal shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+                        >
+                          <option value="">All connections</option>
+                          {savedConnectionNames.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="grid gap-1.5 text-xs font-medium text-foreground">
+                        Model name
+                        <select
+                          value={savedModelFilter}
+                          onChange={(event) =>
+                            setSavedModelFilter(event.target.value)
+                          }
+                          className="h-10 min-w-0 rounded-lg border border-input bg-background px-3 font-mono text-sm font-normal shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+                        >
+                          <option value="">All models</option>
+                          {savedModelNames.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
                 </div>
                 {!user ? (
                   <div className="grid min-h-72 place-items-center p-8 text-center">
@@ -1574,9 +1661,34 @@ export function TokenCheckApp({
                   <div className="grid min-h-72 place-items-center p-8 text-center text-sm text-muted-foreground">
                     Your completed runs will appear here.
                   </div>
+                ) : !filteredRuns.length ? (
+                  <div className="grid min-h-72 place-items-center p-8 text-center">
+                    <div>
+                      <p className="text-sm font-semibold">
+                        No saved runs match these filters
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Choose a different connection or model.
+                      </p>
+                      {hasSavedRunFilters ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="mt-4"
+                          onClick={() => {
+                            setSavedConnectionFilter('');
+                            setSavedModelFilter('');
+                          }}
+                        >
+                          Clear filters
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
                 ) : (
                   <div className="divide-y divide-border">
-                    {runs.map((run) => {
+                    {filteredRuns.map((run) => {
                       const runVerdict = savedVerdict(run);
                       return (
                         <div
