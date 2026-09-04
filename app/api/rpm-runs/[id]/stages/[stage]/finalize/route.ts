@@ -38,6 +38,7 @@ type DispatcherManifest = {
   shardCount?: unknown;
   complete?: unknown;
   failed?: unknown;
+  error?: unknown;
   requests?: unknown;
 };
 
@@ -224,6 +225,11 @@ export async function POST(_request: NextRequest, context: Context) {
     let evidence: AggregateEvidence[];
     let malformedObjects = 0;
     let manifestIntegrityValid = true;
+    let readyDispatcherCount = 0;
+    let completedDispatcherCount = 0;
+    let failedDispatcherCount = 0;
+    let missingDispatcherCount = 0;
+    const dispatcherErrorMessages: string[] = [];
 
     if (dispatcherKeys.length) {
       const shardCount = current.batchCount;
@@ -238,6 +244,7 @@ export async function POST(_request: NextRequest, context: Context) {
         );
       }
       const read = await readDispatcherManifests(dispatcherKeys);
+      readyDispatcherCount = read.manifests.size;
       malformedObjects += read.malformedObjects;
       evidence = [];
       let everyExpectedManifestComplete = true;
@@ -255,7 +262,18 @@ export async function POST(_request: NextRequest, context: Context) {
           malformedObjects += 1;
         }
         if (manifest.complete !== true) everyExpectedManifestComplete = false;
-        if (manifest.failed === true) dispatcherFailed = true;
+        else completedDispatcherCount += 1;
+        if (manifest.failed === true) {
+          dispatcherFailed = true;
+          failedDispatcherCount += 1;
+        }
+        if (
+          typeof manifest.error === 'string' &&
+          manifest.error.trim() &&
+          !dispatcherErrorMessages.includes(manifest.error.trim())
+        ) {
+          dispatcherErrorMessages.push(manifest.error.trim());
+        }
         if (
           manifest.runId !== id ||
           manifest.stageIndex !== stageIndex ||
@@ -269,6 +287,7 @@ export async function POST(_request: NextRequest, context: Context) {
         if (!requests) malformedObjects += 1;
         else evidence.push(...requests);
       }
+      missingDispatcherCount = Math.max(0, shardCount - read.manifests.size);
       if (read.manifests.size !== shardCount) malformedObjects += 1;
 
       if (current.scheduledStartAt !== null && !everyExpectedManifestComplete) {
@@ -440,7 +459,16 @@ export async function POST(_request: NextRequest, context: Context) {
     const terminal = stageStatus !== 'passed' || isLast;
     const finalStatus =
       stageStatus === 'passed' ? (isLast ? 'passed' : 'running') : stageStatus;
+    const stageWasNeverArmed = current.scheduledStartAt === null;
+    const dispatcherLifecycleDetails = stageWasNeverArmed
+      ? `The stage was never armed: ${readyDispatcherCount.toLocaleString()}/${current.batchCount.toLocaleString()} dispatcher streams reached the evidence store, ${completedDispatcherCount.toLocaleString()} completed, ${failedDispatcherCount.toLocaleString()} reported an error, and ${missingDispatcherCount.toLocaleString()} never produced a readiness manifest.`
+      : null;
+    const dispatcherErrors = dispatcherErrorMessages.length
+      ? `Dispatcher error: ${dispatcherErrorMessages.join(' | ')}`
+      : null;
     const inconclusiveEvidenceDetails = [
+      dispatcherLifecycleDetails,
+      dispatcherErrors,
       missedDispatchCount
         ? `${missedDispatchCount.toLocaleString()} schedule slots have no verified upstream dispatch start.`
         : null,
@@ -460,7 +488,7 @@ export async function POST(_request: NextRequest, context: Context) {
       stageStatus === 'failed'
         ? `Provider threshold not met at ${current.targetRpm.toLocaleString()} RPM — ${successCount.toLocaleString()}/${attemptedCount.toLocaleString()} sent requests succeeded (${(successRateBps / 100).toFixed(2)}%), below the ${(run.thresholdBps / 100).toFixed(2)}% requirement. The tester delivered the full scheduled load.`
         : stageStatus === 'inconclusive'
-          ? `Inconclusive at ${current.targetRpm.toLocaleString()} RPM — the tester recorded ${attemptedCount.toLocaleString()} upstream dispatch starts from ${current.scheduledCount.toLocaleString()} scheduled requests and preserved ${responseCount.toLocaleString()} response outcomes. ${successCount.toLocaleString()} of ${responseCount.toLocaleString()} preserved responses succeeded. ${inconclusiveEvidenceDetails.join(' ')} This run does not pass or fail the provider at ${current.targetRpm.toLocaleString()} RPM.`
+          ? `Tester delivery failed at ${current.targetRpm.toLocaleString()} RPM — the tester recorded ${attemptedCount.toLocaleString()} verified upstream dispatch starts from ${current.scheduledCount.toLocaleString()} scheduled requests and preserved ${responseCount.toLocaleString()} response outcomes. ${inconclusiveEvidenceDetails.join(' ')} The provider was not judged at ${current.targetRpm.toLocaleString()} RPM.`
           : null;
     const statements = [stageUpdate];
     if (stageStatus !== 'passed') {

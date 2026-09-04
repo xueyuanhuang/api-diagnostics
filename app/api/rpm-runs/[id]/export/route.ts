@@ -105,6 +105,42 @@ export async function GET(_request: NextRequest, context: Context) {
         ? 'server-timed-shard-v1'
         : 'legacy-browser-timed-batch-v1',
     },
+    diagnosticSummary: {
+      classification:
+        detail.run.status === 'inconclusive'
+          ? 'tester_delivery_failure'
+          : detail.run.status === 'failed'
+            ? 'provider_threshold_failure'
+            : detail.run.status,
+      providerJudged: detail.run.status !== 'inconclusive',
+      stopReason: detail.run.stopReason,
+      stages: detail.stages.map((stage) => ({
+        stageIndex: stage.stageIndex,
+        targetRpm: stage.targetRpm,
+        status: stage.status,
+        armStatus:
+          stage.scheduledStartAt !== null
+            ? 'armed'
+            : stage.status === 'pending'
+              ? 'not_started'
+              : 'failed_to_arm',
+        failureClass:
+          stage.status === 'inconclusive'
+            ? stage.scheduledStartAt === null
+              ? 'pre_arm_dispatcher_failure'
+              : 'post_arm_delivery_failure'
+            : null,
+        armedAt: stage.scheduledStartAt,
+        expectedDispatchers: stage.batchCount,
+        scheduledRequests: stage.scheduledCount,
+        verifiedDispatchStarts: stage.attemptedCount,
+        preservedSuccessfulResponses: stage.successCount,
+        unverifiedSendSlots: stage.missedDispatchCount,
+        unstartedSendSlots:
+          stage.scheduledStartAt === null ? stage.scheduledCount : 0,
+        providerJudged: stage.dispatchValid === true,
+      })),
+    },
     controlClaims: {
       explanation:
         'Keys distinguish claimed slots from verified dispatch starts. A claim without a dispatch-start marker or preserved response is ambiguous and never counted as provider success.',

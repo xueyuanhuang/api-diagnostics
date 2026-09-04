@@ -12,6 +12,7 @@ import {
 } from '@/lib/rpm-dispatch';
 import {
   RPM_MAX_DISPATCH_SHARDS,
+  RPM_MAX_PROVIDER_CALLS_PER_SHARD,
   RPM_REQUEST_TIMEOUT_MS,
 } from '@/lib/rpm-types';
 import { decryptApiKey } from '@/lib/server/encryption';
@@ -465,11 +466,13 @@ export async function POST(request: NextRequest, context: Context) {
                 return;
               }
 
-              if (reservedProviderSlots >= 4) {
+              if (
+                reservedProviderSlots >= RPM_MAX_PROVIDER_CALLS_PER_SHARD
+              ) {
                 await persist(
                   missedDispatchEvidence(
                     common,
-                    'The server shard had four outstanding provider calls, so this slot was not sent or silently queued.',
+                    `The server shard had ${RPM_MAX_PROVIDER_CALLS_PER_SHARD} outstanding provider calls, so this slot was not sent or silently queued.`,
                   ),
                 );
                 return;
@@ -595,7 +598,13 @@ export async function POST(request: NextRequest, context: Context) {
           } catch {
             // The browser progress stream has already closed.
           }
-        })().catch(async () => {
+        })().catch(async (dispatcherError: unknown) => {
+          const dispatcherErrorMessage =
+            dispatcherError instanceof Error
+              ? dispatcherError.message
+              : typeof dispatcherError === 'string' && dispatcherError
+                ? dispatcherError
+                : 'Unknown dispatcher error.';
           try {
             const state = await env.DB.prepare(
               'SELECT r.status AS run_status, r.current_stage AS current_stage, s.status AS stage_status FROM rpm_runs r INNER JOIN rpm_stages s ON s.run_id = r.id WHERE r.id = ? AND r.user_id = ? AND s.stage_index = ?',
@@ -618,8 +627,7 @@ export async function POST(request: NextRequest, context: Context) {
                   stageIndex,
                   shardIndex,
                   failedAt: Date.now(),
-                  error:
-                    'Server dispatcher stopped before completing its assigned schedule.',
+                  error: dispatcherErrorMessage,
                 }),
                 { httpMetadata: { contentType: 'application/json' } },
               );
@@ -630,8 +638,7 @@ export async function POST(request: NextRequest, context: Context) {
                   complete: true,
                   failed: true,
                   finishedAt: Date.now(),
-                  error:
-                    'Server dispatcher stopped before completing its assigned schedule.',
+                  error: dispatcherErrorMessage,
                   requests: evidence,
                 } satisfies DispatcherManifest),
                 {
@@ -648,8 +655,7 @@ export async function POST(request: NextRequest, context: Context) {
               encodeEvent(encoder, {
                 type: 'error',
                 shardIndex,
-                error:
-                  'Server dispatcher stopped before completing its assigned schedule.',
+                error: dispatcherErrorMessage,
               }),
             );
             controller.close();

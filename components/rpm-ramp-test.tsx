@@ -321,6 +321,10 @@ function statusBadge(status: RpmStageSummary['status']) {
   return 'border-slate-200 bg-slate-50 text-slate-600';
 }
 
+function statusLabel(status: RpmStageSummary['status']) {
+  return status === 'inconclusive' ? 'tester error' : status;
+}
+
 export function RpmRampTest({
   user,
   signInPath,
@@ -1161,7 +1165,7 @@ export function RpmRampTest({
           icon={Clock3}
         />
         <MetricCard
-          label="Sent upstream"
+          label="Verified sends"
           value={
             rampNeverStarted
               ? 'Not run'
@@ -1306,7 +1310,7 @@ export function RpmRampTest({
                       variant="outline"
                       className={statusBadge(stage.status)}
                     >
-                      {stage.status}
+                      {statusLabel(stage.status)}
                     </Badge>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -1316,7 +1320,7 @@ export function RpmRampTest({
                 </div>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
                   <StageValue
-                    label="Sent"
+                    label="Verified sends"
                     value={`${metrics.sent.toLocaleString()}/${metrics.scheduled.toLocaleString()}`}
                   />
                   <StageValue
@@ -1410,8 +1414,8 @@ function RunStatusCard({
                         ? 'Active run needs attention'
                         : phase === 'inconclusive'
                           ? stage
-                            ? `Inconclusive at ${stage.targetRpm.toLocaleString()} RPM — load delivery incomplete`
-                            : 'Run inconclusive'
+                            ? `Tester could not run ${stage.targetRpm.toLocaleString()} RPM — provider not judged`
+                            : 'Tester could not complete the run — provider not judged'
                           : phase === 'failed'
                             ? 'Run finished without a pass'
                             : 'Ready to start';
@@ -1425,7 +1429,13 @@ function RunStatusCard({
     'cancelling',
   ].includes(phase);
   const badgeLabel =
-    phase === 'cancelling' ? 'cancelling' : running ? 'running' : phase;
+    phase === 'cancelling'
+      ? 'cancelling'
+      : running
+        ? 'running'
+        : phase === 'inconclusive'
+          ? 'tester error'
+          : phase;
   const tone =
     phase === 'complete'
       ? 'border-emerald-200 bg-emerald-50/70'

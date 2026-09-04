@@ -159,8 +159,8 @@ test('server shards cover every sequence exactly once at 1,000 RPM', () => {
   ).flat();
 
   assert.ok(shardCount > 1);
-  assert.equal(shardCount, 91);
-  assert.ok(shardCount <= 96);
+  assert.equal(shardCount, 5);
+  assert.ok(shardCount <= 5);
   assert.equal(sequences.length, scheduledCount);
   assert.deepEqual(
     [...sequences].sort((left, right) => left - right),
@@ -173,6 +173,18 @@ test('all shards share one authoritative server schedule', () => {
   assert.equal(plannedRequestAt(10_000, 0, 1_000, 60), 10_000);
   assert.equal(plannedRequestAt(10_000, 1, 1_000, 60), 10_060);
   assert.equal(plannedRequestAt(10_000, 999, 1_000, 60), 69_940);
+});
+
+test('browser-attached dispatcher topology leaves room for the arm request', () => {
+  assert.equal(rpmShardCount(10), 1);
+  assert.equal(rpmShardCount(25), 3);
+  assert.equal(rpmShardCount(50), 5);
+  assert.equal(
+    rpmShardCount(75),
+    5,
+    'five dispatch streams leave one connection available for the arm control request',
+  );
+  assert.equal(rpmShardCount(1_000), 5);
 });
 
 test('the browser starts server dispatchers but does not time request batches', () => {
@@ -202,7 +214,11 @@ test('server dispatch has frozen topology, duplicate-send claims, and a completi
   assert.match(shardRoute, /dispatch-starts/);
   assert.match(shardRoute, /current_stage/);
   assert.match(shardRoute, /RPM_REQUEST_TIMEOUT_MS/);
-  assert.match(shardRoute, /reservedProviderSlots >= 4/);
+  assert.match(
+    shardRoute,
+    /reservedProviderSlots >= RPM_MAX_PROVIDER_CALLS_PER_SHARD/,
+  );
+  assert.match(shardRoute, /dispatcherErrorMessage/);
   assert.match(shardRoute, /verdictEligible/);
   assert.match(shardRoute, /completedBeforeFreeze/);
   assert.match(shardRoute, /response completed after the stage evidence/i);
@@ -234,4 +250,18 @@ test('RPM UI names the separate evidence dimensions', () => {
     assert.match(component, new RegExp(label));
   }
   assert.doesNotMatch(component, /label="Reliability"/);
+});
+
+test('tester-side delivery failures explain the failed lifecycle boundary', () => {
+  const component = readFileSync(componentPath, 'utf8');
+  const finalizeRoute = readFileSync(finalizeRoutePath, 'utf8');
+  const exportRoute = readFileSync(exportRoutePath, 'utf8');
+
+  assert.match(component, /Verified sends/);
+  assert.match(component, /Tester could not run/);
+  assert.match(component, /provider not judged/i);
+  assert.match(finalizeRoute, /readyDispatcherCount/);
+  assert.match(finalizeRoute, /dispatcherErrorMessages/);
+  assert.match(finalizeRoute, /stage was never armed/i);
+  assert.match(exportRoute, /diagnosticSummary/);
 });
