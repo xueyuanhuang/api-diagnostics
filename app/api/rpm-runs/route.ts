@@ -7,7 +7,8 @@ import { getDb } from '@/db';
 import { rpmActiveLeases, rpmRuns } from '@/db/schema';
 import {
   buildRampTargets,
-  rpmBatchSize,
+  RPM_MAX_TARGET_RPM,
+  rpmShardCount,
   type RpmRampMode,
 } from '@/lib/rpm-types';
 import { noStore, serverError } from '@/lib/server/http';
@@ -82,6 +83,13 @@ export async function POST(request: NextRequest) {
   if (targetRpm === null || targetRpm < 1)
     return noStore(
       { error: 'Target RPM must be a positive whole number.' },
+      { status: 400 },
+    );
+  if (targetRpm > RPM_MAX_TARGET_RPM)
+    return noStore(
+      {
+        error: `This deployment supports targets up to ${RPM_MAX_TARGET_RPM.toLocaleString()} RPM.`,
+      },
       { status: 400 },
     );
   if (
@@ -196,7 +204,7 @@ export async function POST(request: NextRequest) {
         "UPDATE rpm_runs SET status = 'inconclusive', stop_reason = ?, finished_at = ? WHERE id = ? AND status IN ('preflight', 'ready', 'running')",
       ).bind(reason, now, existing[0].runId),
       env.DB.prepare(
-        "UPDATE rpm_stages SET status = 'inconclusive', finished_at = ? WHERE run_id = ? AND status = 'running'",
+        "UPDATE rpm_stages SET status = 'inconclusive', finished_at = ? WHERE run_id = ? AND status IN ('running', 'finalizing')",
       ).bind(now, existing[0].runId),
       env.DB.prepare(
         "UPDATE rpm_stages SET status = 'skipped' WHERE run_id = ? AND status = 'pending'",
@@ -242,10 +250,7 @@ export async function POST(request: NextRequest) {
           stage.percentage,
           stage.targetRpm,
           stage.scheduledCount,
-          Math.ceil(
-            stage.scheduledCount /
-              rpmBatchSize(stage.scheduledCount, STAGE_DURATION_SECONDS),
-          ),
+          rpmShardCount(stage.scheduledCount),
           'pending',
         ),
       ),

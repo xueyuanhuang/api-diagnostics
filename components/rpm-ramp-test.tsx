@@ -23,14 +23,18 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import {
   buildRampTargets,
+  RPM_FINALIZE_GRACE_MS,
+  RPM_MAX_TARGET_RPM,
+  RPM_REQUEST_TIMEOUT_MS,
   type RpmPreflightSummary,
   type RpmRampMode,
   type RpmRunDetail,
   type RpmRunSummary,
   type RpmStageSummary,
 } from '@/lib/rpm-types';
+import { deriveStageMetrics } from '@/lib/rpm-stage-metrics';
 
-type BatchSummary = {
+type OutcomeSummary = {
   completed: number;
   attempted: number;
   succeeded: number;
@@ -43,7 +47,19 @@ type BatchSummary = {
   missedDispatch: number;
 };
 
-type LiveStage = BatchSummary & { returnedBatches: number };
+type LiveStage = OutcomeSummary & { dispatched: number };
+type ShardStreamEvent =
+  | { type: 'ready'; shardIndex: number; sequenceCount: number }
+  | { type: 'dispatched'; shardIndex: number; sequence: number }
+  | {
+      type: 'request';
+      shardIndex: number;
+      sequence: number;
+      summary: OutcomeSummary;
+    }
+  | { type: 'complete'; shardIndex: number; summary: OutcomeSummary }
+  | { type: 'error'; shardIndex: number; error: string };
+type ShardHandle = { ready: Promise<void>; complete: Promise<void> };
 type RunnerPhase =
   | 'idle'
   | 'creating'
@@ -64,6 +80,8 @@ type JsonErrorBody = {
   activeRunId?: string | null;
   activeRunStatus?: string;
   preflightInProgress?: boolean;
+  finalizationPending?: boolean;
+  retryAfterMs?: number;
 };
 type RpmDetailWithPreflight = RpmRunDetail & {
   preflight?: RpmPreflightSummary | null;
@@ -82,7 +100,7 @@ class JsonFetchError extends Error {
 }
 
 const EMPTY_LIVE: LiveStage = {
-  returnedBatches: 0,
+  dispatched: 0,
   completed: 0,
   attempted: 0,
   succeeded: 0,
@@ -100,6 +118,85 @@ async function jsonFetch<T>(url: string, init?: RequestInit) {
   const body = (await response.json().catch(() => ({}))) as JsonErrorBody & T;
   if (!response.ok) throw new JsonFetchError(response.status, body);
   return body;
+}
+
+function openServerShard({
+  url,
+  signal,
+  onDispatched,
+  onRequest,
+}: {
+  url: string;
+  signal: AbortSignal;
+  onDispatched: () => void;
+  onRequest: (summary: OutcomeSummary) => void;
+}): ShardHandle {
+  let readySeen = false;
+  let completeSeen = false;
+  let resolveReady!: () => void;
+  let rejectReady!: (error: unknown) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  const complete = (async () => {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
+        signal,
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as JsonErrorBody;
+        throw new JsonFetchError(response.status, body);
+      }
+      if (!response.body)
+        throw new Error('The server dispatcher returned no progress stream.');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const consumeLine = (line: string) => {
+        if (!line.trim()) return;
+        const event = JSON.parse(line) as ShardStreamEvent;
+        if (event.type === 'ready') {
+          readySeen = true;
+          resolveReady();
+        } else if (event.type === 'dispatched') {
+          onDispatched();
+        } else if (event.type === 'request') {
+          onRequest(event.summary);
+        } else if (event.type === 'complete') {
+          completeSeen = true;
+        } else if (event.type === 'error') {
+          throw new Error(event.error);
+        }
+      };
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          consumeLine(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+          newline = buffer.indexOf('\n');
+        }
+      }
+      buffer += decoder.decode();
+      consumeLine(buffer);
+      if (!readySeen)
+        throw new Error('The server dispatcher closed before it was ready.');
+      if (!completeSeen)
+        throw new Error(
+          'The server dispatcher stream closed before it completed.',
+        );
+    } catch (error) {
+      if (!readySeen) rejectReady(error);
+      throw error;
+    }
+  })();
+  return { ready, complete };
 }
 
 function waitUntil(timestamp: number, signal: AbortSignal) {
@@ -121,9 +218,134 @@ function waitUntil(timestamp: number, signal: AbortSignal) {
   });
 }
 
+async function finalizeStageWithBarrier(url: string, signal: AbortSignal) {
+  while (true) {
+    try {
+      return await jsonFetch<RpmRunDetail>(url, {
+        method: 'POST',
+        signal,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof JsonFetchError) ||
+        error.status !== 409 ||
+        !error.data.finalizationPending
+      ) {
+        throw error;
+      }
+      await waitUntil(
+        Date.now() + Math.max(250, error.data.retryAfterMs ?? 1_000),
+        signal,
+      );
+    }
+  }
+}
+
+function waitForDispatcherReadiness(
+  handles: ShardHandle[],
+  signal: AbortSignal,
+) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    let timeout = 0;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Server dispatchers were not ready within 30 seconds.'));
+    }, 30_000);
+    signal.addEventListener('abort', onAbort, { once: true });
+    const dispatcherEndedBeforeArm = Promise.race(
+      handles.map((handle) =>
+        handle.complete.then(
+          () => {
+            throw new Error(
+              'A server dispatcher ended before the stage armed.',
+            );
+          },
+          (error) => {
+            throw error;
+          },
+        ),
+      ),
+    );
+    void Promise.race([
+      Promise.all(handles.map((handle) => handle.ready)),
+      dispatcherEndedBeforeArm,
+    ]).then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function waitForDispatcherCompletion(
+  handles: ShardHandle[],
+  deadline: number,
+  signal: AbortSignal,
+) {
+  return new Promise<{
+    timedOut: boolean;
+    results: PromiseSettledResult<void>[] | null;
+  }>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    let timeout = 0;
+    let settled = false;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const finish = (value: {
+      timedOut: boolean;
+      results: PromiseSettledResult<void>[] | null;
+    }) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    timeout = window.setTimeout(
+      () => finish({ timedOut: true, results: null }),
+      Math.max(0, deadline - Date.now()),
+    );
+    signal.addEventListener('abort', onAbort, { once: true });
+    void Promise.allSettled(handles.map((handle) => handle.complete)).then(
+      (results) => finish({ timedOut: false, results }),
+    );
+  });
+}
+
 function duration(value: number | null | undefined) {
   if (typeof value !== 'number') return '—';
   return value < 1_000 ? `${value} ms` : `${(value / 1_000).toFixed(3)} s`;
+}
+
+function percentage(value: number | null | undefined) {
+  return typeof value === 'number' ? `${value.toFixed(2)}%` : 'Not observed';
 }
 
 function clock(valueMs: number) {
@@ -155,9 +377,11 @@ function resolvedEndpoint(baseUrl: string, apiType: 'anthropic' | 'openai') {
 function statusBadge(status: RpmStageSummary['status']) {
   if (status === 'passed')
     return 'border-emerald-200 bg-emerald-50 text-emerald-800';
-  if (status === 'running') return 'border-blue-200 bg-blue-50 text-blue-800';
-  if (status === 'failed' || status === 'inconclusive')
-    return 'border-rose-200 bg-rose-50 text-rose-800';
+  if (status === 'running' || status === 'finalizing')
+    return 'border-blue-200 bg-blue-50 text-blue-800';
+  if (status === 'failed') return 'border-rose-200 bg-rose-50 text-rose-800';
+  if (status === 'inconclusive')
+    return 'border-amber-200 bg-amber-50 text-amber-900';
   return 'border-slate-200 bg-slate-50 text-slate-600';
 }
 
@@ -220,8 +444,8 @@ export function RpmRampTest({
     (total, stage) => total + stage.targetRpm,
     0,
   );
-  const activeStage = detail?.stages.find(
-    (stage) => stage.status === 'running',
+  const activeStage = detail?.stages.find((stage) =>
+    ['running', 'finalizing'].includes(stage.status),
   );
   const latestStage =
     activeStage ??
@@ -229,10 +453,10 @@ export function RpmRampTest({
       .reverse()
       .find((stage) => !['pending', 'skipped'].includes(stage.status));
   const latestLive = latestStage ? live[latestStage.stageIndex] : undefined;
-  const completedNow = latestStage
-    ? (latestLive?.completed ??
-      latestStage.attemptedCount + latestStage.missedDispatchCount)
-    : 0;
+  const latestMetrics = latestStage
+    ? deriveStageMetrics(latestStage, latestLive)
+    : null;
+  const completedNow = latestMetrics?.recorded ?? 0;
   const progress = latestStage
     ? Math.min(
         100,
@@ -313,7 +537,7 @@ export function RpmRampTest({
         setPreflight(data.preflight ?? null);
         setPhase('attention');
         setMessage(
-          `A previous ${active.status} run is still active. This browser cannot safely resume its scheduler; cancel it before starting again.`,
+          `A previous ${active.status} run is still active. Its live dispatcher session cannot be resumed after leaving the page; cancel it before starting again.`,
         );
       })
       .catch(() => {
@@ -324,13 +548,13 @@ export function RpmRampTest({
     };
   }, [detail, isRunning, openedRunId, user]);
 
-  function mergeBatch(stageIndex: number, summary: BatchSummary) {
+  function mergeOutcome(stageIndex: number, summary: OutcomeSummary) {
     setLive((current) => {
       const previous = current[stageIndex] ?? EMPTY_LIVE;
       return {
         ...current,
         [stageIndex]: {
-          returnedBatches: previous.returnedBatches + 1,
+          dispatched: previous.dispatched,
           completed: previous.completed + summary.completed,
           attempted: previous.attempted + summary.attempted,
           succeeded: previous.succeeded + summary.succeeded,
@@ -346,8 +570,20 @@ export function RpmRampTest({
     });
   }
 
+  function mergeDispatched(stageIndex: number) {
+    setLive((current) => {
+      const previous = current[stageIndex] ?? EMPTY_LIVE;
+      return {
+        ...current,
+        [stageIndex]: {
+          ...previous,
+          dispatched: previous.dispatched + 1,
+        },
+      };
+    });
+  }
+
   async function cancelRun() {
-    abortRef.current?.abort();
     const runId = activeRunIdRef.current ?? detail?.run.id;
     if (!runId) {
       setMessage('The run is still being created. Try Stop again in a moment.');
@@ -363,6 +599,7 @@ export function RpmRampTest({
         `/api/rpm-runs/${runId}/cancel`,
         { method: 'POST' },
       );
+      abortRef.current?.abort();
       loadedOpenedRunIdRef.current = cancelled.run.id;
       setDetail(cancelled);
       onRunSaved(cancelled.run);
@@ -395,6 +632,7 @@ export function RpmRampTest({
         setMessage('The run is still active. Try cancelling it again.');
       }
     } catch (cancelError) {
+      abortRef.current?.abort();
       setPhase('attention');
       setMessage(
         'Local scheduling stopped, but server cancellation was not confirmed. Try Cancel active run again.',
@@ -420,6 +658,10 @@ export function RpmRampTest({
     if (!model.trim()) return setError('Choose a model.');
     if (!Number.isInteger(targetRpm) || targetRpm < 1)
       return setError('Target RPM must be a positive whole number.');
+    if (targetRpm > RPM_MAX_TARGET_RPM)
+      return setError(
+        `This deployment supports targets up to ${RPM_MAX_TARGET_RPM.toLocaleString()} RPM.`,
+      );
     if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100)
       return setError(
         'Minimum success rate must be a whole number from 1 to 100.',
@@ -509,18 +751,12 @@ export function RpmRampTest({
         );
         const started = await jsonFetch<{
           stage: RpmStageSummary;
-          batchSize: number;
+          shardCount: number;
         }>(`/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/start`, {
           method: 'POST',
           signal: controller.signal,
         });
         const startedStage = started.stage;
-        setPhase('stage');
-        setPhaseStartedAt(startedStage.scheduledStartAt ?? Date.now());
-        setPhaseEndsAt(
-          (startedStage.scheduledStartAt ?? Date.now()) +
-            current.run.stageDurationSeconds * 1_000,
-        );
         setDetail((existing) =>
           existing
             ? {
@@ -536,43 +772,113 @@ export function RpmRampTest({
               }
             : existing,
         );
-        const intervalMs =
-          (current.run.stageDurationSeconds * 1_000) /
-          startedStage.scheduledCount;
-        const batchPromises = Array.from(
-          { length: startedStage.batchCount },
-          async (_, batchIndex) => {
-            const firstSequence = batchIndex * started.batchSize;
-            const dispatchAt = Math.round(
-              startedStage.scheduledStartAt! + firstSequence * intervalMs - 250,
-            );
-            await waitUntil(dispatchAt, controller.signal);
-            const data = await jsonFetch<{
-              batchIndex: number;
-              summary: BatchSummary;
-            }>(
-              `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/batch`,
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ batchIndex }),
-                signal: controller.signal,
-              },
-            );
-            mergeBatch(stage.stageIndex, data.summary);
-          },
+        setMessage(
+          `Preparing ${started.shardCount} server dispatchers. No stage traffic is sent until every dispatcher is ready…`,
         );
-        await Promise.allSettled(batchPromises);
+        const shardHandles = Array.from(
+          { length: started.shardCount },
+          (_, shardIndex) =>
+            openServerShard({
+              url: `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/shards/${shardIndex}`,
+              signal: controller.signal,
+              onDispatched: () => mergeDispatched(stage.stageIndex),
+              onRequest: (summary) => mergeOutcome(stage.stageIndex, summary),
+            }),
+        );
+        let armedStage = startedStage;
+        let finalizationMessage = `Finalizing stage ${stage.stageIndex + 1} from server evidence…`;
+        try {
+          await waitForDispatcherReadiness(shardHandles, controller.signal);
+          if (controller.signal.aborted) break;
+          let armed: { stage: RpmStageSummary; shardCount: number };
+          try {
+            armed = await jsonFetch<{
+              stage: RpmStageSummary;
+              shardCount: number;
+            }>(
+              `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/arm`,
+              { method: 'POST', signal: controller.signal },
+            );
+          } catch (armError) {
+            if (controller.signal.aborted) throw armError;
+            const recovered = await jsonFetch<RpmDetailWithPreflight>(
+              `/api/rpm-runs/${current.run.id}`,
+              { signal: controller.signal },
+            );
+            const recoveredStage = recovered.stages.find(
+              (item) => item.stageIndex === stage.stageIndex,
+            );
+            if (
+              recovered.run.status !== 'running' ||
+              recovered.run.currentStage !== stage.stageIndex ||
+              recoveredStage?.status !== 'running' ||
+              recoveredStage.scheduledStartAt === null
+            ) {
+              throw armError;
+            }
+            current = recovered;
+            armed = {
+              stage: recoveredStage,
+              shardCount: recoveredStage.batchCount,
+            };
+            setMessage(
+              'The arm response was interrupted, but the saved server schedule was confirmed. Waiting for its results…',
+            );
+          }
+          armedStage = armed.stage;
+          setPhase('stage');
+          setPhaseStartedAt(armedStage.scheduledStartAt ?? Date.now());
+          setPhaseEndsAt(
+            (armedStage.scheduledStartAt ?? Date.now()) +
+              current.run.stageDurationSeconds * 1_000,
+          );
+          setDetail((existing) =>
+            existing
+              ? {
+                  ...existing,
+                  stages: existing.stages.map((item) =>
+                    item.stageIndex === stage.stageIndex ? armedStage : item,
+                  ),
+                }
+              : existing,
+          );
+          setMessage(
+            `All ${armed.shardCount} server dispatchers are ready. The shared server schedule is now running.`,
+          );
+          const completionDeadline =
+            armedStage.scheduledStartAt! +
+            current.run.stageDurationSeconds * 1_000 +
+            RPM_REQUEST_TIMEOUT_MS +
+            RPM_FINALIZE_GRACE_MS;
+          const completion = await waitForDispatcherCompletion(
+            shardHandles,
+            completionDeadline,
+            controller.signal,
+          );
+          if (completion.timedOut) {
+            finalizationMessage =
+              'The stage evidence deadline was reached. Freezing the evidence now so a stalled dispatcher cannot block this run.';
+          } else if (
+            completion.results?.some((result) => result.status === 'rejected')
+          ) {
+            finalizationMessage =
+              'At least one server dispatcher stopped early. Final evidence will mark any unverified schedule slots clearly.';
+          }
+        } catch (dispatcherError) {
+          if (controller.signal.aborted) break;
+          finalizationMessage =
+            dispatcherError instanceof Error
+              ? `Server dispatch preparation stopped: ${dispatcherError.message}`
+              : 'Server dispatch preparation stopped before the stage was armed.';
+        }
         if (controller.signal.aborted) break;
         setPhase('finalizing');
         setPhaseStartedAt(Date.now());
         setPhaseEndsAt(null);
-        setMessage(
-          `Finalizing stage ${stage.stageIndex + 1} from server evidence…`,
-        );
-        current = await jsonFetch<RpmRunDetail>(
+        setMessage(finalizationMessage);
+        current = await finalizeStageWithBarrier(
           `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/finalize`,
-          { method: 'POST', signal: controller.signal },
+          controller.signal,
         );
         setDetail(current);
         onRunSaved(current.run);
@@ -596,7 +902,7 @@ export function RpmRampTest({
         );
         if (nextStage) {
           const cooldownEnds =
-            startedStage.scheduledStartAt! +
+            armedStage.scheduledStartAt! +
             current.run.stageDurationSeconds * 1_000 +
             60_000;
           setPhase('cooldown');
@@ -656,35 +962,27 @@ export function RpmRampTest({
           );
           return;
         }
-        setPhase('failed');
+        setPhase(activeRunIdRef.current ? 'attention' : 'failed');
         setPhaseEndsAt(null);
         setError(
           runError instanceof Error ? runError.message : 'RPM run failed.',
         );
         setMessage(
-          'The runner stopped. If a run was created, its saved export shows the evidence preserved so far.',
+          activeRunIdRef.current
+            ? 'The local runner stopped while the saved run may still be active. Review it, then use Cancel active run before starting another.'
+            : 'The runner stopped before an active run was created.',
         );
       }
     } finally {
+      controller.abort();
       setIsRunning(false);
       onRunningChange(false);
       abortRef.current = null;
     }
   }
 
-  const runTone = detail?.run.status;
-  const reliabilitySuccess = latestStage
-    ? (latestLive?.succeeded ?? latestStage.successCount)
-    : 0;
-  const reliabilityRate = latestStage
-    ? (reliabilitySuccess / latestStage.scheduledCount) * 100
-    : null;
-  const rateLimited = latestStage
-    ? (latestLive?.rateLimited ?? latestStage.rateLimitedCount)
-    : 0;
-  const missed = latestStage
-    ? (latestLive?.missedDispatch ?? latestStage.missedDispatchCount)
-    : 0;
+  const rateLimited = latestMetrics?.rateLimited ?? 0;
+  const missed = latestMetrics?.testerMisses ?? 0;
   const phaseElapsedMs = phaseStartedAt ? Math.max(0, now - phaseStartedAt) : 0;
   const phaseRemainingMs = phaseEndsAt ? Math.max(0, phaseEndsAt - now) : null;
   const statusStage =
@@ -710,8 +1008,9 @@ export function RpmRampTest({
               Staged request-rate test
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Each stage runs once for 60 seconds. The first stage below your
-              success requirement stops every higher stage.
+              Each stage schedules requests over 60 seconds. A provider
+              threshold failure or incomplete tester delivery stops higher
+              stages.
             </p>
             <p className="mt-2 max-w-2xl truncate font-mono text-[10px] text-muted-foreground">
               {profileName ?? 'No saved profile'} · {apiType} ·{' '}
@@ -751,6 +1050,7 @@ export function RpmRampTest({
                 id="rpm-target"
                 type="number"
                 min={1}
+                max={RPM_MAX_TARGET_RPM}
                 step={1}
                 value={targetRpm}
                 disabled={isRunning}
@@ -758,8 +1058,7 @@ export function RpmRampTest({
                 className="h-10 font-mono"
               />
               <span className="font-normal text-muted-foreground">
-                No 1,000-RPM product cap; a deployment safety budget still
-                applies.
+                This public runner is engineered for targets up to 1,000 RPM.
               </span>
             </label>
             <label
@@ -822,6 +1121,11 @@ export function RpmRampTest({
           {estimatedRequests.toLocaleString()} paid API requests, plus one
           preflight. A 60-second quiet window separates stages so rolling-minute
           limits do not overlap.
+          <br />
+          <strong>Keep this tab open:</strong> dispatch timing runs on the
+          server, while this deployment keeps those workers attached through
+          live progress connections. Closing the tab or losing the connection
+          makes the stage inconclusive, never a provider failure.
         </div>
         {error ? (
           <Alert variant="destructive" className="mt-4">
@@ -887,66 +1191,106 @@ export function RpmRampTest({
           )}
           model={detail?.run.modelName ?? model}
           preflight={preflight}
-          stage={statusStage}
+          stage={statusStage ?? latestStage ?? null}
           stageCount={detail?.stages.length ?? plan.length}
           completed={completedNow}
+          sent={latestMetrics?.sent ?? 0}
         />
       </section>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard
-          label="Reliability"
+          label="Scheduled"
           value={
             rampNeverStarted
               ? 'Not run'
-              : reliabilityRate === null
+              : latestMetrics === null
                 ? 'Waiting'
-                : `${reliabilityRate.toFixed(2)}%`
+                : latestMetrics.scheduled.toLocaleString()
           }
           detail={
-            latestStage
-              ? `${reliabilitySuccess} successful of ${latestStage.scheduledCount} planned`
-              : `Pass threshold ${threshold}%`
+            latestMetrics
+              ? `Planned over ${detail?.run.stageDurationSeconds ?? 60} seconds`
+              : 'No stage has started'
           }
-          icon={runTone === 'passed' ? CheckCircle2 : Activity}
-          tone={runTone === 'failed' ? 'danger' : 'default'}
+          icon={Clock3}
         />
         <MetricCard
-          label="Rate limit"
+          label="Sent upstream"
           value={
             rampNeverStarted
               ? 'Not run'
-              : latestStage
-                ? rateLimited.toLocaleString()
+              : latestMetrics
+                ? `${latestMetrics.sent.toLocaleString()} / ${latestMetrics.scheduled.toLocaleString()}`
                 : 'Waiting'
           }
-          detail="HTTP 429 is counted separately; it affects reliability like any failed request."
+          detail={
+            latestMetrics
+              ? `${percentage(latestMetrics.deliveryPercent)} of scheduled load · ${latestMetrics.observed.toLocaleString()} outcomes preserved`
+              : 'Verified provider attempts'
+          }
           icon={RadioTower}
-          tone={rateLimited ? 'warning' : 'default'}
+          tone={missed ? 'warning' : 'default'}
         />
         <MetricCard
-          label="Dispatch validity"
+          label="Provider success"
           value={
             rampNeverStarted
               ? 'Not run'
-              : latestStage?.dispatchValid === false || missed
-                ? 'Invalid'
-                : latestStage?.dispatchValid === true
-                  ? 'Valid'
-                  : activeStage
-                    ? 'Measuring'
-                    : 'Waiting'
+              : latestMetrics
+                ? latestMetrics.sent
+                  ? latestMetrics.observed
+                    ? `${latestMetrics.succeeded.toLocaleString()} / ${latestMetrics.observed.toLocaleString()}`
+                    : 'Waiting for responses'
+                  : 'Not observed'
+                : 'Waiting'
           }
-          detail={`${missed} missed or late dispatches in the current stage`}
+          detail={
+            latestMetrics
+              ? `${percentage(latestMetrics.providerSuccessPercent)} of preserved response outcomes${latestStage?.dispatchValid === false ? ' · no provider verdict' : ''}`
+              : `Pass threshold ${threshold}%`
+          }
+          icon={CheckCircle2}
+          tone={latestStage?.status === 'failed' ? 'danger' : 'default'}
+        />
+        <MetricCard
+          label="Unverified send slots"
+          value={
+            rampNeverStarted
+              ? 'Not run'
+              : latestMetrics
+                ? latestMetrics.testerMisses.toLocaleString()
+                : 'Waiting'
+          }
+          detail="No verified upstream dispatch start; any such slot makes the stage inconclusive."
           icon={missed ? XCircle : ShieldCheck}
           tone={missed ? 'danger' : 'default'}
         />
         <MetricCard
-          label="Performance"
+          label="HTTP 429"
           value={
-            rampNeverStarted ? 'Not run' : duration(latestStage?.p95LatencyMs)
+            rampNeverStarted
+              ? 'Not run'
+              : latestMetrics
+                ? `${rateLimited.toLocaleString()} / ${latestMetrics.observed.toLocaleString()}`
+                : 'Waiting'
           }
-          detail={`Median ${duration(latestStage?.medianLatencyMs)} · P95 total latency`}
+          detail={
+            latestMetrics
+              ? `${percentage(latestMetrics.rateLimitPercent)} of preserved response outcomes`
+              : 'Rate-limit responses are counted separately'
+          }
+          icon={RadioTower}
+          tone={rateLimited ? 'warning' : 'default'}
+        />
+        <MetricCard
+          label="Provider latency"
+          value={
+            rampNeverStarted
+              ? 'Not run'
+              : `P95 ${duration(latestStage?.p95LatencyMs)}`
+          }
+          detail={`Median ${duration(latestStage?.medianLatencyMs)} · excludes tester misses`}
           icon={Gauge}
         />
       </div>
@@ -956,7 +1300,8 @@ export function RpmRampTest({
           <h2 className="text-sm font-semibold">Ramp stages</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Request payload: max_tokens=8 · stream=false · no temperature,
-            top_p, top_k, system, tools, cache controls, or retries.
+            top_p, top_k, system, tools, cache controls, or retries · 20-second
+            upstream timeout during ramp stages.
           </p>
           {activeStage ? (
             <Progress
@@ -998,14 +1343,11 @@ export function RpmRampTest({
             }))
           ).map((stage) => {
             const stageLive = live[stage.stageIndex];
-            const successes = stageLive?.succeeded ?? stage.successCount;
-            const completed =
-              stageLive?.completed ??
-              stage.attemptedCount + stage.missedDispatchCount;
+            const metrics = deriveStageMetrics(stage, stageLive);
             return (
               <div
                 key={stage.id}
-                className="grid gap-3 px-5 py-4 md:grid-cols-[1fr_repeat(4,110px)] md:items-center"
+                className="grid gap-4 px-5 py-4 lg:grid-cols-[minmax(220px,1fr)_minmax(0,2fr)] lg:items-center"
               >
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1023,32 +1365,36 @@ export function RpmRampTest({
                     </Badge>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {stage.percentage}% of target ·{' '}
-                    {stage.scheduledCount.toLocaleString()} requests / 60 s
+                    {stage.percentage}% of target · Scheduled:{' '}
+                    {metrics.scheduled.toLocaleString()} requests / 60 s
                   </p>
                 </div>
-                <StageValue
-                  label="Complete"
-                  value={`${completed}/${stage.scheduledCount}`}
-                />
-                <StageValue
-                  label="Success"
-                  value={
-                    stage.successRateBps === null
-                      ? successes.toLocaleString()
-                      : `${(stage.successRateBps / 100).toFixed(2)}%`
-                  }
-                />
-                <StageValue
-                  label="429"
-                  value={(
-                    stageLive?.rateLimited ?? stage.rateLimitedCount
-                  ).toLocaleString()}
-                />
-                <StageValue
-                  label="P95 latency"
-                  value={duration(stage.p95LatencyMs)}
-                />
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+                  <StageValue
+                    label="Sent"
+                    value={`${metrics.sent.toLocaleString()}/${metrics.scheduled.toLocaleString()}`}
+                  />
+                  <StageValue
+                    label="Provider success"
+                    value={
+                      metrics.providerSuccessPercent === null
+                        ? 'Not observed'
+                        : `${metrics.succeeded.toLocaleString()}/${metrics.observed.toLocaleString()} · ${percentage(metrics.providerSuccessPercent)}`
+                    }
+                  />
+                  <StageValue
+                    label="Unverified sends"
+                    value={metrics.testerMisses.toLocaleString()}
+                  />
+                  <StageValue
+                    label="429"
+                    value={metrics.rateLimited.toLocaleString()}
+                  />
+                  <StageValue
+                    label="P95 provider latency"
+                    value={duration(stage.p95LatencyMs)}
+                  />
+                </div>
               </div>
             );
           })}
@@ -1075,6 +1421,7 @@ function RunStatusCard({
   stage,
   stageCount,
   completed,
+  sent,
 }: {
   phase: RunnerPhase;
   message: string;
@@ -1086,6 +1433,7 @@ function RunStatusCard({
   stage: RpmStageSummary | null;
   stageCount: number;
   completed: number;
+  sent: number;
 }) {
   const draining =
     phase === 'stage' &&
@@ -1101,7 +1449,7 @@ function RunStatusCard({
           ? `Step 2 of 3 · Starting stage ${stage.stageIndex + 1} of ${stageCount}`
           : phase === 'stage' && stage
             ? draining
-              ? `Step 2 of 3 · Stage ${stage.stageIndex + 1} dispatch complete`
+              ? `Step 2 of 3 · Stage ${stage.stageIndex + 1} window ended · final evidence pending`
               : `Step 2 of 3 · Stage ${stage.stageIndex + 1} of ${stageCount} · ${stage.targetRpm.toLocaleString()} RPM`
             : phase === 'finalizing' && stage
               ? `Step 2 of 3 · Finalizing stage ${stage.stageIndex + 1} of ${stageCount}`
@@ -1116,7 +1464,9 @@ function RunStatusCard({
                       : phase === 'attention'
                         ? 'Active run needs attention'
                         : phase === 'inconclusive'
-                          ? 'Run inconclusive'
+                          ? stage
+                            ? `Inconclusive at ${stage.targetRpm.toLocaleString()} RPM — load delivery incomplete`
+                            : 'Run inconclusive'
                           : phase === 'failed'
                             ? 'Run finished without a pass'
                             : 'Ready to start';
@@ -1190,17 +1540,20 @@ function RunStatusCard({
         </div>
       ) : null}
       {phase === 'stage' && stage ? (
-        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
           <StatusValue
-            label="Completed"
+            label="Evidence records"
             value={`${completed.toLocaleString()} / ${stage.scheduledCount.toLocaleString()}`}
           />
+          <StatusValue label="Sent upstream" value={sent.toLocaleString()} />
           <StatusValue label="Elapsed" value={clock(elapsedMs)} />
           <StatusValue
-            label={draining ? 'In-flight responses' : 'Dispatch remaining'}
+            label={
+              draining ? 'Unresolved schedule slots' : 'Dispatch remaining'
+            }
             value={
               draining
-                ? `${Math.max(0, stage.scheduledCount - completed).toLocaleString()} · up to 45 s each`
+                ? `${Math.max(0, stage.scheduledCount - completed).toLocaleString()} · awaiting response or miss classification`
                 : clock(remainingMs ?? 0)
             }
           />

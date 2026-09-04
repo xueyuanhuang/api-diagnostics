@@ -1,6 +1,6 @@
 import { type ApiType, endpointFromBaseUrl } from '@/lib/server/connection';
 
-const MAX_RESPONSE_BYTES = 512_000;
+export const RPM_MAX_RESPONSE_BYTES = 64_000;
 const SENSITIVE_RESPONSE_HEADERS = new Set([
   'authorization',
   'cookie',
@@ -21,6 +21,16 @@ type ProviderRequest = {
   stageIndex: number;
   sequence: number;
   plannedAt: number;
+  timeoutMs?: number;
+  onUpstreamStarted?: (startedAt: number) => void | Promise<void>;
+  dispatcher?: {
+    mode: 'server-timed-shard-v1';
+    shardIndex: number;
+    shardCount: number;
+    workerReceivedAt: number;
+    readyAt: number;
+    schedulerWokeAt: number;
+  };
 };
 
 export type RpmRequestEvidence = {
@@ -36,6 +46,7 @@ export type RpmRequestEvidence = {
   scheduleLagMs: number;
   firstByteMs: number | null;
   totalTimeMs: number;
+  dispatcher?: ProviderRequest['dispatcher'];
   request: {
     method: 'POST';
     url: string;
@@ -71,7 +82,7 @@ function redact(value: string, apiKey: string) {
 
 function responseHeaders(headers: Headers, apiKey: string) {
   return [...headers.entries()].map(([name, value]) => [
-    name,
+    redact(name, apiKey),
     SENSITIVE_RESPONSE_HEADERS.has(name.toLowerCase())
       ? '[REDACTED]'
       : redact(value, apiKey),
@@ -153,7 +164,7 @@ async function readBody(response: Response) {
     if (chunk.done) break;
     if (firstByteAt === null) firstByteAt = Date.now();
     bytes += chunk.value.byteLength;
-    if (bytes > MAX_RESPONSE_BYTES) {
+    if (bytes > RPM_MAX_RESPONSE_BYTES) {
       complete = false;
       await reader.cancel();
       break;
@@ -185,6 +196,7 @@ export function missedDispatchEvidence(
     scheduleLagMs: now - input.plannedAt,
     firstByteMs: null,
     totalTimeMs: 0,
+    dispatcher: input.dispatcher,
     request: {
       method: 'POST',
       url,
@@ -250,27 +262,38 @@ export async function runProviderRequest(
     redact(value, input.apiKey).replace('[REDACTED]', '$API_KEY'),
   ]) as Array<[string, string]>;
   const upstreamStartedAt = Date.now();
+  const timeoutMs = input.timeoutMs ?? 45_000;
+  let dispatchStartPersistence = Promise.resolve();
 
   try {
-    const response = await fetch(url, {
+    const responsePromise = fetch(url, {
       method: 'POST',
       headers,
       body,
       redirect: 'manual',
       cache: 'no-store',
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
+    dispatchStartPersistence = Promise.resolve(
+      input.onUpstreamStarted?.(upstreamStartedAt),
+    ).catch(() => {
+      // The returned response evidence still proves this attempt if its
+      // separate dispatch-start marker could not be persisted.
+    });
+    const response = await responsePromise;
     const headersReceivedAt = Date.now();
     const read = await readBody(response);
     const completedAt = Date.now();
-    const fields = providerFields(input.apiType, read.body);
+    const redactedBody = redact(read.body, input.apiKey);
+    const fields = providerFields(input.apiType, redactedBody);
     let outcome: RpmRequestEvidence['outcome'];
     if (response.status === 429) outcome = 'rate_limited';
     else if (response.status >= 500) outcome = 'server_error';
     else if (response.status >= 400) outcome = 'client_error';
+    else if (!response.ok) outcome = 'client_error';
     else if (!read.complete || !fields.valid) outcome = 'malformed';
     else outcome = 'success';
-    return {
+    const evidence: RpmRequestEvidence = {
       runId: input.runId,
       stageIndex: input.stageIndex,
       sequence: input.sequence,
@@ -284,6 +307,7 @@ export async function runProviderRequest(
       firstByteMs:
         read.firstByteAt === null ? null : read.firstByteAt - upstreamStartedAt,
       totalTimeMs: completedAt - upstreamStartedAt,
+      dispatcher: input.dispatcher,
       request: {
         method: 'POST',
         url,
@@ -295,12 +319,15 @@ export async function runProviderRequest(
       response: {
         status: response.status,
         headers: responseHeaders(response.headers, input.apiKey),
-        body: redact(read.body, input.apiKey),
+        body: redactedBody,
         bodyComplete: read.complete,
-        requestId:
-          response.headers.get('x-request-id') ??
-          response.headers.get('request-id') ??
-          response.headers.get('anthropic-request-id'),
+        requestId: (() => {
+          const value =
+            response.headers.get('x-request-id') ??
+            response.headers.get('request-id') ??
+            response.headers.get('anthropic-request-id');
+          return value === null ? null : redact(value, input.apiKey);
+        })(),
         returnedModel: fields.model,
         usage: fields.usage,
       },
@@ -309,17 +336,19 @@ export async function runProviderRequest(
         outcome === 'success'
           ? null
           : !read.complete
-            ? `Response exceeded ${MAX_RESPONSE_BYTES} bytes and was truncated.`
+            ? `Response exceeded ${RPM_MAX_RESPONSE_BYTES} bytes and was truncated.`
             : response.ok
               ? 'The response did not match the selected API format.'
               : `Provider returned HTTP ${response.status}.`,
     };
+    await dispatchStartPersistence;
+    return evidence;
   } catch (error) {
     const completedAt = Date.now();
     const timeout =
       error instanceof Error &&
       (error.name === 'TimeoutError' || error.name === 'AbortError');
-    return {
+    const evidence: RpmRequestEvidence = {
       runId: input.runId,
       stageIndex: input.stageIndex,
       sequence: input.sequence,
@@ -332,6 +361,7 @@ export async function runProviderRequest(
       scheduleLagMs: upstreamStartedAt - input.plannedAt,
       firstByteMs: null,
       totalTimeMs: completedAt - upstreamStartedAt,
+      dispatcher: input.dispatcher,
       request: {
         method: 'POST',
         url,
@@ -351,10 +381,12 @@ export async function runProviderRequest(
       },
       outcome: timeout ? 'timeout' : 'transport_error',
       error: timeout
-        ? 'Provider request timed out after 45 seconds.'
+        ? `Provider request timed out after ${timeoutMs / 1_000} seconds.`
         : error instanceof Error
           ? redact(error.message, input.apiKey)
           : 'Provider request failed.',
     };
+    await dispatchStartPersistence;
+    return evidence;
   }
 }

@@ -5,7 +5,7 @@ import { NextRequest } from 'next/server';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { getDb } from '@/db';
 import { rpmRuns, rpmStages } from '@/db/schema';
-import { rpmBatchSize } from '@/lib/rpm-types';
+import { RPM_MAX_DISPATCH_SHARDS } from '@/lib/rpm-types';
 import { noStore, serverError } from '@/lib/server/http';
 import { stageSummary } from '@/lib/server/rpm-store';
 
@@ -41,6 +41,19 @@ export async function POST(_request: NextRequest, context: Context) {
     const current = stages.find((item) => item.stageIndex === stageIndex);
     if (!current)
       return noStore({ error: 'RPM stage not found.' }, { status: 404 });
+    if (
+      !Number.isInteger(current.batchCount) ||
+      current.batchCount < 1 ||
+      current.batchCount > RPM_MAX_DISPATCH_SHARDS
+    ) {
+      return noStore(
+        {
+          error:
+            'This saved run uses an unsupported dispatcher layout. Cancel it and start a new RPM run.',
+        },
+        { status: 409 },
+      );
+    }
     if (current.status !== 'pending')
       return noStore(
         { error: `This stage is already ${current.status}.` },
@@ -58,11 +71,10 @@ export async function POST(_request: NextRequest, context: Context) {
     }
 
     const now = Date.now();
-    const scheduledStartAt = now + 2_000;
     const transitions = await env.DB.batch([
       env.DB.prepare(
-        "UPDATE rpm_stages SET status = 'running', scheduled_start_at = ?, started_at = ? WHERE run_id = ? AND stage_index = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('ready', 'running'))",
-      ).bind(scheduledStartAt, now, id, stageIndex, id, user.userId),
+        "UPDATE rpm_stages SET status = 'running', scheduled_start_at = NULL, started_at = ? WHERE run_id = ? AND stage_index = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('ready', 'running'))",
+      ).bind(now, id, stageIndex, id, user.userId),
       env.DB.prepare(
         "UPDATE rpm_runs SET status = 'running', current_stage = ? WHERE id = ? AND user_id = ? AND status IN ('ready', 'running')",
       ).bind(stageIndex, id, user.userId),
@@ -82,10 +94,7 @@ export async function POST(_request: NextRequest, context: Context) {
       .limit(1);
     return noStore({
       stage: stageSummary(rows[0]),
-      batchSize: rpmBatchSize(
-        rows[0].scheduledCount,
-        runs[0].stageDurationSeconds,
-      ),
+      shardCount: rows[0].batchCount,
     });
   } catch (error) {
     return serverError(error);

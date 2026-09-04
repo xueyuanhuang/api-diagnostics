@@ -12,6 +12,7 @@ export type RpmRunStatus =
 export type RpmStageStatus =
   | 'pending'
   | 'running'
+  | 'finalizing'
   | 'passed'
   | 'failed'
   | 'inconclusive'
@@ -121,4 +122,25 @@ export function buildRampTargets(targetRpm: number, mode: RpmRampMode) {
 export function rpmBatchSize(scheduledCount: number, durationSeconds = 60) {
   const intervalMs = (durationSeconds * 1_000) / scheduledCount;
   return Math.max(1, Math.min(5, Math.floor(2_000 / intervalMs) + 1));
+}
+
+export const RPM_MAX_DISPATCH_SHARDS = 96;
+export const RPM_MAX_TARGET_RPM = 1_000;
+export const RPM_REQUEST_TIMEOUT_MS = 20_000;
+export const RPM_FINALIZE_GRACE_MS = 5_000;
+export const RPM_FINALIZE_SETTLE_MS = 1_000;
+
+/**
+ * Split one stage across a bounded number of long-lived Worker invocations.
+ * Each shard owns interleaved sequence numbers and performs their timing on
+ * the server. At the supported 1,000-RPM target, eleven slots per shard plus
+ * the 20-second upstream timeout keeps provider calls below the Worker's
+ * simultaneous outgoing-connection ceiling. The browser establishes at most
+ * 96 observation streams before arming.
+ */
+export function rpmShardCount(scheduledCount: number) {
+  return Math.max(
+    1,
+    Math.min(RPM_MAX_DISPATCH_SHARDS, Math.ceil(scheduledCount / 11)),
+  );
 }

@@ -28,7 +28,7 @@ export async function POST(_request: NextRequest, context: Context) {
     const now = Date.now();
     await env.DB.batch([
       env.DB.prepare(
-        "UPDATE rpm_stages SET status = 'cancelled', finished_at = ? WHERE run_id = ? AND status = 'running' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running'))",
+        "UPDATE rpm_stages SET status = 'cancelled', finished_at = ? WHERE run_id = ? AND status IN ('running', 'finalizing') AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running'))",
       ).bind(now, id, id, user.userId),
       env.DB.prepare(
         "UPDATE rpm_stages SET status = 'skipped' WHERE run_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running'))",

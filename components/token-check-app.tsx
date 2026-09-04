@@ -2217,9 +2217,12 @@ export function TokenCheckApp({
                             {run.testKind === 'rpm' ? (
                               <p className="mt-1 font-mono text-[10px] text-muted-foreground">
                                 Target {run.targetRpm.toLocaleString()} RPM ·{' '}
-                                {run.totalSucceeded.toLocaleString()}/
-                                {run.totalPlanned.toLocaleString()} successful ·
-                                P95 {durationOrDash(run.p95LatencyMs)}
+                                Sent {run.totalAttempted.toLocaleString()} ·
+                                Successful responses{' '}
+                                {run.totalSucceeded.toLocaleString()} · 429{' '}
+                                {run.totalRateLimited.toLocaleString()} ·
+                                Worst-stage P95{' '}
+                                {durationOrDash(run.p95LatencyMs)}
                               </p>
                             ) : (
                               <p className="mt-1 font-mono text-[10px] text-muted-foreground">
