@@ -25,7 +25,7 @@ type ProviderRequest = {
   onUpstreamStarted?: (startedAt: number) => void | Promise<void>;
   onProviderSlotReleased?: () => void;
   dispatcher?: {
-    mode: 'server-timed-shard-v1';
+    mode: 'server-timed-shard-v1' | 'server-timed-shard-v2';
     shardIndex: number;
     shardCount: number;
     workerReceivedAt: number;

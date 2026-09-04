@@ -172,8 +172,8 @@ test('server shards cover every sequence exactly once at 1,000 RPM', () => {
   ).flat();
 
   assert.ok(shardCount > 1);
-  assert.equal(shardCount, 5);
-  assert.ok(shardCount <= 5);
+  assert.equal(shardCount, 72);
+  assert.ok(shardCount <= 72);
   assert.equal(sequences.length, scheduledCount);
   assert.deepEqual(
     [...sequences].sort((left, right) => left - right),
@@ -188,16 +188,12 @@ test('all shards share one authoritative server schedule', () => {
   assert.equal(plannedRequestAt(10_000, 999, 1_000, 60), 69_940);
 });
 
-test('browser-attached dispatcher topology leaves room for the arm request', () => {
+test('dispatcher topology supplies enough independent provider-header capacity', () => {
   assert.equal(rpmShardCount(10), 1);
-  assert.equal(rpmShardCount(25), 3);
-  assert.equal(rpmShardCount(50), 5);
-  assert.equal(
-    rpmShardCount(75),
-    5,
-    'five dispatch streams leave one connection available for the arm control request',
-  );
-  assert.equal(rpmShardCount(1_000), 5);
+  assert.equal(rpmShardCount(25), 2);
+  assert.equal(rpmShardCount(50), 4);
+  assert.equal(rpmShardCount(75), 6);
+  assert.equal(rpmShardCount(1_000), 72);
   assert.equal(
     RPM_MAX_PROVIDER_CALLS_PER_SHARD,
     5,
@@ -217,7 +213,7 @@ test('the browser starts server dispatchers but does not time request batches', 
   assert.match(shardRoute, /scheduler\.wait/);
 });
 
-test('server dispatch has frozen topology, duplicate-send claims, and a completion barrier', () => {
+test('server dispatch has frozen shard ownership, a storage-free timed path, and a completion barrier', () => {
   const component = readFileSync(componentPath, 'utf8');
   const shardRoute = readFileSync(shardRoutePath, 'utf8');
   const armRoute = readFileSync(armRoutePath, 'utf8');
@@ -228,7 +224,8 @@ test('server dispatch has frozen topology, duplicate-send claims, and a completi
   assert.match(startRoute, /shardCount: rows\[0\]\.batchCount/);
   assert.match(armRoute, /const shardCount = stageRow\.batchCount/);
   assert.match(shardRoute, /const shardCount = stageRow\.batchCount/);
-  assert.match(shardRoute, /upstream-claims/);
+  assert.match(shardRoute, /\/claims\/s/);
+  assert.doesNotMatch(shardRoute, /upstream-claims/);
   assert.match(shardRoute, /dispatch-starts/);
   assert.match(shardRoute, /current_stage/);
   assert.match(shardRoute, /RPM_REQUEST_TIMEOUT_MS/);
@@ -244,8 +241,11 @@ test('server dispatch has frozen topology, duplicate-send claims, and a completi
   assert.match(shardRoute, /onProviderSlotReleased: releaseProviderSlot/);
   assert.match(shardRoute, /dispatcherErrorMessage/);
   assert.match(shardRoute, /verdictEligible/);
-  assert.match(shardRoute, /completedBeforeFreeze/);
-  assert.match(shardRoute, /response completed after the stage evidence/i);
+  const timedPath = shardRoute.slice(
+    shardRoute.indexOf('const schedulerWokeAt'),
+    shardRoute.indexOf('const result = await runProviderRequest'),
+  );
+  assert.doesNotMatch(timedPath, /env\.(?:DB|EVIDENCE)/);
   assert.match(finalizeRoute, /dispatchers\/s/);
   assert.match(finalizeRoute, /finalizationPending: true/);
   assert.match(finalizeRoute, /status = 'finalizing'/);

@@ -619,6 +619,18 @@ export function RpmRampTest({
       return setError(
         'Minimum success rate must be a whole number from 1 to 100.',
       );
+    const navigation = performance.getEntriesByType(
+      'navigation',
+    )[0] as PerformanceNavigationTiming | undefined;
+    if (
+      targetRpm > 75 &&
+      navigation?.nextHopProtocol &&
+      !['h2', 'h3'].includes(navigation.nextHopProtocol)
+    ) {
+      return setError(
+        `This browser connected over ${navigation.nextHopProtocol}. High-rate tests need HTTP/2 or HTTP/3 so every server dispatcher can be prepared before traffic begins.`,
+      );
+    }
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -734,7 +746,18 @@ export function RpmRampTest({
             openServerShard({
               url: `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/shards/${shardIndex}`,
               signal: controller.signal,
-              onDispatched: () => undefined,
+              onDispatched: () =>
+                setLive((existing) => {
+                  const stageLive =
+                    existing[stage.stageIndex] ?? EMPTY_LIVE;
+                  return {
+                    ...existing,
+                    [stage.stageIndex]: {
+                      ...stageLive,
+                      dispatched: stageLive.dispatched + 1,
+                    },
+                  };
+                }),
               onRequest: () => undefined,
             }),
         );
@@ -818,7 +841,10 @@ export function RpmRampTest({
                 ...existing,
                 [stage.stageIndex]: {
                   ...(existing[stage.stageIndex] ?? EMPTY_LIVE),
-                  dispatched: progress.verifiedDispatchStarts,
+                  dispatched: Math.max(
+                    existing[stage.stageIndex]?.dispatched ?? 0,
+                    progress.verifiedDispatchStarts,
+                  ),
                   completed: progress.evidenceRecords,
                 },
               }));

@@ -293,18 +293,44 @@ export async function POST(request: NextRequest, context: Context) {
             } = {},
           ) => {
             const verdictEligible = options.verdictEligible ?? true;
+            const requestPart = String(result.sequence).padStart(6, '0');
             const resultKey =
               'rpm/v1/' +
               id +
               '/results/s' +
               stagePart +
               '/request-' +
-              String(result.sequence).padStart(6, '0') +
+              requestPart +
               '.json';
             let canonical = result;
             const operation = saveQueue
               .catch(() => undefined)
               .then(async () => {
+                // Persist dispatch proof only after fetch has already started
+                // and its provider-header slot has been released. Keeping all
+                // storage I/O off the timed path prevents the tester's own
+                // D1/R2 latency from delaying a provider request.
+                if (result.upstreamStartedAt !== null) {
+                  await env.EVIDENCE.put(
+                    'rpm/v1/' +
+                      id +
+                      '/dispatch-starts/s' +
+                      stagePart +
+                      '/request-' +
+                      requestPart +
+                      '.json',
+                    JSON.stringify({
+                      runId: id,
+                      stageIndex,
+                      sequence: result.sequence,
+                      upstreamStartedAt: result.upstreamStartedAt,
+                    }),
+                    {
+                      httpMetadata: { contentType: 'application/json' },
+                      onlyIf: { etagDoesNotMatch: '*' },
+                    },
+                  );
+                }
                 const saved = await env.EVIDENCE.put(
                   resultKey,
                   JSON.stringify({
@@ -314,7 +340,7 @@ export async function POST(request: NextRequest, context: Context) {
                     shardIndex,
                     shardCount,
                     firstSequence: sequences[0] ?? null,
-                    dispatchMode: 'server-timed-shard-v1',
+                    dispatchMode: 'server-timed-shard-v2',
                     workerReceivedAt,
                     readyAt,
                     sequence: result.sequence,
@@ -434,35 +460,11 @@ export async function POST(request: NextRequest, context: Context) {
                 plannedAt,
                 timeoutMs: RPM_REQUEST_TIMEOUT_MS,
                 onProviderSlotReleased: releaseProviderSlot,
-                onUpstreamStarted: async (upstreamStartedAt: number) => {
-                  const dispatchStartKey =
-                    'rpm/v1/' +
-                    id +
-                    '/dispatch-starts/s' +
-                    stagePart +
-                    '/request-' +
-                    String(sequence).padStart(6, '0') +
-                    '.json';
-                  try {
-                    await env.EVIDENCE.put(
-                      dispatchStartKey,
-                      JSON.stringify({
-                        runId: id,
-                        stageIndex,
-                        sequence,
-                        upstreamStartedAt,
-                      }),
-                      {
-                        httpMetadata: { contentType: 'application/json' },
-                        onlyIf: { etagDoesNotMatch: '*' },
-                      },
-                    );
-                  } finally {
-                    emit({ type: 'dispatched', shardIndex, sequence });
-                  }
+                onUpstreamStarted: () => {
+                  emit({ type: 'dispatched', shardIndex, sequence });
                 },
                 dispatcher: {
-                  mode: 'server-timed-shard-v1' as const,
+                  mode: 'server-timed-shard-v2' as const,
                   shardIndex,
                   shardCount,
                   workerReceivedAt,
@@ -471,8 +473,8 @@ export async function POST(request: NextRequest, context: Context) {
                 },
               };
 
-              const state = await stageState();
-              if (!stageIsActive(state)) return;
+              if (request.signal.aborted)
+                throw new DOMException('Aborted', 'AbortError');
 
               const lagMs = Date.now() - plannedAt;
               if (lagMs > maximumLagMs) {
@@ -508,77 +510,25 @@ export async function POST(request: NextRequest, context: Context) {
                   { signal: request.signal },
                 );
               }
+              const finalLagMs = Date.now() - plannedAt;
+              if (finalLagMs > maximumLagMs) {
+                await persist(
+                  missedDispatchEvidence(
+                    common,
+                    'Server dispatch arrived ' +
+                      finalLagMs +
+                      ' ms late after waiting for dispatcher capacity; the ' +
+                      maximumLagMs +
+                      ' ms no-catch-up limit was exceeded.',
+                  ),
+                );
+                return;
+              }
               reservedProviderSlots += 1;
               providerSlotHeld = true;
               try {
-                const requestPart = String(sequence).padStart(6, '0');
-                const upstreamClaimKey =
-                  'rpm/v1/' +
-                  id +
-                  '/upstream-claims/s' +
-                  stagePart +
-                  '/request-' +
-                  requestPart;
-                const upstreamClaim = await env.EVIDENCE.put(
-                  upstreamClaimKey,
-                  JSON.stringify({
-                    runId: id,
-                    stageIndex,
-                    sequence,
-                    claimedAt: Date.now(),
-                  }),
-                  { onlyIf: { etagDoesNotMatch: '*' } },
-                );
-                if (!upstreamClaim)
-                  throw new Error(
-                    'Upstream request ' +
-                      (sequence + 1) +
-                      ' was already claimed; it was not sent twice.',
-                  );
-
-                const activeBeforeSend = await stageState();
-                if (!stageIsActive(activeBeforeSend)) return;
-
-                const finalLagMs = Date.now() - plannedAt;
-                if (finalLagMs > maximumLagMs) {
-                  await persist(
-                    missedDispatchEvidence(
-                      common,
-                      'Server dispatch arrived ' +
-                        finalLagMs +
-                        ' ms late after its safety checks; the ' +
-                        maximumLagMs +
-                        ' ms no-catch-up limit was exceeded.',
-                    ),
-                  );
-                  return;
-                }
-
                 const result = await runProviderRequest(common);
-                let activeAfterResponse: Awaited<
-                  ReturnType<typeof stageState>
-                > = null;
-                let stateReadError = false;
-                try {
-                  activeAfterResponse = await stageState();
-                } catch {
-                  stateReadError = true;
-                }
-                const completedBeforeFreeze =
-                  activeAfterResponse?.stage_status === 'finalizing' &&
-                  activeAfterResponse.finished_at !== null &&
-                  result.completedAt <= activeAfterResponse.finished_at;
-                const verdictEligible =
-                  !stateReadError &&
-                  (stageIsActive(activeAfterResponse) || completedBeforeFreeze);
-                await persist(result, {
-                  verdictEligible,
-                  verdictExclusionReason: verdictEligible
-                    ? null
-                    : stateReadError
-                      ? 'The response was preserved, but the tester could not verify its stage state after completion.'
-                      : 'The response completed after the stage evidence was frozen or cancelled.',
-                });
+                await persist(result);
               } finally {
                 releaseProviderSlot();
               }

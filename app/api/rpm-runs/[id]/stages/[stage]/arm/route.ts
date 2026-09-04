@@ -9,7 +9,9 @@ import { RPM_MAX_DISPATCH_SHARDS } from '@/lib/rpm-types';
 import { noStore, serverError } from '@/lib/server/http';
 import { listR2Keys, stageSummary } from '@/lib/server/rpm-store';
 
-const ARM_LEAD_MS = 5_000;
+// Give every prepared dispatcher ample time to observe the shared schedule
+// before the first provider call. No provider traffic is sent before this time.
+const ARM_LEAD_MS = 10_000;
 
 type Context = { params: Promise<{ id: string; stage: string }> };
 

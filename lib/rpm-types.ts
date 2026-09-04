@@ -124,10 +124,11 @@ export function rpmBatchSize(scheduledCount: number, durationSeconds = 60) {
   return Math.max(1, Math.min(5, Math.floor(2_000 / intervalMs) + 1));
 }
 
-// The browser keeps one response stream open per dispatcher. Keep at least one
-// browser/proxy connection available for the /arm control request; otherwise
-// the readiness barrier can wait forever while the control request is queued.
-export const RPM_MAX_DISPATCH_SHARDS = 5;
+// The production Site negotiates HTTP/2 with a 100-stream limit. Keep enough
+// headroom for the arm request, progress polling, cancellation, and the rest
+// of the page while spreading provider header waits across independent Worker
+// invocations.
+export const RPM_MAX_DISPATCH_SHARDS = 72;
 // Workers allow six outgoing connections waiting for response headers. Use at
 // most five provider connections so state/evidence operations retain a slot.
 export const RPM_MAX_PROVIDER_CALLS_PER_SHARD = 5;
@@ -138,15 +139,14 @@ export const RPM_FINALIZE_SETTLE_MS = 1_000;
 
 /**
  * Split one stage across a bounded number of long-lived Worker invocations.
- * Each shard owns interleaved sequence numbers and performs their timing on
- * the server. The browser establishes at most five observation streams before
- * arming, leaving transport capacity for the control request. Each Worker
- * invocation independently schedules its interleaved sequence numbers and may
- * hold up to five provider calls while waiting for response headers.
+ * Each shard owns at most fourteen interleaved sequence numbers and performs
+ * their timing on the server. At 1,000 RPM, 72 shards space one shard's sends
+ * 4.32 seconds apart. Five provider slots therefore turn over before the next
+ * request is due even when every call reaches the full 20-second timeout.
  */
 export function rpmShardCount(scheduledCount: number) {
   return Math.max(
     1,
-    Math.min(RPM_MAX_DISPATCH_SHARDS, Math.ceil(scheduledCount / 11)),
+    Math.min(RPM_MAX_DISPATCH_SHARDS, Math.ceil(scheduledCount / 14)),
   );
 }

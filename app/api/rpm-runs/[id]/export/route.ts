@@ -102,7 +102,9 @@ export async function GET(_request: NextRequest, context: Context) {
         : 45_000,
       maxStoredResponseBodyBytes: RPM_MAX_RESPONSE_BYTES,
       dispatchMode: dispatcherKeys.length
-        ? 'server-timed-shard-v1'
+        ? upstreamClaimKeys.length
+          ? 'server-timed-shard-v1'
+          : 'server-timed-shard-v2'
         : 'legacy-browser-timed-batch-v1',
     },
     diagnosticSummary: {
@@ -143,7 +145,7 @@ export async function GET(_request: NextRequest, context: Context) {
     },
     controlClaims: {
       explanation:
-        'Keys distinguish claimed slots from verified dispatch starts. A claim without a dispatch-start marker or preserved response is ambiguous and never counted as provider success.',
+        'Each v2 dispatcher claims one immutable sequence partition before arming. Legacy v1 runs also contain per-request claims. Only a dispatch-start marker or preserved response counts as a verified upstream start.',
       shardClaimKeys,
       upstreamClaimKeys,
       dispatchStartKeys,
