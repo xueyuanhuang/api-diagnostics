@@ -129,6 +129,17 @@ export async function POST(request: NextRequest, context: Context) {
           sequence,
           plannedAt,
         };
+        const currentRun = await env.DB.prepare(
+          'SELECT status FROM rpm_runs WHERE id = ? AND user_id = ?',
+        )
+          .bind(id, user.userId)
+          .first<{ status: string }>();
+        if (currentRun?.status !== 'running') {
+          return missedDispatchEvidence(
+            common,
+            'The run was cancelled or stopped before this upstream request began.',
+          );
+        }
         const lagMs = Date.now() - plannedAt;
         const maximumLagMs = Math.max(1_500, Math.round(intervalMs * 3));
         if (lagMs > maximumLagMs) {

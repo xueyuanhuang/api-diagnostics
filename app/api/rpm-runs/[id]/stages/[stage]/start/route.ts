@@ -59,24 +59,22 @@ export async function POST(_request: NextRequest, context: Context) {
 
     const now = Date.now();
     const scheduledStartAt = now + 2_000;
-    const updated = await env.DB.prepare(
-      "UPDATE rpm_stages SET status = 'running', scheduled_start_at = ?, started_at = ? WHERE run_id = ? AND stage_index = ? AND status = 'pending'",
-    )
-      .bind(scheduledStartAt, now, id, stageIndex)
-      .run();
-    if (!updated.meta.changes)
+    const transitions = await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE rpm_stages SET status = 'running', scheduled_start_at = ?, started_at = ? WHERE run_id = ? AND stage_index = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('ready', 'running'))",
+      ).bind(scheduledStartAt, now, id, stageIndex, id, user.userId),
+      env.DB.prepare(
+        "UPDATE rpm_runs SET status = 'running', current_stage = ? WHERE id = ? AND user_id = ? AND status IN ('ready', 'running')",
+      ).bind(stageIndex, id, user.userId),
+      env.DB.prepare(
+        "UPDATE rpm_active_leases SET expires_at = ? WHERE user_id = ? AND run_id = ? AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status = 'running')",
+      ).bind(now + 2 * 60 * 60 * 1_000, user.userId, id, id, user.userId),
+    ]);
+    if (!transitions[0].meta.changes)
       return noStore(
-        { error: 'This stage was already started.' },
+        { error: 'This stage could not start because the run changed state.' },
         { status: 409 },
       );
-    await env.DB.batch([
-      env.DB.prepare(
-        "UPDATE rpm_runs SET status = 'running', current_stage = ? WHERE id = ?",
-      ).bind(stageIndex, id),
-      env.DB.prepare(
-        'UPDATE rpm_active_leases SET expires_at = ? WHERE user_id = ? AND run_id = ?',
-      ).bind(now + 2 * 60 * 60 * 1_000, user.userId, id),
-    ]);
     const rows = await getDb()
       .select()
       .from(rpmStages)

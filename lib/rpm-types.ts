@@ -78,6 +78,24 @@ export type RpmRunDetail = {
   stages: RpmStageSummary[];
 };
 
+export type RpmPreflightSummary = {
+  outcome:
+    | 'success'
+    | 'rate_limited'
+    | 'client_error'
+    | 'server_error'
+    | 'timeout'
+    | 'transport_error'
+    | 'malformed'
+    | 'missed_dispatch';
+  httpStatus: number | null;
+  firstByteMs: number | null;
+  totalTimeMs: number;
+  requestId: string | null;
+  returnedModel: string | null;
+  error: string | null;
+};
+
 export function rampPercentages(mode: RpmRampMode) {
   return mode === 'detailed'
     ? [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]

@@ -10,14 +10,13 @@ import {
   rpmBatchSize,
   type RpmRampMode,
 } from '@/lib/rpm-types';
-import { decryptApiKey } from '@/lib/server/encryption';
 import { noStore, serverError } from '@/lib/server/http';
 import { getOwnedProfileConfig } from '@/lib/server/profile-config';
-import { runProviderRequest } from '@/lib/server/rpm-provider';
 import { runDetail, runSummary } from '@/lib/server/rpm-store';
 
 const STAGE_DURATION_SECONDS = 60;
 const LEASE_MS = 2 * 60 * 60 * 1_000;
+const STALE_PREFLIGHT_MS = 90_000;
 const DEFAULT_MAX_REQUESTS_PER_RUN = 25_000;
 
 type StartPayload = {
@@ -147,33 +146,72 @@ export async function POST(request: NextRequest) {
     .from(rpmActiveLeases)
     .where(eq(rpmActiveLeases.userId, user.userId))
     .limit(1);
-  if (existing.length && existing[0].expiresAt > now) {
+  const activeRows = existing.length
+    ? await getDb()
+        .select()
+        .from(rpmRuns)
+        .where(eq(rpmRuns.id, existing[0].runId))
+        .limit(1)
+    : [];
+  const activeRun = activeRows[0];
+  let preflightActivityAt = activeRun?.createdAt ?? now;
+  if (activeRun?.status === 'preflight') {
+    try {
+      const claim = await env.EVIDENCE.get(
+        `rpm/v1/${activeRun.id}/preflight-claim`,
+      );
+      const claimedAt = claim ? Number(await claim.text()) : Number.NaN;
+      if (Number.isFinite(claimedAt)) preflightActivityAt = claimedAt;
+    } catch {
+      // Fall back to creation time; recovery still requires the full grace period.
+    }
+  }
+  const stalePreflight =
+    activeRun?.status === 'preflight' &&
+    now - preflightActivityAt >= STALE_PREFLIGHT_MS;
+  const activeStatus =
+    activeRun && ['preflight', 'ready', 'running'].includes(activeRun.status);
+  if (
+    existing.length &&
+    existing[0].expiresAt > now &&
+    activeStatus &&
+    !stalePreflight
+  ) {
     return noStore(
       {
         error:
           'You already have an active RPM run. Open it or cancel it before starting another.',
         activeRunId: existing[0].runId,
+        activeRunStatus: activeRun?.status ?? 'unknown',
       },
       { status: 409 },
     );
   }
   if (existing.length) {
+    const reason = stalePreflight
+      ? 'The preflight did not finish within 90 seconds. It was recovered automatically before this new run.'
+      : 'The active-run lease expired before completion.';
     await env.DB.batch([
       env.DB.prepare(
-        "UPDATE rpm_runs SET status = 'inconclusive', stop_reason = 'The active-run lease expired before completion.', finished_at = ? WHERE id = ? AND status IN ('preflight', 'ready', 'running')",
+        "UPDATE rpm_runs SET status = 'inconclusive', stop_reason = ?, finished_at = ? WHERE id = ? AND status IN ('preflight', 'ready', 'running')",
+      ).bind(reason, now, existing[0].runId),
+      env.DB.prepare(
+        "UPDATE rpm_stages SET status = 'inconclusive', finished_at = ? WHERE run_id = ? AND status = 'running'",
       ).bind(now, existing[0].runId),
+      env.DB.prepare(
+        "UPDATE rpm_stages SET status = 'skipped' WHERE run_id = ? AND status = 'pending'",
+      ).bind(existing[0].runId),
       env.DB.prepare('DELETE FROM rpm_run_secrets WHERE run_id = ?').bind(
         existing[0].runId,
       ),
-      env.DB.prepare('DELETE FROM rpm_active_leases WHERE user_id = ?').bind(
-        user.userId,
-      ),
+      env.DB.prepare(
+        'DELETE FROM rpm_active_leases WHERE user_id = ? AND run_id = ?',
+      ).bind(user.userId, existing[0].runId),
     ]);
   }
 
   const runId = crypto.randomUUID();
   const thresholdBps = thresholdPercent * 100;
-  const apiKey = await decryptApiKey(config.encryptedApiKey, config.keyIv);
   try {
     await env.DB.batch([
       env.DB.prepare(
@@ -221,50 +259,20 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     if (message.toLowerCase().includes('unique')) {
+      const active = await getDb()
+        .select()
+        .from(rpmActiveLeases)
+        .where(eq(rpmActiveLeases.userId, user.userId))
+        .limit(1);
       return noStore(
-        { error: 'You already have an active RPM run.' },
+        {
+          error: 'You already have an active RPM run.',
+          activeRunId: active[0]?.runId ?? null,
+        },
         { status: 409 },
       );
     }
     return serverError(error);
-  }
-
-  const preflight = await runProviderRequest({
-    apiType,
-    baseUrl: config.baseUrl,
-    apiKey,
-    model,
-    runId,
-    stageIndex: -1,
-    sequence: 0,
-    plannedAt: Date.now(),
-  });
-  await env.EVIDENCE.put(
-    `rpm/v1/${runId}/preflight.json`,
-    JSON.stringify(preflight),
-    { httpMetadata: { contentType: 'application/json' } },
-  );
-  const preflightPassed = preflight.outcome === 'success';
-  if (preflightPassed) {
-    await env.DB.prepare("UPDATE rpm_runs SET status = 'ready' WHERE id = ?")
-      .bind(runId)
-      .run();
-  } else {
-    await env.DB.batch([
-      env.DB.prepare(
-        "UPDATE rpm_runs SET status = 'inconclusive', stop_reason = ?, finished_at = ? WHERE id = ?",
-      ).bind(
-        `Preflight failed: ${preflight.error ?? preflight.outcome}.`,
-        Date.now(),
-        runId,
-      ),
-      env.DB.prepare('DELETE FROM rpm_run_secrets WHERE run_id = ?').bind(
-        runId,
-      ),
-      env.DB.prepare(
-        'DELETE FROM rpm_active_leases WHERE user_id = ? AND run_id = ?',
-      ).bind(user.userId, runId),
-    ]);
   }
 
   const rows = await getDb()
@@ -272,5 +280,5 @@ export async function POST(request: NextRequest) {
     .from(rpmRuns)
     .where(eq(rpmRuns.id, runId))
     .limit(1);
-  return noStore({ ...(await runDetail(rows[0])), preflight }, { status: 201 });
+  return noStore(await runDetail(rows[0]), { status: 201 });
 }

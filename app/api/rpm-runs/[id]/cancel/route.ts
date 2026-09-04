@@ -28,18 +28,20 @@ export async function POST(_request: NextRequest, context: Context) {
     const now = Date.now();
     await env.DB.batch([
       env.DB.prepare(
-        "UPDATE rpm_runs SET status = 'cancelled', stop_reason = 'Cancelled by the user. Export contains partial evidence only.', finished_at = ? WHERE id = ?",
-      ).bind(now, id),
+        "UPDATE rpm_stages SET status = 'cancelled', finished_at = ? WHERE run_id = ? AND status = 'running' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running'))",
+      ).bind(now, id, id, user.userId),
       env.DB.prepare(
-        "UPDATE rpm_stages SET status = 'cancelled', finished_at = ? WHERE run_id = ? AND status = 'running'",
-      ).bind(now, id),
+        "UPDATE rpm_stages SET status = 'skipped' WHERE run_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running'))",
+      ).bind(id, id, user.userId),
       env.DB.prepare(
-        "UPDATE rpm_stages SET status = 'skipped' WHERE run_id = ? AND status = 'pending'",
-      ).bind(id),
-      env.DB.prepare('DELETE FROM rpm_run_secrets WHERE run_id = ?').bind(id),
+        "DELETE FROM rpm_run_secrets WHERE run_id = ? AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running'))",
+      ).bind(id, id, user.userId),
       env.DB.prepare(
-        'DELETE FROM rpm_active_leases WHERE user_id = ? AND run_id = ?',
-      ).bind(user.userId, id),
+        "DELETE FROM rpm_active_leases WHERE user_id = ? AND run_id = ? AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running'))",
+      ).bind(user.userId, id, id, user.userId),
+      env.DB.prepare(
+        "UPDATE rpm_runs SET status = 'cancelled', stop_reason = 'Cancelled by the user. Export contains partial evidence only.', finished_at = ? WHERE id = ? AND user_id = ? AND status IN ('preflight', 'ready', 'running')",
+      ).bind(now, id, user.userId),
     ]);
     const updated = await getDb()
       .select()

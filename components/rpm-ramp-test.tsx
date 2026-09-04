@@ -23,6 +23,7 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import {
   buildRampTargets,
+  type RpmPreflightSummary,
   type RpmRampMode,
   type RpmRunDetail,
   type RpmRunSummary,
@@ -43,6 +44,42 @@ type BatchSummary = {
 };
 
 type LiveStage = BatchSummary & { returnedBatches: number };
+type RunnerPhase =
+  | 'idle'
+  | 'creating'
+  | 'preflight'
+  | 'stageStarting'
+  | 'stage'
+  | 'finalizing'
+  | 'cooldown'
+  | 'complete'
+  | 'failed'
+  | 'inconclusive'
+  | 'cancelling'
+  | 'cancelled'
+  | 'attention';
+
+type JsonErrorBody = {
+  error?: string;
+  activeRunId?: string | null;
+  activeRunStatus?: string;
+  preflightInProgress?: boolean;
+};
+type RpmDetailWithPreflight = RpmRunDetail & {
+  preflight?: RpmPreflightSummary | null;
+};
+
+class JsonFetchError extends Error {
+  status: number;
+  data: JsonErrorBody;
+
+  constructor(status: number, data: JsonErrorBody) {
+    super(data.error || `HTTP ${status}`);
+    this.name = 'JsonFetchError';
+    this.status = status;
+    this.data = data;
+  }
+}
 
 const EMPTY_LIVE: LiveStage = {
   returnedBatches: 0,
@@ -60,10 +97,8 @@ const EMPTY_LIVE: LiveStage = {
 
 async function jsonFetch<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, { ...init, cache: 'no-store' });
-  const body = (await response.json().catch(() => ({}))) as {
-    error?: string;
-  } & T;
-  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  const body = (await response.json().catch(() => ({}))) as JsonErrorBody & T;
+  if (!response.ok) throw new JsonFetchError(response.status, body);
   return body;
 }
 
@@ -89,6 +124,32 @@ function waitUntil(timestamp: number, signal: AbortSignal) {
 function duration(value: number | null | undefined) {
   if (typeof value !== 'number') return '—';
   return value < 1_000 ? `${value} ms` : `${(value / 1_000).toFixed(3)} s`;
+}
+
+function clock(valueMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(valueMs / 1_000));
+  return `${String(Math.floor(totalSeconds / 60)).padStart(2, '0')}:${String(totalSeconds % 60).padStart(2, '0')}`;
+}
+
+function resolvedEndpoint(baseUrl: string, apiType: 'anthropic' | 'openai') {
+  try {
+    const url = new URL(baseUrl);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    const path = url.pathname.replace(/\/+$/, '');
+    const completePath =
+      apiType === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
+    const finalSegment =
+      apiType === 'anthropic' ? '/messages' : '/chat/completions';
+    if (path.endsWith(completePath)) url.pathname = path;
+    else if (path.endsWith('/v1')) url.pathname = `${path}${finalSegment}`;
+    else url.pathname = `${path}${completePath}`.replace(/^\/\//, '/');
+    return url.toString();
+  } catch {
+    return 'Invalid endpoint';
+  }
 }
 
 function statusBadge(status: RpmStageSummary['status']) {
@@ -135,7 +196,21 @@ export function RpmRampTest({
   );
   const [error, setError] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [phase, setPhase] = useState<RunnerPhase>('idle');
+  const [phaseStartedAt, setPhaseStartedAt] = useState<number | null>(null);
+  const [phaseEndsAt, setPhaseEndsAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [preflight, setPreflight] = useState<RpmPreflightSummary | null>(null);
+  const [recoverableRunId, setRecoverableRunId] = useState('');
   const abortRef = useRef<AbortController | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
+  const loadedOpenedRunIdRef = useRef('');
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [isRunning]);
 
   const plan = useMemo(
     () => buildRampTargets(Math.max(1, targetRpm || 1), rampMode),
@@ -166,26 +241,88 @@ export function RpmRampTest({
     : 0;
 
   useEffect(() => {
-    if (!openedRunId || isRunning) return;
-    void jsonFetch<RpmRunDetail>(`/api/rpm-runs/${openedRunId}`)
+    if (
+      !openedRunId ||
+      isRunning ||
+      loadedOpenedRunIdRef.current === openedRunId
+    )
+      return;
+    let ignore = false;
+    void jsonFetch<RpmDetailWithPreflight>(`/api/rpm-runs/${openedRunId}`)
       .then((data) => {
+        if (ignore) return;
+        loadedOpenedRunIdRef.current = openedRunId;
+        setLive({});
+        setPreflight(data.preflight ?? null);
+        setError('');
         setDetail(data);
+        activeRunIdRef.current = ['preflight', 'ready', 'running'].includes(
+          data.run.status,
+        )
+          ? data.run.id
+          : null;
+        setRecoverableRunId(activeRunIdRef.current ?? '');
         setTargetRpm(data.run.targetRpm);
         setThreshold(data.run.thresholdBps / 100);
         setRampMode(data.run.rampMode);
+        setPhase(
+          data.run.status === 'cancelled'
+            ? 'cancelled'
+            : ['preflight', 'ready', 'running'].includes(data.run.status)
+              ? 'attention'
+              : data.run.status === 'passed'
+                ? 'complete'
+                : data.run.status === 'inconclusive'
+                  ? 'inconclusive'
+                  : 'failed',
+        );
         setMessage(
           `Saved RPM run from ${new Date(data.run.createdAt).toLocaleString()}.`,
         );
         setError('');
       })
-      .catch((loadError: unknown) =>
+      .catch((loadError: unknown) => {
+        if (ignore) return;
         setError(
           loadError instanceof Error
             ? loadError.message
             : 'Could not open the saved RPM run.',
-        ),
-      );
+        );
+      });
+    return () => {
+      ignore = true;
+    };
   }, [isRunning, openedRunId]);
+
+  useEffect(() => {
+    if (!user || isRunning || openedRunId || detail) return;
+    let ignore = false;
+    void jsonFetch<{ runs: RpmRunSummary[] }>('/api/rpm-runs')
+      .then(async ({ runs }) => {
+        const active = runs.find((run) =>
+          ['preflight', 'ready', 'running'].includes(run.status),
+        );
+        if (!active) return;
+        const data = await jsonFetch<RpmDetailWithPreflight>(
+          `/api/rpm-runs/${active.id}`,
+        );
+        if (ignore) return;
+        activeRunIdRef.current = active.id;
+        setRecoverableRunId(active.id);
+        setDetail(data);
+        setPreflight(data.preflight ?? null);
+        setPhase('attention');
+        setMessage(
+          `A previous ${active.status} run is still active. This browser cannot safely resume its scheduler; cancel it before starting again.`,
+        );
+      })
+      .catch(() => {
+        // Saved-run discovery is best effort; Start still handles a 409 safely.
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [detail, isRunning, openedRunId, user]);
 
   function mergeBatch(stageIndex: number, summary: BatchSummary) {
     setLive((current) => {
@@ -211,8 +348,13 @@ export function RpmRampTest({
 
   async function cancelRun() {
     abortRef.current?.abort();
-    const runId = detail?.run.id;
-    if (!runId) return;
+    const runId = activeRunIdRef.current ?? detail?.run.id;
+    if (!runId) {
+      setMessage('The run is still being created. Try Stop again in a moment.');
+      return;
+    }
+    setError('');
+    setPhase('cancelling');
     setMessage(
       'Cancelling the run… in-flight provider calls may still finish.',
     );
@@ -221,10 +363,42 @@ export function RpmRampTest({
         `/api/rpm-runs/${runId}/cancel`,
         { method: 'POST' },
       );
+      loadedOpenedRunIdRef.current = cancelled.run.id;
       setDetail(cancelled);
       onRunSaved(cancelled.run);
-      setMessage('Run cancelled. Its export is clearly marked as partial.');
+      if (cancelled.run.status === 'cancelled') {
+        activeRunIdRef.current = null;
+        setRecoverableRunId('');
+        setPhase('cancelled');
+        setMessage('Run cancelled. Its export is clearly marked as partial.');
+      } else if (cancelled.run.status === 'passed') {
+        activeRunIdRef.current = null;
+        setRecoverableRunId('');
+        setPhase('complete');
+        setMessage(
+          'The run finished successfully before cancellation applied.',
+        );
+      } else if (['failed', 'inconclusive'].includes(cancelled.run.status)) {
+        activeRunIdRef.current = null;
+        setRecoverableRunId('');
+        setPhase(
+          cancelled.run.status === 'inconclusive' ? 'inconclusive' : 'failed',
+        );
+        setMessage(
+          cancelled.run.stopReason ??
+            'The run had already finished before cancellation applied.',
+        );
+      } else {
+        activeRunIdRef.current = cancelled.run.id;
+        setRecoverableRunId(cancelled.run.id);
+        setPhase('attention');
+        setMessage('The run is still active. Try cancelling it again.');
+      }
     } catch (cancelError) {
+      setPhase('attention');
+      setMessage(
+        'Local scheduling stopped, but server cancellation was not confirmed. Try Cancel active run again.',
+      );
       setError(
         cancelError instanceof Error
           ? cancelError.message
@@ -253,15 +427,20 @@ export function RpmRampTest({
 
     const controller = new AbortController();
     abortRef.current = controller;
+    setNow(Date.now());
     setIsRunning(true);
     onRunningChange(true);
     setLive({});
     setDetail(null);
-    setMessage('Running one exact-payload preflight before load begins…');
+    setPreflight(null);
+    setRecoverableRunId('');
+    activeRunIdRef.current = null;
+    setPhase('creating');
+    setPhaseStartedAt(Date.now());
+    setPhaseEndsAt(null);
+    setMessage('Creating a saved run before any provider traffic is sent…');
     try {
-      const startedRun = await jsonFetch<
-        RpmRunDetail & { preflight: { outcome: string; error: string | null } }
-      >('/api/rpm-runs', {
+      const createdRun = await jsonFetch<RpmRunDetail>('/api/rpm-runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -272,20 +451,59 @@ export function RpmRampTest({
           thresholdPercent: threshold,
           rampMode,
         }),
+      });
+      activeRunIdRef.current = createdRun.run.id;
+      loadedOpenedRunIdRef.current = createdRun.run.id;
+      setRecoverableRunId(createdRun.run.id);
+      setDetail(createdRun);
+      onRunSaved(createdRun.run);
+      setPhase('preflight');
+      setPhaseStartedAt(Date.now());
+      setPhaseEndsAt(Date.now() + 45_000);
+      setMessage(
+        'One exact load-test request was sent. Waiting for the provider response…',
+      );
+
+      const preflightRun = await jsonFetch<
+        RpmRunDetail & { preflight: RpmPreflightSummary | null }
+      >(`/api/rpm-runs/${createdRun.run.id}/preflight`, {
+        method: 'POST',
         signal: controller.signal,
       });
-      let current: RpmRunDetail = startedRun;
-      setDetail(startedRun);
-      onRunSaved(startedRun.run);
-      if (startedRun.run.status !== 'ready') {
-        setMessage(
-          `Preflight stopped the run: ${startedRun.run.stopReason ?? startedRun.preflight.error ?? startedRun.preflight.outcome}.`,
+      setPreflight(preflightRun.preflight);
+      let current: RpmRunDetail = {
+        run: preflightRun.run,
+        stages: preflightRun.stages,
+      };
+      setDetail(current);
+      onRunSaved(current.run);
+      if (current.run.status !== 'ready') {
+        activeRunIdRef.current = null;
+        setRecoverableRunId('');
+        if (current.run.status === 'cancelled') {
+          setPhase('cancelled');
+          setMessage('Run cancelled before ramp traffic began.');
+          return;
+        }
+        setPhase(
+          current.run.status === 'inconclusive' ? 'inconclusive' : 'failed',
         );
+        setError(
+          current.run.stopReason ??
+            preflightRun.preflight?.error ??
+            'The preflight did not pass.',
+        );
+        setMessage('Preflight failed — the staged load test did not begin.');
         return;
       }
 
+      setMessage('Preflight passed. Preparing the first ramp stage…');
+
       for (const stage of current.stages) {
         if (controller.signal.aborted) break;
+        setPhase('stageStarting');
+        setPhaseStartedAt(Date.now());
+        setPhaseEndsAt(null);
         setMessage(
           `Starting stage ${stage.stageIndex + 1}: ${stage.targetRpm.toLocaleString()} RPM for 60 seconds.`,
         );
@@ -297,6 +515,12 @@ export function RpmRampTest({
           signal: controller.signal,
         });
         const startedStage = started.stage;
+        setPhase('stage');
+        setPhaseStartedAt(startedStage.scheduledStartAt ?? Date.now());
+        setPhaseEndsAt(
+          (startedStage.scheduledStartAt ?? Date.now()) +
+            current.run.stageDurationSeconds * 1_000,
+        );
         setDetail((existing) =>
           existing
             ? {
@@ -340,6 +564,9 @@ export function RpmRampTest({
         );
         await Promise.allSettled(batchPromises);
         if (controller.signal.aborted) break;
+        setPhase('finalizing');
+        setPhaseStartedAt(Date.now());
+        setPhaseEndsAt(null);
         setMessage(
           `Finalizing stage ${stage.stageIndex + 1} from server evidence…`,
         );
@@ -353,6 +580,11 @@ export function RpmRampTest({
           (item) => item.stageIndex === stage.stageIndex,
         );
         if (finalized?.status !== 'passed') {
+          activeRunIdRef.current = null;
+          setRecoverableRunId('');
+          setPhase(
+            current.run.status === 'inconclusive' ? 'inconclusive' : 'failed',
+          );
           setMessage(
             current.run.stopReason ??
               'This stage did not pass, so higher stages were skipped.',
@@ -367,6 +599,9 @@ export function RpmRampTest({
             startedStage.scheduledStartAt! +
             current.run.stageDurationSeconds * 1_000 +
             60_000;
+          setPhase('cooldown');
+          setPhaseStartedAt(Date.now());
+          setPhaseEndsAt(cooldownEnds);
           setMessage(
             'Stage passed. Waiting for the rolling one-minute window to clear before the next stage…',
           );
@@ -374,14 +609,55 @@ export function RpmRampTest({
         }
       }
       if (!controller.signal.aborted) {
-        setMessage(
+        const terminalPhase: RunnerPhase =
           current.run.status === 'passed'
+            ? 'complete'
+            : current.run.status === 'inconclusive'
+              ? 'inconclusive'
+              : current.run.status === 'cancelled'
+                ? 'cancelled'
+                : 'failed';
+        const completed = terminalPhase === 'complete';
+        setPhase(terminalPhase);
+        setPhaseEndsAt(null);
+        activeRunIdRef.current = null;
+        setRecoverableRunId('');
+        setMessage(
+          completed
             ? `Ramp passed through ${current.run.targetRpm.toLocaleString()} RPM.`
             : (current.run.stopReason ?? 'Ramp finished.'),
         );
       }
     } catch (runError) {
       if (!controller.signal.aborted) {
+        if (
+          runError instanceof JsonFetchError &&
+          runError.status === 409 &&
+          runError.data.activeRunId
+        ) {
+          const activeRunId = runError.data.activeRunId;
+          activeRunIdRef.current = activeRunId;
+          loadedOpenedRunIdRef.current = activeRunId;
+          setRecoverableRunId(activeRunId);
+          try {
+            const active = await jsonFetch<RpmDetailWithPreflight>(
+              `/api/rpm-runs/${activeRunId}`,
+            );
+            setDetail(active);
+            setPreflight(active.preflight ?? null);
+            onRunSaved(active.run);
+          } catch {
+            // The cancel control can still use the ID returned by the 409.
+          }
+          setPhase('attention');
+          setError('');
+          setMessage(
+            'A previous RPM run is still active. Cancel it below before starting again.',
+          );
+          return;
+        }
+        setPhase('failed');
+        setPhaseEndsAt(null);
         setError(
           runError instanceof Error ? runError.message : 'RPM run failed.',
         );
@@ -409,6 +685,18 @@ export function RpmRampTest({
   const missed = latestStage
     ? (latestLive?.missedDispatch ?? latestStage.missedDispatchCount)
     : 0;
+  const phaseElapsedMs = phaseStartedAt ? Math.max(0, now - phaseStartedAt) : 0;
+  const phaseRemainingMs = phaseEndsAt ? Math.max(0, phaseEndsAt - now) : null;
+  const statusStage =
+    activeStage ??
+    (phase === 'stageStarting'
+      ? (detail?.stages.find((stage) => stage.status === 'pending') ?? null)
+      : null);
+  const rampNeverStarted = Boolean(
+    detail &&
+    ['cancelled', 'inconclusive'].includes(detail.run.status) &&
+    detail.stages.every((stage) => stage.startedAt === null),
+  );
 
   return (
     <div className="space-y-5">
@@ -426,8 +714,8 @@ export function RpmRampTest({
               success requirement stops every higher stage.
             </p>
             <p className="mt-2 max-w-2xl truncate font-mono text-[10px] text-muted-foreground">
-              {profileName ?? 'No saved profile'} · {apiType} · {model || 'No model'} ·{' '}
-              {baseUrl || 'No base URL'}
+              {profileName ?? 'No saved profile'} · {apiType} ·{' '}
+              {model || 'No model'} · {resolvedEndpoint(baseUrl, apiType)}
             </p>
           </div>
           {detail?.run.id ? (
@@ -538,7 +826,11 @@ export function RpmRampTest({
         {error ? (
           <Alert variant="destructive" className="mt-4">
             <AlertTriangle />
-            <AlertTitle>RPM test stopped</AlertTitle>
+            <AlertTitle>
+              {preflight && preflight.outcome !== 'success'
+                ? 'Preflight failed — load test did not begin'
+                : 'Could not continue the RPM test'}
+            </AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
@@ -548,10 +840,30 @@ export function RpmRampTest({
               type="button"
               variant="outline"
               onClick={() => void cancelRun()}
+              disabled={phase === 'creating' || phase === 'cancelling'}
               className="gap-2"
             >
-              <Square className="size-3.5 fill-current" /> Stop and save partial
-              evidence
+              {phase === 'creating' ? (
+                <>
+                  <Activity className="size-3.5 animate-pulse" /> Creating run…
+                </>
+              ) : (
+                <>
+                  <Square className="size-3.5 fill-current" /> Stop and save
+                  partial evidence
+                </>
+              )}
+            </Button>
+          ) : recoverableRunId ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void cancelRun()}
+              disabled={phase === 'cancelling'}
+              className="gap-2 border-amber-300 text-amber-950"
+            >
+              <Square className="size-3.5 fill-current" />
+              {phase === 'cancelling' ? 'Cancelling…' : 'Cancel active run'}
             </Button>
           ) : (
             <Button
@@ -563,17 +875,33 @@ export function RpmRampTest({
               <Play className="size-4 fill-current" /> Start RPM ramp
             </Button>
           )}
-          <span className="text-xs text-muted-foreground">{message}</span>
         </div>
+        <RunStatusCard
+          phase={phase}
+          message={message}
+          elapsedMs={phaseElapsedMs}
+          remainingMs={phaseRemainingMs}
+          endpoint={resolvedEndpoint(
+            detail?.run.baseUrl ?? baseUrl,
+            detail?.run.apiType ?? apiType,
+          )}
+          model={detail?.run.modelName ?? model}
+          preflight={preflight}
+          stage={statusStage}
+          stageCount={detail?.stages.length ?? plan.length}
+          completed={completedNow}
+        />
       </section>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Reliability"
           value={
-            reliabilityRate === null
-              ? 'Waiting'
-              : `${reliabilityRate.toFixed(2)}%`
+            rampNeverStarted
+              ? 'Not run'
+              : reliabilityRate === null
+                ? 'Waiting'
+                : `${reliabilityRate.toFixed(2)}%`
           }
           detail={
             latestStage
@@ -585,7 +913,13 @@ export function RpmRampTest({
         />
         <MetricCard
           label="Rate limit"
-          value={latestStage ? rateLimited.toLocaleString() : 'Waiting'}
+          value={
+            rampNeverStarted
+              ? 'Not run'
+              : latestStage
+                ? rateLimited.toLocaleString()
+                : 'Waiting'
+          }
           detail="HTTP 429 is counted separately; it affects reliability like any failed request."
           icon={RadioTower}
           tone={rateLimited ? 'warning' : 'default'}
@@ -593,13 +927,15 @@ export function RpmRampTest({
         <MetricCard
           label="Dispatch validity"
           value={
-            latestStage?.dispatchValid === false || missed
-              ? 'Invalid'
-              : latestStage?.dispatchValid === true
-                ? 'Valid'
-                : isRunning
-                  ? 'Measuring'
-                  : 'Waiting'
+            rampNeverStarted
+              ? 'Not run'
+              : latestStage?.dispatchValid === false || missed
+                ? 'Invalid'
+                : latestStage?.dispatchValid === true
+                  ? 'Valid'
+                  : activeStage
+                    ? 'Measuring'
+                    : 'Waiting'
           }
           detail={`${missed} missed or late dispatches in the current stage`}
           icon={missed ? XCircle : ShieldCheck}
@@ -607,7 +943,9 @@ export function RpmRampTest({
         />
         <MetricCard
           label="Performance"
-          value={duration(latestStage?.p95LatencyMs)}
+          value={
+            rampNeverStarted ? 'Not run' : duration(latestStage?.p95LatencyMs)
+          }
           detail={`Median ${duration(latestStage?.medianLatencyMs)} · P95 total latency`}
           icon={Gauge}
         />
@@ -722,6 +1060,193 @@ export function RpmRampTest({
           <Clock3 className="mr-1 inline size-3" /> {detail.run.stopReason}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function RunStatusCard({
+  phase,
+  message,
+  elapsedMs,
+  remainingMs,
+  endpoint,
+  model,
+  preflight,
+  stage,
+  stageCount,
+  completed,
+}: {
+  phase: RunnerPhase;
+  message: string;
+  elapsedMs: number;
+  remainingMs: number | null;
+  endpoint: string;
+  model: string;
+  preflight: RpmPreflightSummary | null;
+  stage: RpmStageSummary | null;
+  stageCount: number;
+  completed: number;
+}) {
+  const draining =
+    phase === 'stage' &&
+    stage !== null &&
+    remainingMs === 0 &&
+    completed < stage.scheduledCount;
+  const title =
+    phase === 'creating'
+      ? 'Step 1 of 3 · Creating saved run'
+      : phase === 'preflight'
+        ? 'Step 1 of 3 · Connection preflight'
+        : phase === 'stageStarting' && stage
+          ? `Step 2 of 3 · Starting stage ${stage.stageIndex + 1} of ${stageCount}`
+          : phase === 'stage' && stage
+            ? draining
+              ? `Step 2 of 3 · Stage ${stage.stageIndex + 1} dispatch complete`
+              : `Step 2 of 3 · Stage ${stage.stageIndex + 1} of ${stageCount} · ${stage.targetRpm.toLocaleString()} RPM`
+            : phase === 'finalizing' && stage
+              ? `Step 2 of 3 · Finalizing stage ${stage.stageIndex + 1} of ${stageCount}`
+              : phase === 'cooldown'
+                ? 'Between stages · Rolling-minute cooldown'
+                : phase === 'complete'
+                  ? 'Step 3 of 3 · Ramp complete'
+                  : phase === 'cancelled'
+                    ? 'Run cancelled'
+                    : phase === 'cancelling'
+                      ? 'Cancelling run…'
+                      : phase === 'attention'
+                        ? 'Active run needs attention'
+                        : phase === 'inconclusive'
+                          ? 'Run inconclusive'
+                          : phase === 'failed'
+                            ? 'Run finished without a pass'
+                            : 'Ready to start';
+  const running = [
+    'creating',
+    'preflight',
+    'stageStarting',
+    'stage',
+    'finalizing',
+    'cooldown',
+    'cancelling',
+  ].includes(phase);
+  const badgeLabel =
+    phase === 'cancelling' ? 'cancelling' : running ? 'running' : phase;
+  const tone =
+    phase === 'complete'
+      ? 'border-emerald-200 bg-emerald-50/70'
+      : phase === 'failed'
+        ? 'border-rose-200 bg-rose-50/70'
+        : phase === 'attention' || phase === 'inconclusive'
+          ? 'border-amber-200 bg-amber-50/70'
+          : 'border-blue-200 bg-blue-50/55';
+
+  return (
+    <section
+      className={`mt-4 rounded-xl border p-4 ${tone}`}
+      aria-live="polite"
+      aria-label="RPM run status"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Activity className={`size-4 ${running ? 'animate-pulse' : ''}`} />
+          <h3 className="text-sm font-semibold">{title}</h3>
+        </div>
+        <Badge variant="outline" className="bg-white/70 font-mono uppercase">
+          {badgeLabel}
+        </Badge>
+      </div>
+      <p className="mt-2 text-sm leading-5">{message}</p>
+
+      {phase !== 'idle' ? (
+        <dl className="mt-3 grid gap-2 rounded-lg border border-black/5 bg-white/65 p-3 text-xs sm:grid-cols-2">
+          <div className="min-w-0">
+            <dt className="text-muted-foreground">Endpoint</dt>
+            <dd className="break-all font-mono">{endpoint || '—'}</dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-muted-foreground">Model</dt>
+            <dd className="break-all font-mono">{model || '—'}</dd>
+          </div>
+        </dl>
+      ) : null}
+
+      {phase === 'creating' ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          No provider request has been sent yet · Elapsed {clock(elapsedMs)}
+        </p>
+      ) : null}
+      {phase === 'preflight' ? (
+        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+          <StatusValue label="Request" value="1 / 1 sent" />
+          <StatusValue label="Elapsed" value={clock(elapsedMs)} />
+          <StatusValue
+            label="Upstream timeout"
+            value={
+              remainingMs === 0
+                ? '45 s elapsed here · awaiting result'
+                : `${clock(remainingMs ?? 45_000)} remaining (+ setup/save)`
+            }
+          />
+        </div>
+      ) : null}
+      {phase === 'stage' && stage ? (
+        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+          <StatusValue
+            label="Completed"
+            value={`${completed.toLocaleString()} / ${stage.scheduledCount.toLocaleString()}`}
+          />
+          <StatusValue label="Elapsed" value={clock(elapsedMs)} />
+          <StatusValue
+            label={draining ? 'In-flight responses' : 'Dispatch remaining'}
+            value={
+              draining
+                ? `${Math.max(0, stage.scheduledCount - completed).toLocaleString()} · up to 45 s each`
+                : clock(remainingMs ?? 0)
+            }
+          />
+        </div>
+      ) : null}
+      {phase === 'cooldown' ? (
+        <div className="mt-3 text-xs">
+          <StatusValue
+            label="Next stage starts in"
+            value={clock(remainingMs ?? 0)}
+          />
+        </div>
+      ) : null}
+
+      {preflight ? (
+        <div
+          className={`mt-3 rounded-lg border p-3 text-xs ${preflight.outcome === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-950' : 'border-rose-200 bg-rose-50 text-rose-950'}`}
+        >
+          <p className="font-semibold">
+            {preflight.outcome === 'success'
+              ? 'Preflight passed'
+              : 'Preflight failed — no ramp traffic started'}
+          </p>
+          <p className="mt-1 break-words font-mono leading-5">
+            HTTP {preflight.httpStatus ?? '—'} · First byte{' '}
+            {duration(preflight.firstByteMs)} · Total{' '}
+            {duration(preflight.totalTimeMs)}
+            {preflight.returnedModel
+              ? ` · Model ${preflight.returnedModel}`
+              : ''}
+            {preflight.requestId ? ` · Request ID ${preflight.requestId}` : ''}
+          </p>
+          {preflight.error ? <p className="mt-1">{preflight.error}</p> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function StatusValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-black/5 bg-white/65 px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-0.5 font-mono font-semibold">{value}</p>
     </div>
   );
 }

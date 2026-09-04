@@ -131,7 +131,7 @@ export async function POST(_request: NextRequest, context: Context) {
         : 'failed';
     const finishedAt = Date.now();
     const stageUpdate = env.DB.prepare(
-      'UPDATE rpm_stages SET status = ?, finished_at = ?, attempted_count = ?, success_count = ?, rate_limited_count = ?, client_error_count = ?, server_error_count = ?, timeout_count = ?, transport_error_count = ?, malformed_count = ?, missed_dispatch_count = ?, success_rate_bps = ?, dispatch_valid = ?, median_latency_ms = ?, p95_latency_ms = ?, p95_schedule_lag_ms = ? WHERE run_id = ? AND stage_index = ?',
+      "UPDATE rpm_stages SET status = ?, finished_at = ?, attempted_count = ?, success_count = ?, rate_limited_count = ?, client_error_count = ?, server_error_count = ?, timeout_count = ?, transport_error_count = ?, malformed_count = ?, missed_dispatch_count = ?, success_rate_bps = ?, dispatch_valid = ?, median_latency_ms = ?, p95_latency_ms = ?, p95_schedule_lag_ms = ? WHERE run_id = ? AND stage_index = ? AND status = 'running' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status = 'running')",
     ).bind(
       stageStatus,
       finishedAt,
@@ -151,6 +151,8 @@ export async function POST(_request: NextRequest, context: Context) {
       percentile(scheduleLags, 0.95),
       id,
       stageIndex,
+      id,
+      user.userId,
     );
 
     const isLast = stageIndex === stageRows.length - 1;
@@ -167,13 +169,22 @@ export async function POST(_request: NextRequest, context: Context) {
     if (stageStatus !== 'passed') {
       statements.push(
         env.DB.prepare(
-          "UPDATE rpm_stages SET status = 'skipped' WHERE run_id = ? AND stage_index > ? AND status = 'pending'",
-        ).bind(id, stageIndex),
+          "UPDATE rpm_stages SET status = 'skipped' WHERE run_id = ? AND stage_index > ? AND status = 'pending' AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status = 'running') AND EXISTS (SELECT 1 FROM rpm_stages WHERE run_id = ? AND stage_index = ? AND status = ? AND finished_at = ?)",
+        ).bind(
+          id,
+          stageIndex,
+          id,
+          user.userId,
+          id,
+          stageIndex,
+          stageStatus,
+          finishedAt,
+        ),
       );
     }
     statements.push(
       env.DB.prepare(
-        'UPDATE rpm_runs SET status = ?, highest_passed_rpm = ?, stopped_at_rpm = ?, stop_reason = ?, total_attempted = (SELECT COALESCE(SUM(attempted_count), 0) FROM rpm_stages WHERE run_id = ?), total_succeeded = (SELECT COALESCE(SUM(success_count), 0) FROM rpm_stages WHERE run_id = ?), total_rate_limited = (SELECT COALESCE(SUM(rate_limited_count), 0) FROM rpm_stages WHERE run_id = ?), median_latency_ms = ?, p95_latency_ms = ?, finished_at = ? WHERE id = ?',
+        "UPDATE rpm_runs SET status = ?, highest_passed_rpm = ?, stopped_at_rpm = ?, stop_reason = ?, total_attempted = (SELECT COALESCE(SUM(attempted_count), 0) FROM rpm_stages WHERE run_id = ?), total_succeeded = (SELECT COALESCE(SUM(success_count), 0) FROM rpm_stages WHERE run_id = ?), total_rate_limited = (SELECT COALESCE(SUM(rate_limited_count), 0) FROM rpm_stages WHERE run_id = ?), median_latency_ms = ?, p95_latency_ms = ?, finished_at = ? WHERE id = ? AND user_id = ? AND status = 'running' AND EXISTS (SELECT 1 FROM rpm_stages WHERE run_id = ? AND stage_index = ? AND status = ? AND finished_at = ?)",
       ).bind(
         finalStatus,
         stageStatus === 'passed' ? current.targetRpm : run.highestPassedRpm,
@@ -198,14 +209,21 @@ export async function POST(_request: NextRequest, context: Context) {
         ) || null,
         terminal ? finishedAt : null,
         id,
+        user.userId,
+        id,
+        stageIndex,
+        stageStatus,
+        finishedAt,
       ),
     );
     if (terminal) {
       statements.push(
-        env.DB.prepare('DELETE FROM rpm_run_secrets WHERE run_id = ?').bind(id),
         env.DB.prepare(
-          'DELETE FROM rpm_active_leases WHERE user_id = ? AND run_id = ?',
-        ).bind(user.userId, id),
+          'DELETE FROM rpm_run_secrets WHERE run_id = ? AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status = ? AND finished_at = ?)',
+        ).bind(id, id, user.userId, finalStatus, finishedAt),
+        env.DB.prepare(
+          'DELETE FROM rpm_active_leases WHERE user_id = ? AND run_id = ? AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status = ? AND finished_at = ?)',
+        ).bind(user.userId, id, id, user.userId, finalStatus, finishedAt),
       );
     }
     await env.DB.batch(statements);
