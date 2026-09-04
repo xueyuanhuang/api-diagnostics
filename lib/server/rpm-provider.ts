@@ -23,6 +23,7 @@ type ProviderRequest = {
   plannedAt: number;
   timeoutMs?: number;
   onUpstreamStarted?: (startedAt: number) => void | Promise<void>;
+  onProviderSlotReleased?: () => void;
   dispatcher?: {
     mode: 'server-timed-shard-v1';
     shardIndex: number;
@@ -264,6 +265,12 @@ export async function runProviderRequest(
   const upstreamStartedAt = Date.now();
   const timeoutMs = input.timeoutMs ?? 45_000;
   let dispatchStartPersistence = Promise.resolve();
+  let providerSlotReleased = false;
+  const releaseProviderSlot = () => {
+    if (providerSlotReleased) return;
+    providerSlotReleased = true;
+    input.onProviderSlotReleased?.();
+  };
 
   try {
     const responsePromise = fetch(url, {
@@ -282,6 +289,7 @@ export async function runProviderRequest(
     });
     const response = await responsePromise;
     const headersReceivedAt = Date.now();
+    releaseProviderSlot();
     const read = await readBody(response);
     const completedAt = Date.now();
     const redactedBody = redact(read.body, input.apiKey);
@@ -344,6 +352,7 @@ export async function runProviderRequest(
     await dispatchStartPersistence;
     return evidence;
   } catch (error) {
+    releaseProviderSlot();
     const completedAt = Date.now();
     const timeout =
       error instanceof Error &&

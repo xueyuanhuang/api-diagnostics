@@ -4,7 +4,11 @@ import test from 'node:test';
 
 import { plannedRequestAt, sequencesForShard } from '../lib/rpm-dispatch.ts';
 import { deriveStageMetrics } from '../lib/rpm-stage-metrics.ts';
-import { RPM_MAX_TARGET_RPM, rpmShardCount } from '../lib/rpm-types.ts';
+import {
+  RPM_MAX_PROVIDER_CALLS_PER_SHARD,
+  RPM_MAX_TARGET_RPM,
+  rpmShardCount,
+} from '../lib/rpm-types.ts';
 import { runProviderRequest } from '../lib/server/rpm-provider.ts';
 
 const componentPath = new URL(
@@ -115,6 +119,7 @@ test('final metrics keep dispatch starts separate from preserved outcomes', () =
 test('redirect responses cannot pass and derived response fields are redacted', async () => {
   const originalFetch = globalThis.fetch;
   const apiKey = 'test-only-secret-value';
+  let providerSlotReleases = 0;
   globalThis.fetch = async () =>
     new Response(
       JSON.stringify({
@@ -137,6 +142,9 @@ test('redirect responses cannot pass and derived response fields are redacted', 
       stageIndex: 0,
       sequence: 0,
       plannedAt: Date.now(),
+      onProviderSlotReleased: () => {
+        providerSlotReleases += 1;
+      },
     });
     assert.equal(evidence.outcome, 'client_error');
     assert.equal(JSON.stringify(evidence).includes(apiKey), false);
@@ -149,6 +157,7 @@ test('redirect responses cannot pass and derived response fields are redacted', 
       evidence.response.headers.some(([name]) => name === '[REDACTED]'),
       true,
     );
+    assert.equal(providerSlotReleases, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -189,6 +198,11 @@ test('browser-attached dispatcher topology leaves room for the arm request', () 
     'five dispatch streams leave one connection available for the arm control request',
   );
   assert.equal(rpmShardCount(1_000), 5);
+  assert.equal(
+    RPM_MAX_PROVIDER_CALLS_PER_SHARD,
+    5,
+    'five provider header waits leave one Worker connection for evidence operations',
+  );
 });
 
 test('the browser starts server dispatchers but does not time request batches', () => {
@@ -227,6 +241,7 @@ test('server dispatch has frozen topology, duplicate-send claims, and a completi
     /while \(\s*reservedProviderSlots >= RPM_MAX_PROVIDER_CALLS_PER_SHARD\s*\)/,
   );
   assert.match(shardRoute, /Waiting briefly for dispatcher capacity/);
+  assert.match(shardRoute, /onProviderSlotReleased: releaseProviderSlot/);
   assert.match(shardRoute, /dispatcherErrorMessage/);
   assert.match(shardRoute, /verdictEligible/);
   assert.match(shardRoute, /completedBeforeFreeze/);

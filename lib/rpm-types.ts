@@ -128,7 +128,9 @@ export function rpmBatchSize(scheduledCount: number, durationSeconds = 60) {
 // browser/proxy connection available for the /arm control request; otherwise
 // the readiness barrier can wait forever while the control request is queued.
 export const RPM_MAX_DISPATCH_SHARDS = 5;
-export const RPM_MAX_PROVIDER_CALLS_PER_SHARD = 4;
+// Workers allow six outgoing connections waiting for response headers. Use at
+// most five provider connections so state/evidence operations retain a slot.
+export const RPM_MAX_PROVIDER_CALLS_PER_SHARD = 5;
 export const RPM_MAX_TARGET_RPM = 1_000;
 export const RPM_REQUEST_TIMEOUT_MS = 20_000;
 export const RPM_FINALIZE_GRACE_MS = 5_000;
@@ -140,7 +142,7 @@ export const RPM_FINALIZE_SETTLE_MS = 1_000;
  * the server. The browser establishes at most five observation streams before
  * arming, leaving transport capacity for the control request. Each Worker
  * invocation independently schedules its interleaved sequence numbers and may
- * hold up to four provider calls while waiting for response headers.
+ * hold up to five provider calls while waiting for response headers.
  */
 export function rpmShardCount(scheduledCount: number) {
   return Math.max(

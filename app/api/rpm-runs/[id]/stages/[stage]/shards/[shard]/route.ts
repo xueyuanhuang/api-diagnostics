@@ -407,6 +407,12 @@ export async function POST(request: NextRequest, context: Context) {
           let reservedProviderSlots = 0;
           const settled = await Promise.allSettled(
             sequences.map(async (sequence) => {
+              let providerSlotHeld = false;
+              const releaseProviderSlot = () => {
+                if (!providerSlotHeld) return;
+                providerSlotHeld = false;
+                reservedProviderSlots -= 1;
+              };
               const plannedAt = plannedRequestAt(
                 scheduledStartAt!,
                 sequence,
@@ -427,6 +433,7 @@ export async function POST(request: NextRequest, context: Context) {
                 sequence,
                 plannedAt,
                 timeoutMs: RPM_REQUEST_TIMEOUT_MS,
+                onProviderSlotReleased: releaseProviderSlot,
                 onUpstreamStarted: async (upstreamStartedAt: number) => {
                   const dispatchStartKey =
                     'rpm/v1/' +
@@ -502,6 +509,7 @@ export async function POST(request: NextRequest, context: Context) {
                 );
               }
               reservedProviderSlots += 1;
+              providerSlotHeld = true;
               try {
                 const requestPart = String(sequence).padStart(6, '0');
                 const upstreamClaimKey =
@@ -572,7 +580,7 @@ export async function POST(request: NextRequest, context: Context) {
                       : 'The response completed after the stage evidence was frozen or cancelled.',
                 });
               } finally {
-                reservedProviderSlots -= 1;
+                releaseProviderSlot();
               }
             }),
           );
