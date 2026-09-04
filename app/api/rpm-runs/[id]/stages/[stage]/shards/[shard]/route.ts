@@ -29,6 +29,7 @@ import {
 
 const ARM_WAIT_LIMIT_MS = 60_000;
 const ARM_POLL_MS = 500;
+const DISPATCH_CAPACITY_POLL_MS = 50;
 
 type Context = {
   params: Promise<{ id: string; stage: string; shard: string }>;
@@ -466,16 +467,27 @@ export async function POST(request: NextRequest, context: Context) {
                 return;
               }
 
-              if (
+              while (
                 reservedProviderSlots >= RPM_MAX_PROVIDER_CALLS_PER_SHARD
               ) {
-                await persist(
-                  missedDispatchEvidence(
-                    common,
-                    `The server shard had ${RPM_MAX_PROVIDER_CALLS_PER_SHARD} outstanding provider calls, so this slot was not sent or silently queued.`,
+                const capacityDeadline = plannedAt + maximumLagMs;
+                const capacityWaitRemainingMs = capacityDeadline - Date.now();
+                if (capacityWaitRemainingMs <= 0) {
+                  await persist(
+                    missedDispatchEvidence(
+                      common,
+                      `Waiting briefly for dispatcher capacity still left ${RPM_MAX_PROVIDER_CALLS_PER_SHARD} provider calls outstanding when the ${maximumLagMs} ms no-catch-up deadline expired.`,
+                    ),
+                  );
+                  return;
+                }
+                await scheduler.wait(
+                  Math.min(
+                    DISPATCH_CAPACITY_POLL_MS,
+                    capacityWaitRemainingMs,
                   ),
+                  { signal: request.signal },
                 );
-                return;
               }
               reservedProviderSlots += 1;
               try {

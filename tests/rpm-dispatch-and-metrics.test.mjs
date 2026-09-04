@@ -31,6 +31,10 @@ const exportRoutePath = new URL(
   '../app/api/rpm-runs/[id]/export/route.ts',
   import.meta.url,
 );
+const runDetailRoutePath = new URL(
+  '../app/api/rpm-runs/[id]/route.ts',
+  import.meta.url,
+);
 
 function stage(overrides = {}) {
   return {
@@ -218,6 +222,11 @@ test('server dispatch has frozen topology, duplicate-send claims, and a completi
     shardRoute,
     /reservedProviderSlots >= RPM_MAX_PROVIDER_CALLS_PER_SHARD/,
   );
+  assert.match(
+    shardRoute,
+    /while \(\s*reservedProviderSlots >= RPM_MAX_PROVIDER_CALLS_PER_SHARD\s*\)/,
+  );
+  assert.match(shardRoute, /Waiting briefly for dispatcher capacity/);
   assert.match(shardRoute, /dispatcherErrorMessage/);
   assert.match(shardRoute, /verdictEligible/);
   assert.match(shardRoute, /completedBeforeFreeze/);
@@ -264,4 +273,15 @@ test('tester-side delivery failures explain the failed lifecycle boundary', () =
   assert.match(finalizeRoute, /dispatcherErrorMessages/);
   assert.match(finalizeRoute, /stage was never armed/i);
   assert.match(exportRoute, /diagnosticSummary/);
+});
+
+test('live UI polls persisted server evidence instead of relying on buffered streams', () => {
+  const component = readFileSync(componentPath, 'utf8');
+  const runDetailRoute = readFileSync(runDetailRoutePath, 'utf8');
+
+  assert.match(component, /pollPersistedStageProgress/);
+  assert.match(component, /verifiedDispatchStarts/);
+  assert.match(runDetailRoute, /liveProgress/);
+  assert.match(runDetailRoute, /dispatch-starts/);
+  assert.match(runDetailRoute, /evidenceRecords/);
 });

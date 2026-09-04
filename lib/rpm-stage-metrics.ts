@@ -13,6 +13,7 @@ type PersistedStageCounters = {
 };
 
 type LiveStageCounters = {
+  completed?: number;
   dispatched?: number;
   attempted: number;
   succeeded: number;
@@ -42,6 +43,7 @@ export function deriveStageMetrics(
   const succeeded = source?.succeeded ?? stage.successCount;
   const rateLimited = source?.rateLimited ?? stage.rateLimitedCount;
   const testerMisses = source?.missedDispatch ?? stage.missedDispatchCount;
+  const recorded = source?.completed ?? observed + testerMisses;
 
   return {
     scheduled,
@@ -49,7 +51,7 @@ export function deriveStageMetrics(
     succeeded,
     rateLimited,
     testerMisses,
-    recorded: observed + testerMisses,
+    recorded,
     deliveryPercent: scheduled > 0 ? (sent / scheduled) * 100 : null,
     observed,
     providerSuccessPercent: observed > 0 ? (succeeded / observed) * 100 : null,

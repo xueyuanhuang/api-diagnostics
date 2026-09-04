@@ -48,7 +48,43 @@ export async function GET(_request: NextRequest, context: Context) {
         preflight = null;
       }
     }
-    return noStore({ ...(await runDetail(rows[0])), preflight });
+    const detail = await runDetail(rows[0]);
+    let liveProgress: {
+      stageIndex: number;
+      scheduledRequests: number;
+      expectedDispatchers: number;
+      readyDispatchers: number;
+      verifiedDispatchStarts: number;
+      evidenceRecords: number;
+    } | null = null;
+    if (detail.run.status === 'running' && detail.run.currentStage !== null) {
+      const activeStage = detail.stages.find(
+        (stage) => stage.stageIndex === detail.run.currentStage,
+      );
+      if (activeStage) {
+        const stagePart = String(activeStage.stageIndex).padStart(2, '0');
+        const [readyKeys, dispatchStartKeys, resultKeys] = await Promise.all([
+          listR2Keys(
+            env.EVIDENCE,
+            `rpm/v1/${id}/dispatchers/s${stagePart}/`,
+          ),
+          listR2Keys(
+            env.EVIDENCE,
+            `rpm/v1/${id}/dispatch-starts/s${stagePart}/`,
+          ),
+          listR2Keys(env.EVIDENCE, `rpm/v1/${id}/results/s${stagePart}/`),
+        ]);
+        liveProgress = {
+          stageIndex: activeStage.stageIndex,
+          scheduledRequests: activeStage.scheduledCount,
+          expectedDispatchers: activeStage.batchCount,
+          readyDispatchers: readyKeys.length,
+          verifiedDispatchStarts: dispatchStartKeys.length,
+          evidenceRecords: resultKeys.length,
+        };
+      }
+    }
+    return noStore({ ...detail, preflight, liveProgress });
   } catch (error) {
     return serverError(error);
   }

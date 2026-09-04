@@ -86,6 +86,14 @@ type JsonErrorBody = {
 };
 type RpmDetailWithPreflight = RpmRunDetail & {
   preflight?: RpmPreflightSummary | null;
+  liveProgress?: {
+    stageIndex: number;
+    scheduledRequests: number;
+    expectedDispatchers: number;
+    readyDispatchers: number;
+    verifiedDispatchStarts: number;
+    evidenceRecords: number;
+  } | null;
 };
 
 class JsonFetchError extends Error {
@@ -227,6 +235,36 @@ async function finalizeStageWithBarrier(url: string, signal: AbortSignal) {
         signal,
       );
     }
+  }
+}
+
+async function pollPersistedStageProgress({
+  url,
+  stageIndex,
+  signal,
+  shouldContinue,
+  onProgress,
+}: {
+  url: string;
+  stageIndex: number;
+  signal: AbortSignal;
+  shouldContinue: () => boolean;
+  onProgress: (
+    progress: NonNullable<RpmDetailWithPreflight['liveProgress']>,
+  ) => void;
+}) {
+  while (!signal.aborted && shouldContinue()) {
+    try {
+      const detail = await jsonFetch<RpmDetailWithPreflight>(url, { signal });
+      if (detail.liveProgress?.stageIndex === stageIndex) {
+        onProgress(detail.liveProgress);
+      }
+    } catch (error) {
+      if (signal.aborted) throw error;
+      // Live progress is best effort; finalization still reads canonical evidence.
+    }
+    if (!shouldContinue()) break;
+    await waitUntil(Date.now() + 1_000, signal);
   }
 }
 
@@ -488,41 +526,6 @@ export function RpmRampTest({
     };
   }, [detail, isRunning, openedRunId, user]);
 
-  function mergeOutcome(stageIndex: number, summary: OutcomeSummary) {
-    setLive((current) => {
-      const previous = current[stageIndex] ?? EMPTY_LIVE;
-      return {
-        ...current,
-        [stageIndex]: {
-          dispatched: previous.dispatched,
-          completed: previous.completed + summary.completed,
-          attempted: previous.attempted + summary.attempted,
-          succeeded: previous.succeeded + summary.succeeded,
-          rateLimited: previous.rateLimited + summary.rateLimited,
-          clientErrors: previous.clientErrors + summary.clientErrors,
-          serverErrors: previous.serverErrors + summary.serverErrors,
-          timeouts: previous.timeouts + summary.timeouts,
-          transportErrors: previous.transportErrors + summary.transportErrors,
-          malformed: previous.malformed + summary.malformed,
-          missedDispatch: previous.missedDispatch + summary.missedDispatch,
-        },
-      };
-    });
-  }
-
-  function mergeDispatched(stageIndex: number) {
-    setLive((current) => {
-      const previous = current[stageIndex] ?? EMPTY_LIVE;
-      return {
-        ...current,
-        [stageIndex]: {
-          ...previous,
-          dispatched: previous.dispatched + 1,
-        },
-      };
-    });
-  }
-
   async function cancelRun() {
     const runId = activeRunIdRef.current ?? detail?.run.id;
     if (!runId) {
@@ -721,8 +724,8 @@ export function RpmRampTest({
             openServerShard({
               url: `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/shards/${shardIndex}`,
               signal: controller.signal,
-              onDispatched: () => mergeDispatched(stage.stageIndex),
-              onRequest: (summary) => mergeOutcome(stage.stageIndex, summary),
+              onDispatched: () => undefined,
+              onRequest: () => undefined,
             }),
         );
         let armedStage = startedStage;
@@ -794,11 +797,33 @@ export function RpmRampTest({
             current.run.stageDurationSeconds * 1_000 +
             RPM_REQUEST_TIMEOUT_MS +
             RPM_FINALIZE_GRACE_MS;
+          let progressPolling = true;
+          const progressPromise = pollPersistedStageProgress({
+            url: `/api/rpm-runs/${current.run.id}`,
+            stageIndex: stage.stageIndex,
+            signal: controller.signal,
+            shouldContinue: () => progressPolling,
+            onProgress: (progress) => {
+              setLive((existing) => ({
+                ...existing,
+                [stage.stageIndex]: {
+                  ...(existing[stage.stageIndex] ?? EMPTY_LIVE),
+                  dispatched: progress.verifiedDispatchStarts,
+                  completed: progress.evidenceRecords,
+                },
+              }));
+              setMessage(
+                `${progress.readyDispatchers}/${progress.expectedDispatchers} dispatchers ready · ${progress.verifiedDispatchStarts}/${progress.scheduledRequests} verified sends · ${progress.evidenceRecords} outcomes preserved.`,
+              );
+            },
+          });
           const completion = await waitForDispatcherCompletion(
             shardHandles,
             completionDeadline,
             controller.signal,
           );
+          progressPolling = false;
+          await progressPromise.catch(() => undefined);
           if (completion.timedOut) {
             finalizationMessage =
               'The stage evidence deadline was reached. Freezing the evidence now so a stalled dispatcher cannot block this run.';
