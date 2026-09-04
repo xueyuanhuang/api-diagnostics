@@ -24,6 +24,99 @@ function preflightSummary(evidence: RpmRequestEvidence): RpmPreflightSummary {
   };
 }
 
+type TesterDiagnostic = {
+  stageIndex: number;
+  sequence: number | null;
+  shardIndex: number | null;
+  plannedAt: number | null;
+  recordedAt: number | null;
+  scheduleLagMs: number | null;
+  reason: string;
+};
+
+function diagnosticFromEvidence(value: unknown): TesterDiagnostic | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const wrapper = value as { requests?: unknown[] };
+  const candidate = Array.isArray(wrapper.requests)
+    ? wrapper.requests[0]
+    : value;
+  if (typeof candidate !== 'object' || candidate === null) return null;
+  const evidence = candidate as Partial<RpmRequestEvidence>;
+  if (evidence.outcome !== 'missed_dispatch') return null;
+  return {
+    stageIndex:
+      typeof evidence.stageIndex === 'number' ? evidence.stageIndex : -1,
+    sequence: typeof evidence.sequence === 'number' ? evidence.sequence : null,
+    shardIndex:
+      typeof evidence.dispatcher?.shardIndex === 'number'
+        ? evidence.dispatcher.shardIndex
+        : null,
+    plannedAt:
+      typeof evidence.plannedAt === 'number' ? evidence.plannedAt : null,
+    recordedAt:
+      typeof evidence.completedAt === 'number' ? evidence.completedAt : null,
+    scheduleLagMs:
+      typeof evidence.scheduleLagMs === 'number'
+        ? evidence.scheduleLagMs
+        : null,
+    reason:
+      typeof evidence.error === 'string' && evidence.error.trim()
+        ? evidence.error
+        : 'The tester did not record an upstream dispatch start for this slot.',
+  };
+}
+
+async function storedTesterDiagnostics(
+  runId: string,
+  stages: Awaited<ReturnType<typeof runDetail>>['stages'],
+) {
+  const diagnostics: TesterDiagnostic[] = [];
+  for (const stage of stages.filter((item) => item.missedDispatchCount > 0)) {
+    const stagePart = String(stage.stageIndex).padStart(2, '0');
+    let keys = await listR2Keys(
+      env.EVIDENCE,
+      `rpm/v1/${runId}/tester-diagnostics/s${stagePart}/`,
+    );
+    // Runs created before compact diagnostic objects were introduced only have
+    // canonical request evidence. Scan newest records first and stop as soon as
+    // the stage's known number of misses has been explained.
+    if (!keys.length) {
+      keys = (
+        await listR2Keys(env.EVIDENCE, `rpm/v1/${runId}/results/s${stagePart}/`)
+      ).reverse();
+    }
+    for (let index = 0; index < keys.length; index += 4) {
+      const objects = await Promise.all(
+        keys.slice(index, index + 4).map((key) => env.EVIDENCE.get(key)),
+      );
+      for (const object of objects) {
+        if (!object) continue;
+        try {
+          const diagnostic = diagnosticFromEvidence(
+            JSON.parse(await object.text()),
+          );
+          if (diagnostic) diagnostics.push(diagnostic);
+        } catch {
+          // A corrupt evidence object remains visible in the full export. It
+          // cannot safely explain a missed send in this compact UI summary.
+        }
+      }
+      if (
+        diagnostics.filter((item) => item.stageIndex === stage.stageIndex)
+          .length >= stage.missedDispatchCount
+      ) {
+        break;
+      }
+    }
+  }
+  return diagnostics.sort(
+    (left, right) =>
+      left.stageIndex - right.stageIndex ||
+      (left.sequence ?? Number.MAX_SAFE_INTEGER) -
+        (right.sequence ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
 export async function GET(_request: NextRequest, context: Context) {
   const user = await getChatGPTUser();
   if (!user)
@@ -64,10 +157,7 @@ export async function GET(_request: NextRequest, context: Context) {
       if (activeStage) {
         const stagePart = String(activeStage.stageIndex).padStart(2, '0');
         const [readyKeys, dispatchStartKeys, resultKeys] = await Promise.all([
-          listR2Keys(
-            env.EVIDENCE,
-            `rpm/v1/${id}/dispatchers/s${stagePart}/`,
-          ),
+          listR2Keys(env.EVIDENCE, `rpm/v1/${id}/dispatchers/s${stagePart}/`),
           listR2Keys(
             env.EVIDENCE,
             `rpm/v1/${id}/dispatch-starts/s${stagePart}/`,
@@ -84,7 +174,8 @@ export async function GET(_request: NextRequest, context: Context) {
         };
       }
     }
-    return noStore({ ...detail, preflight, liveProgress });
+    const testerDiagnostics = await storedTesterDiagnostics(id, detail.stages);
+    return noStore({ ...detail, preflight, liveProgress, testerDiagnostics });
   } catch (error) {
     return serverError(error);
   }

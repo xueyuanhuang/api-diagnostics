@@ -285,3 +285,16 @@ test('live UI polls persisted server evidence instead of relying on buffered str
   assert.match(runDetailRoute, /dispatch-starts/);
   assert.match(runDetailRoute, /evidenceRecords/);
 });
+
+test('tester misses expose a compact under-the-hood explanation', () => {
+  const component = readFileSync(componentPath, 'utf8');
+  const runDetailRoute = readFileSync(runDetailRoutePath, 'utf8');
+  const shardRoute = readFileSync(shardRoutePath, 'utf8');
+
+  assert.match(shardRoute, /tester-diagnostics/);
+  assert.match(runDetailRoute, /storedTesterDiagnostics/);
+  assert.match(runDetailRoute, /diagnosticFromEvidence/);
+  assert.match(component, /What happened inside the tester/);
+  assert.match(component, /tester-side scheduling misses/);
+  assert.match(component, /diagnostic\.reason/);
+});

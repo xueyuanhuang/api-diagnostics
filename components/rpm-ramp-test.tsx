@@ -11,6 +11,7 @@ import {
   LogIn,
   Play,
   RadioTower,
+  ShieldAlert,
   ShieldCheck,
   Square,
   XCircle,
@@ -94,6 +95,15 @@ type RpmDetailWithPreflight = RpmRunDetail & {
     verifiedDispatchStarts: number;
     evidenceRecords: number;
   } | null;
+  testerDiagnostics?: Array<{
+    stageIndex: number;
+    sequence: number | null;
+    shardIndex: number | null;
+    plannedAt: number | null;
+    recordedAt: number | null;
+    scheduleLagMs: number | null;
+    reason: string;
+  }>;
 };
 
 class JsonFetchError extends Error {
@@ -391,7 +401,7 @@ export function RpmRampTest({
   const [targetRpm, setTargetRpm] = useState(1_000);
   const [threshold, setThreshold] = useState(90);
   const [rampMode, setRampMode] = useState<RpmRampMode>('balanced');
-  const [detail, setDetail] = useState<RpmRunDetail | null>(null);
+  const [detail, setDetail] = useState<RpmDetailWithPreflight | null>(null);
   const [live, setLive] = useState<Record<number, LiveStage>>({});
   const [message, setMessage] = useState(
     'Ready to preflight the exact load-test payload.',
@@ -855,6 +865,13 @@ export function RpmRampTest({
           (item) => item.stageIndex === stage.stageIndex,
         );
         if (finalized?.status !== 'passed') {
+          if (current.run.status === 'inconclusive') {
+            const diagnosed = await jsonFetch<RpmDetailWithPreflight>(
+              `/api/rpm-runs/${current.run.id}`,
+              { signal: controller.signal },
+            );
+            setDetail(diagnosed);
+          }
           activeRunIdRef.current = null;
           setRecoverableRunId('');
           setPhase(
@@ -1379,6 +1396,50 @@ export function RpmRampTest({
         <p className="px-1 text-xs leading-5 text-muted-foreground">
           <Clock3 className="mr-1 inline size-3" /> {detail.run.stopReason}
         </p>
+      ) : null}
+
+      {detail?.testerDiagnostics?.length ? (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50/70 p-5">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="size-4 text-amber-700" />
+            <h3 className="text-sm font-semibold text-amber-950">
+              What happened inside the tester
+            </h3>
+          </div>
+          <p className="mt-2 text-sm leading-6 text-amber-950">
+            {detail.testerDiagnostics.length.toLocaleString()} scheduled request
+            {detail.testerDiagnostics.length === 1 ? ' was' : 's were'} not sent
+            to the provider. These are tester-side scheduling misses, not
+            provider failures.
+          </p>
+          <ul className="mt-3 space-y-2 text-xs leading-5 text-amber-950">
+            {detail.testerDiagnostics.map((diagnostic, index) => (
+              <li
+                key={`${diagnostic.stageIndex}-${diagnostic.sequence}-${index}`}
+                className="rounded-lg border border-amber-200 bg-white/70 px-3 py-2"
+              >
+                <span className="font-semibold">
+                  Stage {diagnostic.stageIndex + 1}
+                  {diagnostic.sequence === null
+                    ? ''
+                    : ` · request ${diagnostic.sequence + 1}`}
+                  {diagnostic.shardIndex === null
+                    ? ''
+                    : ` · dispatcher ${diagnostic.shardIndex + 1}`}
+                </span>
+                {diagnostic.scheduleLagMs === null
+                  ? ''
+                  : ` · recorded ${diagnostic.scheduleLagMs.toLocaleString()} ms after its planned time`}
+                <br />
+                {diagnostic.reason}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 text-xs leading-5 text-amber-900">
+            The full JSON export keeps the corresponding redacted request
+            evidence. No API key is included.
+          </p>
+        </section>
       ) : null}
     </div>
   );

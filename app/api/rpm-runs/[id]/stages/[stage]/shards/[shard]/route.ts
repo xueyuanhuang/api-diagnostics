@@ -349,6 +349,21 @@ export async function POST(request: NextRequest, context: Context) {
                   }
                   canonical = stored;
                 }
+                if (canonical.outcome === 'missed_dispatch') {
+                  await env.EVIDENCE.put(
+                    'rpm/v1/' +
+                      id +
+                      '/tester-diagnostics/s' +
+                      stagePart +
+                      '/request-' +
+                      String(canonical.sequence).padStart(6, '0') +
+                      '.json',
+                    JSON.stringify(canonical),
+                    {
+                      httpMetadata: { contentType: 'application/json' },
+                    },
+                  );
+                }
                 evidence.push(compactEvidence(canonical, verdictEligible));
               });
             saveQueue = operation.then(() => undefined);
@@ -482,10 +497,7 @@ export async function POST(request: NextRequest, context: Context) {
                   return;
                 }
                 await scheduler.wait(
-                  Math.min(
-                    DISPATCH_CAPACITY_POLL_MS,
-                    capacityWaitRemainingMs,
-                  ),
+                  Math.min(DISPATCH_CAPACITY_POLL_MS, capacityWaitRemainingMs),
                   { signal: request.signal },
                 );
               }
