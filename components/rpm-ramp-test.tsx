@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import { armStageWhenReady } from '@/lib/rpm-arm';
 import {
   buildRampTargets,
   RPM_FINALIZE_GRACE_MS,
@@ -59,7 +60,7 @@ type ShardStreamEvent =
     }
   | { type: 'complete'; shardIndex: number; summary: OutcomeSummary }
   | { type: 'error'; shardIndex: number; error: string };
-type ShardHandle = { ready: Promise<void>; complete: Promise<void> };
+type ShardHandle = { complete: Promise<void> };
 type RunnerPhase =
   | 'idle'
   | 'creating'
@@ -133,70 +134,58 @@ function openServerShard({
 }): ShardHandle {
   let readySeen = false;
   let completeSeen = false;
-  let resolveReady!: () => void;
-  let rejectReady!: (error: unknown) => void;
-  const ready = new Promise<void>((resolve, reject) => {
-    resolveReady = resolve;
-    rejectReady = reject;
-  });
   const complete = (async () => {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        cache: 'no-store',
-        signal,
-      });
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as JsonErrorBody;
-        throw new JsonFetchError(response.status, body);
-      }
-      if (!response.body)
-        throw new Error('The server dispatcher returned no progress stream.');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      const consumeLine = (line: string) => {
-        if (!line.trim()) return;
-        const event = JSON.parse(line) as ShardStreamEvent;
-        if (event.type === 'ready') {
-          readySeen = true;
-          resolveReady();
-        } else if (event.type === 'dispatched') {
-          onDispatched();
-        } else if (event.type === 'request') {
-          onRequest(event.summary);
-        } else if (event.type === 'complete') {
-          completeSeen = true;
-        } else if (event.type === 'error') {
-          throw new Error(event.error);
-        }
-      };
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        let newline = buffer.indexOf('\n');
-        while (newline >= 0) {
-          consumeLine(buffer.slice(0, newline));
-          buffer = buffer.slice(newline + 1);
-          newline = buffer.indexOf('\n');
-        }
-      }
-      buffer += decoder.decode();
-      consumeLine(buffer);
-      if (!readySeen)
-        throw new Error('The server dispatcher closed before it was ready.');
-      if (!completeSeen)
-        throw new Error(
-          'The server dispatcher stream closed before it completed.',
-        );
-    } catch (error) {
-      if (!readySeen) rejectReady(error);
-      throw error;
+    const response = await fetch(url, {
+      method: 'POST',
+      cache: 'no-store',
+      signal,
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as JsonErrorBody;
+      throw new JsonFetchError(response.status, body);
     }
+    if (!response.body)
+      throw new Error('The server dispatcher returned no progress stream.');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const consumeLine = (line: string) => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line) as ShardStreamEvent;
+      if (event.type === 'ready') {
+        readySeen = true;
+      } else if (event.type === 'dispatched') {
+        onDispatched();
+      } else if (event.type === 'request') {
+        onRequest(event.summary);
+      } else if (event.type === 'complete') {
+        completeSeen = true;
+      } else if (event.type === 'error') {
+        throw new Error(event.error);
+      }
+    };
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        consumeLine(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+      }
+    }
+    buffer += decoder.decode();
+    consumeLine(buffer);
+    if (!readySeen)
+      throw new Error('The server dispatcher closed before it was ready.');
+    if (!completeSeen)
+      throw new Error(
+        'The server dispatcher stream closed before it completed.',
+      );
   })();
-  return { ready, complete };
+  return { complete };
 }
 
 function waitUntil(timestamp: number, signal: AbortSignal) {
@@ -239,59 +228,6 @@ async function finalizeStageWithBarrier(url: string, signal: AbortSignal) {
       );
     }
   }
-}
-
-function waitForDispatcherReadiness(
-  handles: ShardHandle[],
-  signal: AbortSignal,
-) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    let timeout = 0;
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      signal.removeEventListener('abort', onAbort);
-    };
-    const onAbort = () => {
-      cleanup();
-      reject(new DOMException('Aborted', 'AbortError'));
-    };
-    timeout = window.setTimeout(() => {
-      cleanup();
-      reject(new Error('Server dispatchers were not ready within 30 seconds.'));
-    }, 30_000);
-    signal.addEventListener('abort', onAbort, { once: true });
-    const dispatcherEndedBeforeArm = Promise.race(
-      handles.map((handle) =>
-        handle.complete.then(
-          () => {
-            throw new Error(
-              'A server dispatcher ended before the stage armed.',
-            );
-          },
-          (error) => {
-            throw error;
-          },
-        ),
-      ),
-    );
-    void Promise.race([
-      Promise.all(handles.map((handle) => handle.ready)),
-      dispatcherEndedBeforeArm,
-    ]).then(
-      () => {
-        cleanup();
-        resolve();
-      },
-      (error) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
 }
 
 function waitForDispatcherCompletion(
@@ -788,17 +724,21 @@ export function RpmRampTest({
         let armedStage = startedStage;
         let finalizationMessage = `Finalizing stage ${stage.stageIndex + 1} from server evidence…`;
         try {
-          await waitForDispatcherReadiness(shardHandles, controller.signal);
-          if (controller.signal.aborted) break;
           let armed: { stage: RpmStageSummary; shardCount: number };
           try {
-            armed = await jsonFetch<{
-              stage: RpmStageSummary;
-              shardCount: number;
-            }>(
-              `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/arm`,
-              { method: 'POST', signal: controller.signal },
-            );
+            armed = await armStageWhenReady({
+              signal: controller.signal,
+              attempt: () =>
+                jsonFetch<{
+                  stage: RpmStageSummary;
+                  shardCount: number;
+                }>(
+                  `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/arm`,
+                  { method: 'POST', signal: controller.signal },
+                ),
+              wait: (delayMs, signal) =>
+                waitUntil(Date.now() + delayMs, signal),
+            });
           } catch (armError) {
             if (controller.signal.aborted) throw armError;
             const recovered = await jsonFetch<RpmDetailWithPreflight>(
@@ -1149,7 +1089,12 @@ export function RpmRampTest({
             >
               {phase === 'creating' ? (
                 <>
-                  <Activity className="size-3.5 animate-pulse" /> Creating run…
+                  <Activity className="size-3.5 animate-pulse motion-reduce:animate-none" />{' '}
+                  Creating run…
+                </>
+              ) : phase === 'cancelling' ? (
+                <>
+                  <Square className="size-3.5 fill-current" /> Cancelling…
                 </>
               ) : (
                 <>
@@ -1493,12 +1438,16 @@ function RunStatusCard({
   return (
     <section
       className={`mt-4 rounded-xl border p-4 ${tone}`}
-      aria-live="polite"
       aria-label="RPM run status"
     >
+      <output className="sr-only" aria-live="polite">
+        {title}. {message}
+      </output>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Activity className={`size-4 ${running ? 'animate-pulse' : ''}`} />
+          <Activity
+            className={`size-4 ${running ? 'animate-pulse motion-reduce:animate-none' : ''}`}
+          />
           <h3 className="text-sm font-semibold">{title}</h3>
         </div>
         <Badge variant="outline" className="bg-white/70 font-mono uppercase">
@@ -1527,7 +1476,7 @@ function RunStatusCard({
       ) : null}
       {phase === 'preflight' ? (
         <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-          <StatusValue label="Request" value="1 / 1 sent" />
+          <StatusValue label="Planned load" value="1 preflight request" />
           <StatusValue label="Elapsed" value={clock(elapsedMs)} />
           <StatusValue
             label="Upstream timeout"

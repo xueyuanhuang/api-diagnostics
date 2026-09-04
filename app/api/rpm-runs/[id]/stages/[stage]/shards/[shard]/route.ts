@@ -26,7 +26,7 @@ import {
   type RpmRequestEvidence,
 } from '@/lib/server/rpm-provider';
 
-const ARM_WAIT_LIMIT_MS = 30_000;
+const ARM_WAIT_LIMIT_MS = 60_000;
 const ARM_POLL_MS = 500;
 
 type Context = {

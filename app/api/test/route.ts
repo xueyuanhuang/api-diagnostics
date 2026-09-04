@@ -10,6 +10,7 @@ import { decryptApiKey } from '@/lib/server/encryption';
 import { noStore } from '@/lib/server/http';
 import { getOwnedProfileConfig } from '@/lib/server/profile-config';
 import { readProviderStream } from '@/lib/server/provider-stream';
+import { combinedRequestSignal } from '@/lib/server/abort-signals';
 
 type RequestPayload = {
   profileId?: unknown;
@@ -201,7 +202,7 @@ export async function POST(request: NextRequest) {
       body: requestBody,
       cache: 'no-store',
       redirect: 'manual',
-      signal: AbortSignal.timeout(45_000),
+      signal: combinedRequestSignal(request.signal, 45_000),
     });
 
     const streamed = await readProviderStream(

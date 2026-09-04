@@ -52,12 +52,14 @@ import {
   type EvidenceRun,
 } from '@/lib/evidence-export';
 import { NORMAL_QUESTIONS } from '@/lib/questions';
+import { executeNormalTestRun } from '@/lib/normal-test-runner';
 import type { RpmRunSummary } from '@/lib/rpm-types';
 
 type ApiType = 'anthropic' | 'openai';
 type ResultStatus =
   | 'waiting'
   | 'running'
+  | 'stopped'
   | 'normal'
   | 'cached'
   | 'large'
@@ -66,6 +68,13 @@ type ResultStatus =
 type ViewMode = 'current' | 'saved';
 type ResultsView = 'tokens' | 'performance';
 type TestMode = 'normal' | 'rpm';
+type NormalPhase =
+  | 'idle'
+  | 'running'
+  | 'stopping'
+  | 'stopped'
+  | 'saving'
+  | 'complete';
 
 type ConnectionSettings = { baseUrl: string; model: string };
 type ApiKeys = Record<ApiType, string>;
@@ -265,7 +274,9 @@ function clientBaseUrlError(baseUrl: string) {
   }
 }
 
-function classifyResult(result: ApiResponse): ResultStatus {
+function classifyResult(
+  result: ApiResponse,
+): Exclude<ResultStatus, 'waiting' | 'running' | 'stopped'> {
   if (!result.httpStatus || result.httpStatus < 200 || result.httpStatus >= 300)
     return 'error';
   if (typeof result.totalInputTokens !== 'number') return 'unavailable';
@@ -308,6 +319,12 @@ function verdict(status: ResultStatus) {
       label: 'Failed',
       icon: XCircle,
       className: 'border-rose-200 bg-rose-50 text-rose-800',
+    };
+  if (status === 'stopped')
+    return {
+      label: 'Stopped',
+      icon: Square,
+      className: 'border-slate-200 bg-slate-50 text-slate-700',
     };
   return {
     label: status === 'running' ? 'Testing' : 'Waiting',
@@ -590,15 +607,20 @@ function evidenceRun(context: RunContext, results: TestResult[]): EvidenceRun {
   const errorCount = results.filter(
     (result) => result.status === 'error',
   ).length;
+  const completedCount =
+    normalCount + cacheCount + largeCount + unavailableCount + errorCount;
   return {
     ...context,
-    verdict: largeCount
-      ? 'large'
-      : cacheCount
-        ? 'cached'
-        : errorCount || unavailableCount
-          ? 'incomplete'
-          : 'normal',
+    verdict:
+      completedCount < NORMAL_QUESTIONS.length
+        ? 'incomplete'
+        : largeCount
+          ? 'large'
+          : cacheCount
+            ? 'cached'
+            : errorCount || unavailableCount
+              ? 'incomplete'
+              : 'normal',
     normalCount,
     cacheCount,
     largeCount,
@@ -633,6 +655,7 @@ export function TokenCheckApp({
   const [settingsReady, setSettingsReady] = useState(false);
   const [results, setResults] = useState<TestResult[]>(initialResults);
   const [isRunning, setIsRunning] = useState(false);
+  const [normalPhase, setNormalPhase] = useState<NormalPhase>('idle');
   const [isRpmRunning, setIsRpmRunning] = useState(false);
   const [testMode, setTestMode] = useState<TestMode>('normal');
   const [formError, setFormError] = useState('');
@@ -976,13 +999,51 @@ export function TokenCheckApp({
   );
 
   const overall = useMemo(() => {
-    if (isRunning)
+    if (normalPhase === 'running')
       return {
         tone: 'running',
         title: `Testing question ${Math.min(completed + 1, 12)} of 12`,
         description:
           'Each request uses no system prompt, tools, or explicit cache settings.',
       };
+    if (normalPhase === 'stopping')
+      return {
+        tone: 'running',
+        title: 'Stopping test…',
+        description:
+          'Cancelling the active request and closing every unfinished question.',
+      };
+    if (normalPhase === 'saving')
+      return {
+        tone: 'running',
+        title: 'Saving completed test…',
+        description: 'All 12 responses finished. Saving the run privately.',
+      };
+    if (normalPhase === 'stopped') {
+      const partialEvidence = [
+        cacheCount + largeCount
+          ? `${cacheCount + largeCount} anomalous result${cacheCount + largeCount === 1 ? '' : 's'}`
+          : null,
+        errorCount
+          ? `${errorCount} failed request${errorCount === 1 ? '' : 's'}`
+          : null,
+      ].filter(Boolean);
+      return {
+        tone: 'warning',
+        title:
+          completed === 0
+            ? 'Test stopped'
+            : completed === NORMAL_QUESTIONS.length
+              ? 'Test stopped after all responses completed'
+              : 'Test stopped — partial results',
+        description:
+          completed === 0
+            ? 'Stopped before any question completed. No result was saved.'
+            : completed === NORMAL_QUESTIONS.length
+              ? 'All 12 requests completed, but the run was stopped before it was saved. The displayed evidence can still be exported.'
+              : `${completed} of 12 questions completed. No full-run token verdict was produced or saved automatically.${partialEvidence.length ? ` Partial evidence includes ${partialEvidence.join(' and ')}.` : ''}`,
+      };
+    }
     if (!completed)
       return {
         tone: 'ready',
@@ -1031,8 +1092,8 @@ export function TokenCheckApp({
     cacheCount,
     completed,
     errorCount,
-    isRunning,
     largeCount,
+    normalPhase,
     normalCount,
     unavailableCount,
   ]);
@@ -1274,14 +1335,6 @@ export function TokenCheckApp({
     }
   }
 
-  function updateResult(index: number, patch: Partial<TestResult>) {
-    setResults((current) =>
-      current.map((result, resultIndex) =>
-        resultIndex === index ? { ...result, ...patch } : result,
-      ),
-    );
-  }
-
   async function saveCompletedRun(finishedResults: TestResult[]) {
     if (!user) return;
     try {
@@ -1370,6 +1423,7 @@ export function TokenCheckApp({
     const controller = new AbortController();
     abortRef.current = controller;
     setIsRunning(true);
+    setNormalPhase('running');
     setViewMode('current');
     setSelectedRunId('');
     setShownApiType(apiType);
@@ -1382,16 +1436,13 @@ export function TokenCheckApp({
       createdAt: Date.now(),
     });
     setRunMessage('Running ordinary questions one at a time…');
-    const finishedResults = initialResults();
-    setResults(finishedResults);
 
     try {
-      for (let index = 0; index < NORMAL_QUESTIONS.length; index += 1) {
-        if (controller.signal.aborted) break;
-        const question = NORMAL_QUESTIONS[index];
-        updateResult(index, { status: 'running' });
-        try {
-          const data = await testFetch({
+      const outcome = await executeNormalTestRun<ApiResponse>({
+        questions: NORMAL_QUESTIONS,
+        signal: controller.signal,
+        request: (question, _index, signal) =>
+          testFetch({
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -1402,38 +1453,45 @@ export function TokenCheckApp({
               model: model.trim(),
               prompt: question.prompt,
             }),
-            signal: controller.signal,
-          });
-          finishedResults[index] = {
-            ...question,
-            ...data,
-            status: classifyResult(data),
-          };
-        } catch (error) {
-          if (controller.signal.aborted) break;
-          finishedResults[index] = {
-            ...question,
-            status: 'error',
-            error:
-              error instanceof Error ? error.message : 'Unknown request error.',
-          };
-        }
-        setResults([...finishedResults]);
-      }
-      if (controller.signal.aborted) {
-        setRunMessage('Test stopped. You can start a fresh run.');
+            signal,
+          }),
+        classify: classifyResult,
+        publish: (nextResults) => setResults(nextResults as TestResult[]),
+      });
+      const finishedResults = outcome.results as TestResult[];
+      if (outcome.stopped) {
+        const completedBeforeStop = finishedResults.filter((result) =>
+          ['normal', 'cached', 'large', 'unavailable', 'error'].includes(
+            result.status,
+          ),
+        ).length;
+        setNormalPhase('stopped');
+        setRunMessage(
+          completedBeforeStop
+            ? `Test stopped. ${completedBeforeStop} of 12 questions completed; this partial run was not saved automatically.`
+            : 'Test stopped before any question completed. Nothing was saved.',
+        );
       } else {
+        setNormalPhase(user ? 'saving' : 'complete');
         setRunMessage(
           user
             ? 'Test complete. Saving to your private history…'
             : 'Test complete. Sign in next time to save your runs.',
         );
         await saveCompletedRun(finishedResults);
+        setNormalPhase('complete');
       }
     } finally {
       setIsRunning(false);
       abortRef.current = null;
     }
+  }
+
+  function stopNormalTest() {
+    if (normalPhase !== 'running') return;
+    setNormalPhase('stopping');
+    setRunMessage('Stopping test…');
+    abortRef.current?.abort();
   }
 
   async function openRun(run: SavedRunSummary) {
@@ -1466,6 +1524,7 @@ export function TokenCheckApp({
         createdAt: data.run.createdAt,
       });
       setSelectedRunId(run.id);
+      setNormalPhase('complete');
       setRunMessage(
         `Saved run from ${new Date(run.createdAt).toLocaleString()}.`,
       );
@@ -1497,6 +1556,7 @@ export function TokenCheckApp({
         setSelectedRunId('');
         setOpenedRpmRunId('');
         setResults(initialResults());
+        setNormalPhase('idle');
         setRunContext(null);
         setRunMessage('Saved run deleted.');
       }
@@ -1522,6 +1582,7 @@ export function TokenCheckApp({
   function resetResults() {
     if (controlsLocked) return;
     setResults(initialResults());
+    setNormalPhase('idle');
     setRunContext(null);
     setSelectedRunId('');
     setShownApiType(apiType);
@@ -1958,14 +2019,25 @@ export function TokenCheckApp({
                   RPM ramp settings and the start control are shown with the
                   live results on the right.
                 </div>
-              ) : isRunning ? (
+              ) : normalPhase === 'running' || normalPhase === 'stopping' ? (
                 <Button
                   type="button"
                   variant="outline"
                   className="h-11 w-full gap-2"
-                  onClick={() => abortRef.current?.abort()}
+                  onClick={stopNormalTest}
+                  disabled={normalPhase === 'stopping'}
                 >
-                  <Square className="size-3.5 fill-current" /> Stop test
+                  <Square className="size-3.5 fill-current" />{' '}
+                  {normalPhase === 'stopping' ? 'Stopping…' : 'Stop test'}
+                </Button>
+              ) : normalPhase === 'saving' ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 w-full gap-2"
+                  disabled
+                >
+                  <Save className="size-3.5" /> Saving results…
                 </Button>
               ) : (
                 <Button
@@ -2286,6 +2358,9 @@ export function TokenCheckApp({
                   <section
                     className={`rounded-2xl border p-5 shadow-[0_18px_50px_rgb(15_23_42/0.05)] ${overall.tone === 'danger' ? 'border-rose-200 bg-rose-50/70' : overall.tone === 'warning' ? 'border-amber-200 bg-amber-50/70' : overall.tone === 'success' ? 'border-emerald-200 bg-emerald-50/70' : 'border-border bg-card'}`}
                   >
+                    <output className="sr-only" aria-live="polite">
+                      {overall.title}. {overall.description}
+                    </output>
                     <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                       Token verdict
                     </p>
@@ -2333,6 +2408,7 @@ export function TokenCheckApp({
                       value={progress}
                       className="mt-4 [&_[data-slot=progress-indicator]]:bg-[#39a987]"
                       aria-label={`${progress}% complete`}
+                      aria-valuetext={`${completed} of 12 questions completed${normalPhase === 'stopped' ? '; test stopped' : ''}`}
                     />
                   </section>
 
@@ -2343,7 +2419,8 @@ export function TokenCheckApp({
                     <h2 className="mt-1 text-xl font-semibold tracking-tight">
                       {performanceSummary.measuredCount
                         ? `Median TTFT ${durationOrDash(performanceSummary.medianTtftMs)}`
-                        : isRunning
+                        : normalPhase === 'running' ||
+                            normalPhase === 'stopping'
                           ? 'Waiting for the first streamed token'
                           : 'No timing data yet'}
                     </h2>
@@ -2530,7 +2607,7 @@ export function TokenCheckApp({
                                     <VerdictIcon
                                       className={
                                         result.status === 'running'
-                                          ? 'animate-pulse'
+                                          ? 'animate-pulse motion-reduce:animate-none'
                                           : ''
                                       }
                                     />
@@ -2632,7 +2709,9 @@ export function TokenCheckApp({
                                         ? 'Measuring'
                                         : result.status === 'waiting'
                                           ? 'Waiting'
-                                          : 'Unavailable'}
+                                          : result.status === 'stopped'
+                                            ? 'Stopped'
+                                            : 'Unavailable'}
                                   </Badge>
                                 </TableCell>
                               </TableRow>
