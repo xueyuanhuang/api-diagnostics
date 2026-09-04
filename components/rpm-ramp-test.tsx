@@ -24,6 +24,10 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { armStageWhenReady } from '@/lib/rpm-arm';
 import {
+  mergeDispatchProgress,
+  recordUniqueDispatch,
+} from '@/lib/rpm-dispatch';
+import {
   buildRampTargets,
   RPM_FINALIZE_GRACE_MS,
   RPM_MAX_TARGET_RPM,
@@ -740,8 +744,9 @@ export function RpmRampTest({
         setMessage(
           `Preparing ${started.shardCount} server dispatchers. No stage traffic is sent until every dispatcher is ready…`,
         );
-        // Treat long-lived progress frames as at-least-once UI hints. Sequence
-        // IDs are the stable identity, so count each verified dispatch once.
+        // The stream and persisted polling are overlapping views of the same
+        // requests. Sequence IDs keep stream progress unique, and the merge
+        // below prevents late buffered frames from adding to a polled count.
         const liveDispatchedSequences = new Set<number>();
         const shardHandles = Array.from(
           { length: started.shardCount },
@@ -750,8 +755,12 @@ export function RpmRampTest({
               url: `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/shards/${shardIndex}`,
               signal: controller.signal,
               onDispatched: (sequence) => {
-                if (liveDispatchedSequences.has(sequence)) return;
-                liveDispatchedSequences.add(sequence);
+                const uniqueDispatchCount = recordUniqueDispatch(
+                  liveDispatchedSequences,
+                  sequence,
+                  stage.scheduledCount,
+                );
+                if (uniqueDispatchCount === null) return;
                 setLive((existing) => {
                   const stageLive =
                     existing[stage.stageIndex] ?? EMPTY_LIVE;
@@ -759,9 +768,10 @@ export function RpmRampTest({
                     ...existing,
                     [stage.stageIndex]: {
                       ...stageLive,
-                      dispatched: Math.min(
+                      dispatched: mergeDispatchProgress(
+                        stageLive.dispatched,
+                        uniqueDispatchCount,
                         stage.scheduledCount,
-                        liveDispatchedSequences.size,
                       ),
                     },
                   };
@@ -850,9 +860,10 @@ export function RpmRampTest({
                 ...existing,
                 [stage.stageIndex]: {
                   ...(existing[stage.stageIndex] ?? EMPTY_LIVE),
-                  dispatched: Math.max(
+                  dispatched: mergeDispatchProgress(
                     existing[stage.stageIndex]?.dispatched ?? 0,
                     progress.verifiedDispatchStarts,
+                    stage.scheduledCount,
                   ),
                   completed: progress.evidenceRecords,
                 },

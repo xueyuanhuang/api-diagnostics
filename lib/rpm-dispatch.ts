@@ -36,6 +36,34 @@ export function plannedRequestAt(
   );
 }
 
+export function recordUniqueDispatch(
+  seenSequences: Set<number>,
+  sequence: number,
+  scheduledCount: number,
+) {
+  if (
+    !Number.isInteger(sequence) ||
+    sequence < 0 ||
+    sequence >= scheduledCount ||
+    seenSequences.has(sequence)
+  ) {
+    return null;
+  }
+  seenSequences.add(sequence);
+  return seenSequences.size;
+}
+
+export function mergeDispatchProgress(
+  currentCount: number,
+  uniqueStreamCount: number,
+  scheduledCount: number,
+) {
+  return Math.min(
+    scheduledCount,
+    Math.max(0, currentCount, uniqueStreamCount),
+  );
+}
+
 export function maximumDispatchLagMs(
   scheduledCount: number,
   durationSeconds = 60,

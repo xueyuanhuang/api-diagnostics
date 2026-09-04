@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { plannedRequestAt, sequencesForShard } from '../lib/rpm-dispatch.ts';
+import {
+  mergeDispatchProgress,
+  plannedRequestAt,
+  recordUniqueDispatch,
+  sequencesForShard,
+} from '../lib/rpm-dispatch.ts';
 import { deriveStageMetrics } from '../lib/rpm-stage-metrics.ts';
 import {
   RPM_MAX_PROVIDER_CALLS_PER_SHARD,
@@ -188,6 +193,31 @@ test('all shards share one authoritative server schedule', () => {
   assert.equal(plannedRequestAt(10_000, 999, 1_000, 60), 69_940);
 });
 
+test('stream frames and canonical polling do not double-count dispatches', () => {
+  const seen = new Set();
+  let displayed = 0;
+  for (const sequence of Array.from({ length: 493 }, (_, index) => index)) {
+    const streamed = recordUniqueDispatch(seen, sequence, 500);
+    displayed = mergeDispatchProgress(displayed, streamed ?? 0, 500);
+  }
+  assert.equal(displayed, 493);
+
+  displayed = mergeDispatchProgress(displayed, 500, 500);
+  for (const sequence of Array.from({ length: 7 }, (_, index) => index + 493)) {
+    const streamed = recordUniqueDispatch(seen, sequence, 500);
+    displayed = mergeDispatchProgress(displayed, streamed ?? 0, 500);
+  }
+  for (const sequence of Array.from({ length: 493 }, (_, index) => index)) {
+    const replayed = recordUniqueDispatch(seen, sequence, 500);
+    displayed = mergeDispatchProgress(displayed, replayed ?? 0, 500);
+  }
+
+  assert.equal(displayed, 500);
+  assert.equal(seen.size, 500);
+  assert.equal(recordUniqueDispatch(seen, 500, 500), null);
+  assert.equal(mergeDispatchProgress(500, 501, 500), 500);
+});
+
 test('dispatcher topology supplies enough independent provider-header capacity', () => {
   assert.equal(rpmShardCount(10), 1);
   assert.equal(rpmShardCount(25), 2);
@@ -296,8 +326,8 @@ test('live UI polls persisted server evidence instead of relying on buffered str
 
   assert.match(component, /pollPersistedStageProgress/);
   assert.match(component, /verifiedDispatchStarts/);
-  assert.match(component, /liveDispatchedSequences\.has\(sequence\)/);
-  assert.match(component, /liveDispatchedSequences\.size/);
+  assert.match(component, /recordUniqueDispatch/);
+  assert.match(component, /mergeDispatchProgress/);
   assert.match(runDetailRoute, /liveProgress/);
   assert.match(runDetailRoute, /dispatch-starts/);
   assert.match(runDetailRoute, /evidenceRecords/);
