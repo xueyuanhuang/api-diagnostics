@@ -147,7 +147,7 @@ function openServerShard({
 }: {
   url: string;
   signal: AbortSignal;
-  onDispatched: () => void;
+  onDispatched: (sequence: number) => void;
   onRequest: (summary: OutcomeSummary) => void;
 }): ShardHandle {
   let readySeen = false;
@@ -174,7 +174,7 @@ function openServerShard({
       if (event.type === 'ready') {
         readySeen = true;
       } else if (event.type === 'dispatched') {
-        onDispatched();
+        onDispatched(event.sequence);
       } else if (event.type === 'request') {
         onRequest(event.summary);
       } else if (event.type === 'complete') {
@@ -740,13 +740,18 @@ export function RpmRampTest({
         setMessage(
           `Preparing ${started.shardCount} server dispatchers. No stage traffic is sent until every dispatcher is ready…`,
         );
+        // Treat long-lived progress frames as at-least-once UI hints. Sequence
+        // IDs are the stable identity, so count each verified dispatch once.
+        const liveDispatchedSequences = new Set<number>();
         const shardHandles = Array.from(
           { length: started.shardCount },
           (_, shardIndex) =>
             openServerShard({
               url: `/api/rpm-runs/${current.run.id}/stages/${stage.stageIndex}/shards/${shardIndex}`,
               signal: controller.signal,
-              onDispatched: () =>
+              onDispatched: (sequence) => {
+                if (liveDispatchedSequences.has(sequence)) return;
+                liveDispatchedSequences.add(sequence);
                 setLive((existing) => {
                   const stageLive =
                     existing[stage.stageIndex] ?? EMPTY_LIVE;
@@ -754,10 +759,14 @@ export function RpmRampTest({
                     ...existing,
                     [stage.stageIndex]: {
                       ...stageLive,
-                      dispatched: stageLive.dispatched + 1,
+                      dispatched: Math.min(
+                        stage.scheduledCount,
+                        liveDispatchedSequences.size,
+                      ),
                     },
                   };
-                }),
+                });
+              },
               onRequest: () => undefined,
             }),
         );

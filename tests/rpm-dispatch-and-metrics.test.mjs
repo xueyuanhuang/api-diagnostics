@@ -296,6 +296,8 @@ test('live UI polls persisted server evidence instead of relying on buffered str
 
   assert.match(component, /pollPersistedStageProgress/);
   assert.match(component, /verifiedDispatchStarts/);
+  assert.match(component, /liveDispatchedSequences\.has\(sequence\)/);
+  assert.match(component, /liveDispatchedSequences\.size/);
   assert.match(runDetailRoute, /liveProgress/);
   assert.match(runDetailRoute, /dispatch-starts/);
   assert.match(runDetailRoute, /evidenceRecords/);
