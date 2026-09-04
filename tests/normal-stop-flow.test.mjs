@@ -91,5 +91,8 @@ test('the production component and route use the cancellation seams', () => {
   assert.match(component, /executeNormalTestRun(?:<[^>]+>)?\s*\(/);
   assert.match(component, /normalPhase\s*===\s*'stopping'/);
   assert.match(component, /\|\s*'stopped'/);
+  assert.match(component, /key="normal-stop"/);
+  assert.match(component, /const controller = abortRef\.current/);
+  assert.match(component, /controller\.signal\.aborted/);
   assert.match(route, /combinedRequestSignal\s*\(request\.signal/);
 });

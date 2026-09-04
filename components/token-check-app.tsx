@@ -1488,10 +1488,11 @@ export function TokenCheckApp({
   }
 
   function stopNormalTest() {
-    if (normalPhase !== 'running') return;
+    const controller = abortRef.current;
+    if (!controller || controller.signal.aborted) return;
     setNormalPhase('stopping');
     setRunMessage('Stopping test…');
-    abortRef.current?.abort();
+    controller.abort();
   }
 
   async function openRun(run: SavedRunSummary) {
@@ -2021,6 +2022,7 @@ export function TokenCheckApp({
                 </div>
               ) : normalPhase === 'running' || normalPhase === 'stopping' ? (
                 <Button
+                  key="normal-stop"
                   type="button"
                   variant="outline"
                   className="h-11 w-full gap-2"
@@ -2032,6 +2034,7 @@ export function TokenCheckApp({
                 </Button>
               ) : normalPhase === 'saving' ? (
                 <Button
+                  key="normal-saving"
                   type="button"
                   variant="outline"
                   className="h-11 w-full gap-2"
@@ -2041,6 +2044,7 @@ export function TokenCheckApp({
                 </Button>
               ) : (
                 <Button
+                  key="normal-run"
                   type="submit"
                   className="h-11 w-full gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
                 >
