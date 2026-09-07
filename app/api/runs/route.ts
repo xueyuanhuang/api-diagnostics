@@ -97,6 +97,7 @@ export async function POST(request: NextRequest) {
       profileId,
       apiType: requestedApiType,
       requestedModel: model,
+      allowModelOverride: true,
     });
     if (!config)
       return noStore(

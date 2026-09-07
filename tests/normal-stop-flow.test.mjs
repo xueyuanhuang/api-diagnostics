@@ -87,12 +87,16 @@ test('the relay signal aborts when the browser request is cancelled', () => {
 
 test('the production component and route use the cancellation seams', () => {
   const component = readFileSync(componentPath, 'utf8');
+  const queue = readFileSync(
+    new URL('../lib/normal-test-queue.ts', import.meta.url),
+    'utf8',
+  );
   const route = readFileSync(routePath, 'utf8');
-  assert.match(component, /executeNormalTestRun(?:<[^>]+>)?\s*\(/);
+  assert.match(queue, /executeNormalTestRun(?:<[^>]+>)?\s*\(/);
   assert.match(component, /normalPhase\s*===\s*'stopping'/);
   assert.match(component, /\|\s*'stopped'/);
   assert.match(component, /key="normal-stop"/);
-  assert.match(component, /const controller = abortRef\.current/);
-  assert.match(component, /controller\.signal\.aborted/);
+  assert.match(component, /normalQueue\.stop\(liveJob\.id\)/);
+  assert.match(queue, /this\.controllers\.get\(id\)\?\.abort\(\)/);
   assert.match(route, /combinedRequestSignal\s*\(request\.signal/);
 });

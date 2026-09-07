@@ -20,7 +20,7 @@ export type NormalRunResult<TData extends object> = NormalQuestion &
     error?: string | null;
   };
 
-type ExecuteNormalTestRunOptions<TData extends object> = {
+export type ExecuteNormalTestRunOptions<TData extends object> = {
   questions: readonly NormalQuestion[];
   signal: AbortSignal;
   request: (

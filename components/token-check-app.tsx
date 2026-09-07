@@ -1,7 +1,13 @@
 'use client';
 /* oxlint-disable react/react-compiler */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import type { SyntheticEvent } from 'react';
 import {
   Activity,
@@ -39,6 +45,7 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
+import { ModelTestQueue } from '@/components/model-test-queue';
 import { normalOutcomes, normalOutcomeTitle } from '@/lib/normal-outcomes';
 import {
   Table,
@@ -54,7 +61,8 @@ import {
   type EvidenceRun,
 } from '@/lib/evidence-export';
 import { NORMAL_QUESTIONS } from '@/lib/questions';
-import { executeNormalTestRun } from '@/lib/normal-test-runner';
+import { NormalTestQueue, isQueueActive } from '@/lib/normal-test-queue';
+import type { NormalQuestion } from '@/lib/normal-test-runner';
 import type { RpmRunSummary } from '@/lib/rpm-types';
 
 type ApiType = 'anthropic' | 'openai';
@@ -72,6 +80,7 @@ type ResultsView = 'tokens' | 'performance';
 type TestMode = 'normal' | 'rpm';
 type NormalPhase =
   | 'idle'
+  | 'queued'
   | 'running'
   | 'stopping'
   | 'stopped'
@@ -626,15 +635,27 @@ export function TokenCheckApp({
     useState<DraftTouched>(EMPTY_DRAFT_TOUCHED);
   const [showKey, setShowKey] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
-  const [liveResults, setResults] = useState<TestResult[]>(initialResults);
-  const [isRunning, setIsRunning] = useState(false);
-  const [liveNormalPhase, setNormalPhase] = useState<NormalPhase>('idle');
+  const [normalQueue] = useState(
+    () => new NormalTestQueue<ApiResponse, RunContext>(),
+  );
+  const queueJobs = useSyncExternalStore(
+    normalQueue.subscribe,
+    normalQueue.getSnapshot,
+    normalQueue.getSnapshot,
+  );
+  const [selectedJobId, setSelectedJobId] = useState('');
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [concurrency, setConcurrency] = useState(3);
+  const liveJob =
+    queueJobs.find((job) => job.id === selectedJobId) ?? queueJobs.at(-1);
+  const liveResults = (liveJob?.results ?? initialResults()) as TestResult[];
+  const liveNormalPhase: NormalPhase = liveJob?.phase ?? 'idle';
+  const isRunning = queueJobs.some((job) => isQueueActive(job.phase));
   const [isRpmRunning, setIsRpmRunning] = useState(false);
   const [testMode, setTestMode] = useState<TestMode>('normal');
   const [formError, setFormError] = useState('');
-  const [liveRunMessage, setRunMessage] = useState(
-    'Ready for a new 12-question check.',
-  );
+  const liveRunMessage =
+    liveJob?.message ?? 'Ready for a new 12-question check.';
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [profileName, setProfileName] = useState('');
@@ -655,7 +676,7 @@ export function TokenCheckApp({
   );
   const [viewMode, setViewMode] = useState<ViewMode>('current');
   const [resultsView, setResultsView] = useState<ResultsView>('tokens');
-  const [liveRunContext, setRunContext] = useState<RunContext | null>(null);
+  const liveRunContext = liveJob?.context ?? null;
   const [savedPreview, setSavedPreview] = useState<{
     run: SavedRunSummary;
     results: TestResult[];
@@ -663,7 +684,6 @@ export function TokenCheckApp({
   const [lastRunMode, setLastRunMode] = useState<TestMode | null>(null);
   const [rpmMessage, setRpmMessage] = useState('');
   const [historyBusy, setHistoryBusy] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
   const previewRequestRef = useRef(0);
   const controlsLocked = isRunning || isRpmRunning;
   // History is a read-only snapshot; it must never replace live runner state.
@@ -673,18 +693,15 @@ export function TokenCheckApp({
       : null;
   const results = normalPreview?.results ?? liveResults;
   const normalPhase = normalPreview ? 'complete' : liveNormalPhase;
-  const shownApiType = normalPreview?.run.apiType ?? liveShownApiType;
+  const shownApiType =
+    normalPreview?.run.apiType ?? liveJob?.context.apiType ?? liveShownApiType;
   const runContext: RunContext | null = normalPreview
     ? { ...normalPreview.run, source: 'saved' }
     : liveRunContext;
   const runMessage = normalPreview
     ? `Saved run from ${new Date(normalPreview.run.createdAt).toLocaleString()}.`
     : liveRunMessage;
-  const liveCompleted = liveResults.filter((result) =>
-    ['normal', 'cached', 'large', 'unavailable', 'error'].includes(
-      result.status,
-    ),
-  ).length;
+  useEffect(() => () => normalQueue.stopAll(), [normalQueue]);
 
   function showCurrent(mode = testMode) {
     previewRequestRef.current += 1;
@@ -707,6 +724,16 @@ export function TokenCheckApp({
   const selectedProfile =
     profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   const selectedProfileConfig = selectedProfile?.configs[apiType] ?? null;
+  const modelChoices = [
+    ...new Set(
+      [...activeProfileModels, model.trim(), ...selectedModels].filter(Boolean),
+    ),
+  ];
+  const modelsToEnqueue = selectedModels.length
+    ? selectedModels
+    : model.trim()
+      ? [model.trim()]
+      : [];
   const savedConnectionNames = useMemo(
     () =>
       Array.from(
@@ -1019,6 +1046,13 @@ export function TokenCheckApp({
   );
 
   const overall = useMemo(() => {
+    if (normalPhase === 'queued')
+      return {
+        tone: 'ready',
+        title: 'Model queued',
+        description:
+          'This model will start automatically when a parallel slot opens.',
+      };
     if (normalPhase === 'running')
       return {
         tone: 'running',
@@ -1136,6 +1170,7 @@ export function TokenCheckApp({
       markDraftTouched(sourceFields, sourceType);
     }
     setApiType(nextType);
+    setSelectedModels([]);
     setShowKey(false);
     setFormError('');
   }
@@ -1143,6 +1178,7 @@ export function TokenCheckApp({
   function selectProfile(id: string) {
     if (controlsLocked) return;
     setSelectedProfileId(id);
+    setSelectedModels([]);
     setProfileMessage('');
     setProfileDirty(false);
     setApiKeys(EMPTY_API_KEYS);
@@ -1199,6 +1235,7 @@ export function TokenCheckApp({
 
   function removeModel(item: string) {
     if (controlsLocked) return;
+    setSelectedModels((current) => current.filter((name) => name !== item));
     const next = activeProfileModels.filter((modelName) => modelName !== item);
     updateProfileModels(next);
     if (selectedProfileId) setProfileDirty(true);
@@ -1330,33 +1367,30 @@ export function TokenCheckApp({
     }
   }
 
-  async function saveCompletedRun(finishedResults: TestResult[]) {
-    if (!user) return;
-    try {
-      const data = await jsonFetch<{
-        run: Omit<RunSummary, 'testKind'>;
-      }>('/api/runs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          profileId: selectedProfileId || null,
-          apiType,
-          baseUrl,
-          model,
-          results: finishedResults,
-        }),
-      });
-      const savedRun: RunSummary = { ...data.run, testKind: 'normal' };
-      setRuns((current) => [savedRun, ...current]);
-      setRunContext((current) =>
-        current ? { ...current, id: savedRun.id } : current,
-      );
-      setRunMessage('Test complete and saved to your private history.');
-    } catch (error) {
-      setRunMessage(
-        `Test complete, but saving failed: ${error instanceof Error ? error.message : 'try again later.'}`,
-      );
-    }
+  async function saveCompletedRun(
+    finishedResults: TestResult[],
+    context: RunContext,
+    profileId: string | null,
+  ) {
+    const data = await jsonFetch<{
+      run: Omit<RunSummary, 'testKind'>;
+    }>('/api/runs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        profileId,
+        apiType: context.apiType,
+        baseUrl: context.baseUrl,
+        model: context.modelName,
+        results: finishedResults,
+      }),
+    });
+    const savedRun: RunSummary = { ...data.run, testKind: 'normal' };
+    setRuns((current) => [
+      savedRun,
+      ...current.filter((run) => run.id !== savedRun.id),
+    ]);
+    return { ...context, id: savedRun.id };
   }
 
   function exportEvidence(context: RunContext, exportedResults: TestResult[]) {
@@ -1400,91 +1434,86 @@ export function TokenCheckApp({
     }
   }
 
-  async function runTests(event: SyntheticEvent<HTMLFormElement>) {
+  function runTests(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (controlsLocked) return;
+    if (isRpmRunning || profileBusy) return;
     setFormError('');
     const baseUrlError = clientBaseUrlError(baseUrl.trim());
     if (baseUrlError) return setFormError(baseUrlError);
     if (!selectedProfileId && !apiKey.trim())
       return setFormError('Enter your API key, or choose a saved profile.');
-    if (selectedProfileId && profileDirty)
-      return setFormError('Save your profile changes before running the test.');
-    if (!model.trim()) return setFormError('Enter or choose a model name.');
+    if (
+      selectedProfileId &&
+      (baseUrl.trim() !== selectedProfileConfig?.baseUrl || apiKey.trim())
+    )
+      return setFormError(
+        'Save your URL or key changes before running the test.',
+      );
+    if (
+      !modelsToEnqueue.length ||
+      modelsToEnqueue.some((name) => name.length > 120)
+    )
+      return setFormError(
+        'Select valid model names (up to 120 characters each).',
+      );
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsRunning(true);
-    setNormalPhase('running');
-    showCurrent('normal');
-    setLastRunMode('normal');
-    setShownApiType(apiType);
-    setRunContext({
-      source: 'current',
-      profileName: selectedProfile?.name ?? null,
+    // Capture immutable connection/model values for both requests and saving.
+    // Only the private task closures capture a one-time API key.
+    const profileId = selectedProfileId || null;
+    const requestBase = {
+      profileId: profileId || undefined,
       apiType,
-      baseUrl: baseUrl.trim(),
-      modelName: model.trim(),
-      createdAt: Date.now(),
-    });
-    setRunMessage('Running ordinary questions one at a time…');
-
-    try {
-      const outcome = await executeNormalTestRun<ApiResponse>({
+      baseUrl: profileId ? undefined : baseUrl.trim(),
+      apiKey: profileId ? undefined : apiKey.trim(),
+    };
+    normalQueue.setConcurrency(concurrency);
+    const ids = normalQueue.enqueue(
+      modelsToEnqueue.map((modelName) => ({
+        key: JSON.stringify([profileId, apiType, baseUrl.trim(), modelName]),
+        context: {
+          source: 'current' as const,
+          profileName: selectedProfile?.name ?? null,
+          apiType,
+          baseUrl: baseUrl.trim(),
+          modelName,
+          createdAt: Date.now(),
+        },
         questions: NORMAL_QUESTIONS,
-        signal: controller.signal,
-        request: (question, _index, signal) =>
+        request: (
+          question: NormalQuestion,
+          _index: number,
+          signal: AbortSignal,
+        ) =>
           testFetch({
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              profileId: selectedProfileId || undefined,
-              apiType,
-              baseUrl: selectedProfileId ? undefined : baseUrl,
-              apiKey: selectedProfileId ? undefined : apiKey.trim(),
-              model: model.trim(),
+              ...requestBase,
+              model: modelName,
               prompt: question.prompt,
             }),
             signal,
           }),
         classify: classifyResult,
-        publish: (nextResults) => setResults(nextResults as TestResult[]),
-      });
-      const finishedResults = outcome.results as TestResult[];
-      if (outcome.stopped) {
-        const completedBeforeStop = finishedResults.filter((result) =>
-          ['normal', 'cached', 'large', 'unavailable', 'error'].includes(
-            result.status,
-          ),
-        ).length;
-        setNormalPhase('stopped');
-        setRunMessage(
-          completedBeforeStop
-            ? `Test stopped. ${completedBeforeStop} of 12 questions completed; this partial run was not saved automatically.`
-            : 'Test stopped before any question completed. Nothing was saved.',
-        );
-      } else {
-        setNormalPhase(user ? 'saving' : 'complete');
-        setRunMessage(
-          user
-            ? 'Test complete. Saving to your private history…'
-            : 'Test complete. Sign in next time to save your runs.',
-        );
-        await saveCompletedRun(finishedResults);
-        setNormalPhase('complete');
-      }
-    } finally {
-      setIsRunning(false);
-      abortRef.current = null;
-    }
+        save: user
+          ? (finished: TestResult[], context: RunContext) =>
+              saveCompletedRun(finished, context, profileId)
+          : undefined,
+      })),
+    );
+    if (!ids.length)
+      return setFormError(
+        'Those models are already running or queued. Select a different model.',
+      );
+    if (!isRunning) setSelectedJobId(ids[0]);
+    setSelectedModels([]);
+    showCurrent('normal');
+    setLastRunMode('normal');
+    setShownApiType(apiType);
   }
 
   function stopNormalTest() {
-    const controller = abortRef.current;
-    if (!controller || controller.signal.aborted) return;
-    setNormalPhase('stopping');
-    setRunMessage('Stopping test…');
-    controller.abort();
+    if (liveJob) normalQueue.stop(liveJob.id);
   }
 
   async function openRun(run: SavedRunSummary) {
@@ -1560,11 +1589,9 @@ export function TokenCheckApp({
 
   function resetResults() {
     if (controlsLocked) return;
-    setResults(initialResults());
-    setNormalPhase('idle');
-    setRunContext(null);
+    normalQueue.clear();
+    setSelectedJobId('');
     setShownApiType(apiType);
-    setRunMessage('Ready for a new 12-question check.');
     setFormError('');
   }
 
@@ -1805,7 +1832,7 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       setProfileDirty(true);
                     }}
-                    disabled={controlsLocked}
+                    disabled={isRpmRunning}
                     className="h-10 w-full rounded-lg border border-input bg-background px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring/30"
                   >
                     {activeProfileModels.map((item) => (
@@ -1824,7 +1851,7 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       if (selectedProfileId) setProfileDirty(true);
                     }}
-                    disabled={controlsLocked}
+                    disabled={isRpmRunning}
                     placeholder={
                       apiType === 'anthropic'
                         ? 'e.g. claude-sonnet-4-6'
@@ -1876,7 +1903,7 @@ export function TokenCheckApp({
                           addModel();
                         }
                       }}
-                      disabled={controlsLocked || profileBusy}
+                      disabled={isRpmRunning || profileBusy}
                       placeholder="Add another model"
                       className="h-8 bg-white font-mono text-[11px]"
                     />
@@ -1885,13 +1912,94 @@ export function TokenCheckApp({
                       variant="outline"
                       size="sm"
                       onClick={addModel}
-                      disabled={!newModel.trim()}
+                      disabled={!newModel.trim() || isRpmRunning || profileBusy}
                       className="h-8 gap-1"
                     >
                       <Plus className="size-3" /> Add
                     </Button>
                   </div>
                 </div>
+              ) : null}
+
+              {testMode === 'normal' ? (
+                <fieldset
+                  disabled={isRpmRunning || profileBusy}
+                  className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/50 p-3"
+                >
+                  <legend className="px-1 text-sm font-semibold">
+                    Test multiple models
+                  </legend>
+                  <div className="flex flex-wrap gap-3 text-sm">
+                    <button
+                      type="button"
+                      className="font-medium text-primary underline"
+                      onClick={() => setSelectedModels(modelChoices)}
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      className="text-muted-foreground underline"
+                      onClick={() => setSelectedModels([])}
+                    >
+                      Clear selection
+                    </button>
+                  </div>
+                  <div className="max-h-56 space-y-2 overflow-y-auto">
+                    {modelChoices.map((name) => (
+                      <label
+                        key={name}
+                        className="flex items-start gap-2 break-all text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-1 size-4 shrink-0 accent-primary"
+                          checked={selectedModels.includes(name)}
+                          onChange={(event) =>
+                            setSelectedModels((current) =>
+                              event.target.checked
+                                ? [...new Set([...current, name])]
+                                : current.filter((item) => item !== name),
+                            )
+                          }
+                        />
+                        <span className="font-mono">{name}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <label className="flex items-center justify-between gap-2 text-sm">
+                    Parallel models
+                    <select
+                      value={concurrency}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        setConcurrency(value);
+                        normalQueue.setConcurrency(value);
+                      }}
+                      className="h-9 rounded-lg border border-input bg-card px-3"
+                    >
+                      {[1, 2, 3, 4, 5, 6].map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {modelsToEnqueue.length} model
+                    {modelsToEnqueue.length === 1 ? '' : 's'} · up to{' '}
+                    {modelsToEnqueue.length * 12} paid requests.{' '}
+                    {selectedModels.length ? '' : 'Using the current model. '}
+                    Each model runs 12 questions sequentially. Models share your
+                    connection’s rate limits.
+                  </p>
+                  {isRunning ? (
+                    <p className="text-xs leading-5 text-blue-950">
+                      Select more models or add a name above, then add them to
+                      the queue. Existing tests keep their original settings.
+                    </p>
+                  ) : null}
+                </fieldset>
               ) : null}
 
               <label
@@ -1990,38 +2098,41 @@ export function TokenCheckApp({
                   RPM ramp settings and the start control are shown with the
                   live results on the right.
                 </div>
-              ) : liveNormalPhase === 'running' ||
-                liveNormalPhase === 'stopping' ? (
-                <Button
-                  key="normal-stop"
-                  type="button"
-                  variant="outline"
-                  className="h-11 w-full gap-2"
-                  onClick={stopNormalTest}
-                  disabled={liveNormalPhase === 'stopping'}
-                >
-                  <Square className="size-3.5 fill-current" />{' '}
-                  {liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop test'}
-                </Button>
-              ) : liveNormalPhase === 'saving' ? (
-                <Button
-                  key="normal-saving"
-                  type="button"
-                  variant="outline"
-                  className="h-11 w-full gap-2"
-                  disabled
-                >
-                  <Save className="size-3.5" /> Saving results…
-                </Button>
               ) : (
-                <Button
-                  key="normal-run"
-                  type="submit"
-                  disabled={controlsLocked}
-                  className="h-11 w-full gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
-                >
-                  <Play className="size-4 fill-current" /> Run 12-question check
-                </Button>
+                <>
+                  <Button
+                    key="normal-run"
+                    type="submit"
+                    disabled={
+                      isRpmRunning || profileBusy || !modelsToEnqueue.length
+                    }
+                    className="h-11 w-full gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
+                  >
+                    <Play className="size-4 fill-current" />{' '}
+                    {isRunning
+                      ? `Add to queue (${modelsToEnqueue.length})`
+                      : selectedModels.length
+                        ? `Test selected models (${selectedModels.length})`
+                        : 'Run 12-question check'}
+                  </Button>
+                  {liveNormalPhase === 'running' ||
+                  liveNormalPhase === 'queued' ||
+                  liveNormalPhase === 'stopping' ? (
+                    <Button
+                      key="normal-stop"
+                      type="button"
+                      variant="outline"
+                      className="h-11 w-full gap-2"
+                      onClick={stopNormalTest}
+                      disabled={liveNormalPhase === 'stopping'}
+                    >
+                      <Square className="size-3.5 fill-current" />{' '}
+                      {liveNormalPhase === 'stopping'
+                        ? 'Stopping…'
+                        : 'Stop selected model'}
+                    </Button>
+                  ) : null}
+                </>
               )}
             </form>
 
@@ -2043,7 +2154,7 @@ export function TokenCheckApp({
                 <div className="min-w-0 text-xs text-blue-950">
                   <output className="block font-semibold">
                     {isRunning
-                      ? `Normal check ${liveNormalPhase === 'saving' ? 'saving' : liveNormalPhase === 'stopping' ? 'stopping' : 'running'} · ${liveCompleted}/12 complete`
+                      ? `Model tests active · ${queueJobs.filter((job) => job.phase === 'running').length} running · ${queueJobs.filter((job) => job.phase === 'queued').length} queued · ${queueJobs.filter((job) => job.phase === 'saving').length} saving · ${queueJobs.filter((job) => job.phase === 'complete').length} completed`
                       : isRpmRunning
                         ? `RPM test running${rpmMessage ? ` · ${rpmMessage}` : ''}`
                         : `${lastRunMode === 'rpm' ? 'RPM test' : 'Normal check'} is no longer running — results available`}
@@ -2051,8 +2162,10 @@ export function TokenCheckApp({
                   {controlsLocked ? (
                     <p className="mt-1 leading-5">
                       You can browse history and switch views. Keep this browser
-                      tab open. Connection settings and starting another test
-                      stay locked until this test ends.
+                      tab open.{' '}
+                      {isRunning
+                        ? 'You can change the model and add more to the queue. The connection and API type stay fixed while models are active.'
+                        : 'Connection settings stay locked until the RPM test ends.'}
                     </p>
                   ) : null}
                 </div>
@@ -2101,7 +2214,7 @@ export function TokenCheckApp({
                     onClick={() => {
                       if (runContext) exportEvidence(runContext, results);
                     }}
-                    disabled={isRunning || !runContext || completed === 0}
+                    disabled={!runContext || completed === 0}
                     className="h-8 gap-1.5 px-2.5 text-[11px]"
                   >
                     <Download className="size-3" /> Export evidence
@@ -2117,6 +2230,16 @@ export function TokenCheckApp({
                 </div>
               ) : null}
             </div>
+
+            {viewMode === 'current' && testMode === 'normal' ? (
+              <ModelTestQueue
+                jobs={queueJobs}
+                selectedId={liveJob?.id}
+                onView={(id) => setSelectedJobId(id)}
+                onStop={(id) => normalQueue.stop(id)}
+                onStopAll={() => normalQueue.stopAll()}
+              />
+            ) : null}
 
             {viewMode === 'detail' && savedPreview ? (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">

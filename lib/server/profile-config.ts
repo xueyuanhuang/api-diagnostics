@@ -25,11 +25,13 @@ export async function getOwnedProfileConfig({
   profileId,
   apiType,
   requestedModel,
+  allowModelOverride = false,
 }: {
   userId: string;
   profileId: string;
   apiType?: ApiType;
   requestedModel?: string;
+  allowModelOverride?: boolean;
 }): Promise<OwnedProfileConfig | null> {
   const db = getDb();
   const profiles = await db
@@ -80,7 +82,12 @@ export async function getOwnedProfileConfig({
     const models = [
       ...new Set([config.modelName, ...modelRows.map((row) => row.modelName)]),
     ];
-    if (requestedModel && !models.includes(requestedModel)) return null;
+    if (
+      requestedModel &&
+      !allowModelOverride &&
+      !models.includes(requestedModel)
+    )
+      return null;
     return {
       profileId,
       profileName: profile.name,
@@ -101,7 +108,8 @@ export async function getOwnedProfileConfig({
     .where(eq(profileModels.profileId, profileId))
     .orderBy(asc(profileModels.createdAt));
   const models = modelRows.map((row) => row.modelName);
-  if (requestedModel && !models.includes(requestedModel)) return null;
+  if (requestedModel && !allowModelOverride && !models.includes(requestedModel))
+    return null;
   return {
     profileId,
     profileName: profile.name,

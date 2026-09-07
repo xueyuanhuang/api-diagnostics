@@ -113,6 +113,7 @@ async function resolveConnection(payload: RequestPayload) {
       profileId: payload.profileId,
       apiType: requestedApiType,
       requestedModel: model,
+      allowModelOverride: true,
     });
     if (!config)
       return {

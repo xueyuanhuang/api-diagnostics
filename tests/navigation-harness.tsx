@@ -12,7 +12,7 @@ import '../app/globals.css';
 const config = {
   baseUrl: 'https://fixture.invalid',
   model: 'live-model',
-  models: ['live-model'],
+  models: ['live-model', 'model-b', 'model-c', 'model-d', 'model-e', 'model-f'],
   hasSavedKey: true,
 };
 const profile = {
@@ -151,18 +151,28 @@ window.fetch = async (input, init = {}) => {
     return response({ run: normal, results: savedResults });
   if (path === '/api/runs' && method === 'POST') {
     counters.normalSaves++;
+    const payload = JSON.parse(
+      typeof init.body === 'string' ? init.body : '{}',
+    );
     return response({
-      run: { ...normal, id: 'new-normal', modelName: 'live-model' },
+      run: {
+        ...normal,
+        id: `new-normal-${counters.normalSaves}`,
+        modelName: payload.model,
+      },
     });
   }
   if (path === '/api/test') {
     counters.normalRequests++;
+    const payload = JSON.parse(
+      typeof init.body === 'string' ? init.body : '{}',
+    );
     return new Promise((resolve, reject) => {
       const timer = setInterval(() => {
         if (!finishNormal) return;
         clearInterval(timer);
         init.signal?.removeEventListener('abort', abort);
-        resolve(response(result));
+        resolve(response({ ...result, returnedModel: payload.model }));
       }, 100);
       function abort() {
         clearInterval(timer);
