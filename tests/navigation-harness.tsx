@@ -55,6 +55,29 @@ const savedResults = NORMAL_QUESTIONS.map((q) => ({
   totalInputTokens: 777,
   returnedModel: 'archived-model',
 }));
+// Preview real list/detail components with mixed outcomes; no provider calls.
+const mixed = {
+  ...normal,
+  id: 'saved-mixed',
+  profileName: 'Mixed results',
+  normalCount: 10,
+  errorCount: 2,
+  verdict: 'incomplete',
+  medianTtftMs: 3382,
+  medianTotalTimeMs: 6024,
+  medianGenerationMs: 2642,
+  medianOutputTokensPerSecond: 201.92,
+};
+const mixedResults = savedResults.map((item, index) => ({
+  ...item,
+  status: index < 10 ? 'normal' : 'error',
+  httpStatus: index < 10 ? 200 : 500,
+  error: index < 10 ? undefined : 'Fixture provider error',
+  ttftMs: index < 10 ? 3382 : null,
+  totalTimeMs: 6024,
+  generationMs: index < 10 ? 2642 : null,
+  outputTokensPerSecond: index < 10 ? 201.92 : null,
+}));
 const rpm = {
   id: 'saved-rpm',
   testKind: 'rpm',
@@ -121,7 +144,9 @@ window.fetch = async (input, init = {}) => {
     });
   if (path === '/api/profiles') return response({ profiles: [profile] });
   if (path === '/api/runs' && method === 'GET')
-    return response({ runs: [normal] });
+    return response({ runs: [mixed, normal] });
+  if (path === '/api/runs/saved-mixed')
+    return response({ run: mixed, results: mixedResults });
   if (path === '/api/runs/saved-normal')
     return response({ run: normal, results: savedResults });
   if (path === '/api/runs' && method === 'POST') {

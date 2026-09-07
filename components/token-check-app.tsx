@@ -38,6 +38,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
+import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
+import { normalOutcomes, normalOutcomeTitle } from '@/lib/normal-outcomes';
 import {
   Table,
   TableBody,
@@ -330,35 +332,6 @@ function verdict(status: ResultStatus) {
     label: status === 'running' ? 'Testing' : 'Waiting',
     icon: Activity,
     className: 'border-slate-200 bg-slate-50 text-slate-600',
-  };
-}
-
-function savedVerdict(run: RunSummary) {
-  if (run.largeCount)
-    return {
-      label: run.errorCount
-        ? `Large context · ${run.errorCount} failed`
-        : 'Large context',
-      className: 'border-rose-200 bg-rose-50 text-rose-800',
-    };
-  if (run.cacheCount)
-    return {
-      label: 'Cache found',
-      className: 'border-amber-200 bg-amber-50 text-amber-900',
-    };
-  if (run.errorCount)
-    return {
-      label: 'Incomplete',
-      className: 'border-rose-200 bg-rose-50 text-rose-800',
-    };
-  if (run.unavailableCount)
-    return {
-      label: 'Usage unavailable',
-      className: 'border-slate-200 bg-slate-50 text-slate-700',
-    };
-  return {
-    label: 'No large anomaly',
-    className: 'border-emerald-200 bg-emerald-50 text-emerald-800',
   };
 }
 
@@ -1022,6 +995,13 @@ export function TokenCheckApp({
     (result) => result.status === 'error',
   ).length;
   const progress = Math.round((completed / NORMAL_QUESTIONS.length) * 100);
+  const outcomeSource = {
+    normalCount,
+    cacheCount,
+    largeCount,
+    errorCount,
+    unavailableCount,
+  };
   const performanceSummary = useMemo(
     () => ({
       measuredCount: results.filter(
@@ -1091,42 +1071,16 @@ export function TokenCheckApp({
         description:
           'Normal questions should have small inputs and no unexpected reported cache usage.',
       };
-    if (largeCount)
-      return {
-        tone: 'danger',
-        title: errorCount
-          ? 'Large hidden context and request failures'
-          : 'Large hidden context detected',
-        description: `${largeCount} request${largeCount === 1 ? '' : 's'} reported at least 1,000 total input tokens.${errorCount ? ` ${errorCount} request${errorCount === 1 ? '' : 's'} also failed; open the affected rows for the exact error and request.` : ''}`,
-      };
-    if (cacheCount)
-      return {
-        tone: 'warning',
-        title: 'Unexpected cache activity detected',
-        description: `${cacheCount} request${cacheCount === 1 ? '' : 's'} included cached input even though this test did not request caching.`,
-      };
-    if (errorCount)
-      return {
-        tone: 'danger',
-        title: 'Test incomplete',
-        description: `${errorCount} request${errorCount === 1 ? '' : 's'} failed. Check the connection and retry.`,
-      };
-    if (unavailableCount)
-      return {
-        tone: 'warning',
-        title: 'Token verdict unavailable',
-        description: `${unavailableCount} request${unavailableCount === 1 ? '' : 's'} did not return usable token counts, so no token verdict can be made for the full run.`,
-      };
-    if (completed < 12)
-      return {
-        tone: 'ready',
-        title: 'Run stopped',
-        description: `${completed} of 12 questions completed.`,
-      };
     return {
-      tone: 'success',
-      title: 'No large token anomaly detected',
-      description: `All ${normalCount} requests used small inputs with no reported cache activity. This is not proof of permanent zero injection.`,
+      tone: 'ready',
+      title: normalOutcomeTitle({
+        normalCount,
+        cacheCount,
+        largeCount,
+        errorCount,
+        unavailableCount,
+      }),
+      description: `${completed} / ${NORMAL_QUESTIONS.length} requests finished · ${completed < NORMAL_QUESTIONS.length ? 'Partial run' : errorCount ? `Completed with ${errorCount} failure${errorCount === 1 ? '' : 's'}` : cacheCount + largeCount ? 'Completed with anomalies' : unavailableCount ? 'Completed with missing usage data' : 'Completed'}.${unavailableCount ? ` Token usage was unavailable for ${unavailableCount} request${unavailableCount === 1 ? '' : 's'}.` : ''}`,
     };
   }, [
     cacheCount,
@@ -2331,9 +2285,7 @@ export function TokenCheckApp({
                   <div className="divide-y divide-border">
                     {filteredRuns.map((run) => {
                       const runVerdict =
-                        run.testKind === 'rpm'
-                          ? savedRpmVerdict(run)
-                          : savedVerdict(run);
+                        run.testKind === 'rpm' ? savedRpmVerdict(run) : null;
                       return (
                         <div
                           key={run.id}
@@ -2373,12 +2325,14 @@ export function TokenCheckApp({
                                   ? 'Anthropic'
                                   : 'OpenAI'}
                               </Badge>
-                              <Badge
-                                variant="outline"
-                                className={runVerdict.className}
-                              >
-                                {runVerdict.label}
-                              </Badge>
+                              {runVerdict ? (
+                                <Badge
+                                  variant="outline"
+                                  className={runVerdict.className}
+                                >
+                                  {runVerdict.label}
+                                </Badge>
+                              ) : null}
                             </div>
                             <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
                               {run.modelName} · {run.baseUrl}
@@ -2394,11 +2348,20 @@ export function TokenCheckApp({
                                 {durationOrDash(run.p95LatencyMs)}
                               </p>
                             ) : (
-                              <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                                Median TTFT {durationOrDash(run.medianTtftMs)} ·
-                                Total {durationOrDash(run.medianTotalTimeMs)} ·{' '}
-                                {rateOrDash(run.medianOutputTokensPerSecond)}
-                              </p>
+                              <>
+                                <NormalOutcomeCounts source={run} />
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                  {normalOutcomes(run).finished} /{' '}
+                                  {NORMAL_QUESTIONS.length} requests finished
+                                </p>
+                                <p className="mt-1 font-mono text-xs text-muted-foreground">
+                                  Median TTFT {durationOrDash(run.medianTtftMs)}{' '}
+                                  · Median total{' '}
+                                  {durationOrDash(run.medianTotalTimeMs)} ·{' '}
+                                  Median output{' '}
+                                  {rateOrDash(run.medianOutputTokensPerSecond)}
+                                </p>
+                              </>
                             )}
                             <p className="mt-1 inline-flex items-center gap-1 text-[10px] text-muted-foreground">
                               <Clock3 className="size-3" />{' '}
@@ -2446,13 +2409,13 @@ export function TokenCheckApp({
               <>
                 <div className="grid gap-5 lg:grid-cols-2">
                   <section
-                    className={`rounded-2xl border p-5 shadow-[0_18px_50px_rgb(15_23_42/0.05)] ${overall.tone === 'danger' ? 'border-rose-200 bg-rose-50/70' : overall.tone === 'warning' ? 'border-amber-200 bg-amber-50/70' : overall.tone === 'success' ? 'border-emerald-200 bg-emerald-50/70' : 'border-border bg-card'}`}
+                    className={`rounded-2xl border p-5 shadow-[0_18px_50px_rgb(15_23_42/0.05)] ${overall.tone === 'warning' ? 'border-amber-200 bg-amber-50/70' : 'border-border bg-card'}`}
                   >
                     <output className="sr-only" aria-live="polite">
                       {overall.title}. {overall.description}
                     </output>
                     <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      Token verdict
+                      Token check results
                     </p>
                     <h2 className="mt-1 text-xl font-semibold tracking-tight">
                       {overall.title}
@@ -2460,46 +2423,39 @@ export function TokenCheckApp({
                     <p className="mt-1 min-h-12 text-sm leading-6 text-muted-foreground">
                       {overall.description}
                     </p>
-                    <div className="mt-4 grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
-                      <div className="rounded-xl border border-border/70 bg-white/65 px-3 py-2.5">
-                        <div className="font-mono text-lg font-semibold">
-                          {completed}
-                        </div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Complete
-                        </div>
+                    <NormalOutcomeCounts source={outcomeSource} tiles />
+                    {['running', 'stopping', 'saving'].includes(normalPhase) ||
+                    !completed ? (
+                      <Progress
+                        value={progress}
+                        className="mt-4 [&_[data-slot=progress-indicator]]:bg-[#39a987]"
+                        aria-label={`${progress}% complete`}
+                        aria-valuetext={`${completed} of 12 questions finished`}
+                      />
+                    ) : (
+                      <div
+                        aria-hidden="true"
+                        className="mt-4 flex h-1.5 overflow-hidden rounded-full bg-muted"
+                      >
+                        {[
+                          { count: normalCount, color: 'bg-emerald-500' },
+                          {
+                            count: cacheCount + largeCount,
+                            color: 'bg-amber-500',
+                          },
+                          { count: errorCount, color: 'bg-rose-500' },
+                          { count: unavailableCount, color: 'bg-slate-400' },
+                        ].map((segment) => (
+                          <span
+                            key={segment.color}
+                            className={segment.color}
+                            style={{
+                              width: `${(segment.count / NORMAL_QUESTIONS.length) * 100}%`,
+                            }}
+                          />
+                        ))}
                       </div>
-                      <div className="rounded-xl border border-border/70 bg-white/65 px-3 py-2.5">
-                        <div className="font-mono text-lg font-semibold text-emerald-700">
-                          {normalCount}
-                        </div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Normal
-                        </div>
-                      </div>
-                      <div className="rounded-xl border border-border/70 bg-white/65 px-3 py-2.5">
-                        <div className="font-mono text-lg font-semibold text-rose-700">
-                          {cacheCount + largeCount}
-                        </div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Anomaly
-                        </div>
-                      </div>
-                      <div className="rounded-xl border border-border/70 bg-white/65 px-3 py-2.5">
-                        <div className="font-mono text-lg font-semibold text-rose-700">
-                          {errorCount}
-                        </div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Failed
-                        </div>
-                      </div>
-                    </div>
-                    <Progress
-                      value={progress}
-                      className="mt-4 [&_[data-slot=progress-indicator]]:bg-[#39a987]"
-                      aria-label={`${progress}% complete`}
-                      aria-valuetext={`${completed} of 12 questions completed${normalPhase === 'stopped' ? '; test stopped' : ''}`}
-                    />
+                    )}
                   </section>
 
                   <section className="rounded-2xl border border-blue-200 bg-blue-50/55 p-5 shadow-[0_18px_50px_rgb(15_23_42/0.05)]">
@@ -2516,15 +2472,16 @@ export function TokenCheckApp({
                     </h2>
                     <p className="mt-1 min-h-12 text-sm leading-6 text-muted-foreground">
                       Measured from this tester&apos;s relay to the provider
-                      stream. DNS, TCP, and TLS are intentionally excluded.
+                      stream. DNS, TCP, and TLS are intentionally excluded. Each
+                      median uses the available timings for that metric.
                     </p>
                     <div className="mt-4 grid grid-cols-2 gap-2 text-center sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
                       <div className="rounded-xl border border-blue-200/80 bg-white/70 px-2 py-2.5">
                         <div className="font-mono text-sm font-semibold">
                           {durationOrDash(performanceSummary.medianTtftMs)}
                         </div>
-                        <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                          TTFT
+                        <div className="text-xs text-muted-foreground">
+                          Median TTFT
                         </div>
                       </div>
                       <div className="rounded-xl border border-blue-200/80 bg-white/70 px-2 py-2.5">
@@ -2533,16 +2490,16 @@ export function TokenCheckApp({
                             performanceSummary.medianGenerationMs,
                           )}
                         </div>
-                        <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                          Generation
+                        <div className="text-xs text-muted-foreground">
+                          Median generation
                         </div>
                       </div>
                       <div className="rounded-xl border border-blue-200/80 bg-white/70 px-2 py-2.5">
                         <div className="font-mono text-sm font-semibold">
                           {durationOrDash(performanceSummary.medianTotalTimeMs)}
                         </div>
-                        <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                          Total
+                        <div className="text-xs text-muted-foreground">
+                          Median total
                         </div>
                       </div>
                       <div className="rounded-xl border border-blue-200/80 bg-white/70 px-2 py-2.5">
@@ -2551,8 +2508,8 @@ export function TokenCheckApp({
                             performanceSummary.medianOutputTokensPerSecond,
                           )}
                         </div>
-                        <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                          Output speed
+                        <div className="text-xs text-muted-foreground">
+                          Median output speed
                         </div>
                       </div>
                     </div>
