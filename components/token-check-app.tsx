@@ -425,6 +425,17 @@ function resultErrorMessage(result: TestResult) {
 function errorSolution(result: TestResult, message: string | null) {
   if (result.status !== 'error') return null;
   const detail = `${message ?? ''} ${result.rawResponse ?? ''}`.toLowerCase();
+  const preparationError = (message ?? '').toLowerCase();
+  if (
+    !result.requestUrl &&
+    !result.requestBody &&
+    !result.httpStatus &&
+    (preparationError.includes('dns mapping') ||
+      preparationError.includes('dns resolver') ||
+      preparationError.includes('automatic ip mapping'))
+  ) {
+    return 'The tester could not prepare the IP-to-hostname mapping, so no provider request was sent. Contact the site owner to check the DNS mapping service; changing the model or provider API key will not fix this step.';
+  }
   if (
     detail.includes('temperature') ||
     detail.includes('top_p') ||

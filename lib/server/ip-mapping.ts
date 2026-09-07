@@ -57,6 +57,33 @@ type DnsRecord = {
   proxied: boolean;
 };
 
+async function dnsJson(response: Response, service: string) {
+  // Workers only supports manual/follow. Manual also prevents credential forwarding.
+  if (response.status >= 300 && response.status < 400) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      // Cleanup failure must not hide the rejected redirect.
+    }
+    throw new IpMappingError(
+      `${service} refused a redirect (HTTP ${response.status}). No provider request was sent. Contact the site owner.`,
+    );
+  }
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    throw new IpMappingError(
+      `${service} returned invalid JSON (HTTP ${response.status}). No provider request was sent.`,
+    );
+  }
+  if (!json || typeof json !== 'object' || Array.isArray(json))
+    throw new IpMappingError(
+      `${service} returned an unexpected response (HTTP ${response.status}). No provider request was sent.`,
+    );
+  return json;
+}
+
 // No provider key is accepted by this function. Only the DNS credential is sent to Cloudflare.
 export async function resolveIpConnection(
   baseUrl: string,
@@ -96,19 +123,19 @@ export async function resolveIpConnection(
           'content-type': 'application/json',
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
-        redirect: 'error',
+        redirect: 'manual',
         signal: AbortSignal.any([
           preparationDeadline,
           AbortSignal.timeout(8_000),
         ]),
       });
-      const json = (await response.json()) as {
+      const json = (await dnsJson(response, 'DNS mapping service')) as {
         success: boolean;
         result: DnsRecord[] | DnsRecord;
         result_info?: { total_pages?: number };
         errors?: { code?: number }[];
       };
-      if (!response.ok || !json.success)
+      if (!response.ok || json.success !== true)
         throw new IpMappingError(
           `DNS mapping service rejected the request (HTTP ${response.status}, code ${Number(json.errors?.[0]?.code) || 'unknown'}). No provider request was sent.`,
         );
@@ -176,14 +203,14 @@ export async function resolveIpConnection(
         `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(target.hostname)}&type=A`,
         {
           headers: { accept: 'application/dns-json' },
-          redirect: 'error',
+          redirect: 'manual',
           signal: AbortSignal.any([
             preparationDeadline,
             AbortSignal.timeout(5_000),
           ]),
         },
       );
-      const dns = (await response.json()) as {
+      const dns = (await dnsJson(response, 'DNS resolver')) as {
         Status: number;
         Answer?: { type: number; data: string }[];
       };
@@ -196,7 +223,8 @@ export async function resolveIpConnection(
           (a) => a.type !== 5 && (a.type !== 1 || a.data === target.address),
         );
       if (resolved) break;
-    } catch {
+    } catch (error) {
+      if (error instanceof IpMappingError) throw error;
       /* Bounded retry for propagation; never send to an unverified mapping. */
     }
   }
