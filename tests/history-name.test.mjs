@@ -15,16 +15,17 @@ const compile = (source) =>
     },
   }).outputText;
 
-test('actual batch handler freezes the entered history name for every model', () => {
+test('actual batch handler freezes the entered history name for every model', async () => {
   const source = read('../components/token-check-app.tsx');
   const handler = source.slice(
-    source.indexOf('  function runTests('),
+    source.search(/  (?:async )?function runTests\(/),
     source.indexOf('  function stopNormalTest('),
   );
   let tasks;
   const scope = {
     isRpmRunning: false,
     profileBusy: false,
+    queueStartingRef: { current: false },
     setFormError: () => {},
     baseUrl: 'https://example.com',
     apiKey: 'test-only',
@@ -59,12 +60,92 @@ test('actual batch handler freezes the entered history name for every model', ()
   };
   vm.createContext(scope);
   vm.runInContext(compile(handler), scope);
-  scope.runTests({ preventDefault() {} });
+  await scope.runTests({ preventDefault() {} });
   assert.equal(tasks.length, 2);
   for (const task of tasks)
     assert.equal(task.context.profileName, 'IDT-ccmax-蒸馏');
   scope.profileName = 'changed after start';
   assert.equal(tasks[0].context.profileName, 'IDT-ccmax-蒸馏');
+});
+
+test('saved-profile batch persists every model before dispatch; failed persistence sends nothing', async () => {
+  const source = read('../components/token-check-app.tsx');
+  const handler = source.slice(
+    source.search(/  (?:async )?function runTests\(/),
+    source.indexOf('  function stopNormalTest('),
+  );
+  let failSave = false;
+  const events = [];
+  const scope = {
+    Error,
+    isRpmRunning: false,
+    profileBusy: false,
+    queueStartingRef: { current: false },
+    setFormError: (message) => events.push(['error', message]),
+    setProfileBusy() {},
+    baseUrl: 'https://example.com',
+    apiKey: '',
+    selectedProfileId: 'p',
+    selectedProfile: { name: 'Saved' },
+    selectedProfileConfig: { baseUrl: 'https://example.com' },
+    profileName: 'Saved',
+    user: {},
+    apiType: 'anthropic',
+    modelsToEnqueue: ['old', 'new-a', 'new-b'],
+    concurrency: 3,
+    isRunning: false,
+    clientBaseUrlError: () => null,
+    confirmHttpRisk: () => true,
+    isInsecureHttp: () => false,
+    rememberProfileModels: async (id, type, url, models) => {
+      events.push(['persist', id, type, url, [...models]]);
+      if (failSave) throw new Error('Storage unavailable');
+    },
+    normalQueue: {
+      setConcurrency() {},
+      enqueue(tasks) {
+        events.push(['enqueue', tasks.length]);
+        return ['1'];
+      },
+    },
+    NORMAL_QUESTIONS,
+    testFetch() {},
+    classifyResult() {},
+    saveCompletedRun() {},
+    setSelectedJobId() {},
+    setSelectedModels() {},
+    showCurrent() {},
+    setLastRunMode() {},
+    setShownApiType() {},
+  };
+  vm.createContext(scope);
+  vm.runInContext(compile(handler), scope);
+  await scope.runTests({ preventDefault() {} });
+  assert.deepEqual(
+    events.filter((e) => e[0] !== 'error'),
+    [
+      [
+        'persist',
+        'p',
+        'anthropic',
+        'https://example.com',
+        ['old', 'new-a', 'new-b'],
+      ],
+      ['enqueue', 3],
+    ],
+  );
+  events.length = 0;
+  failSave = true;
+  await scope.runTests({ preventDefault() {} });
+  assert.equal(
+    events.some((e) => e[0] === 'enqueue'),
+    false,
+  );
+  assert.ok(
+    events.some(
+      (e) => e[0] === 'error' && e[1].includes('Storage unavailable'),
+    ),
+  );
 });
 
 test('actual save callback sends frozen name; POST persists it without saving credentials', async () => {

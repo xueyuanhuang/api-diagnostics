@@ -693,6 +693,7 @@ export function TokenCheckApp({
   const [rpmMessage, setRpmMessage] = useState('');
   const [historyBusy, setHistoryBusy] = useState(false);
   const previewRequestRef = useRef(0);
+  const queueStartingRef = useRef(false);
   const controlsLocked = isRunning || isRpmRunning;
   // History is a read-only snapshot; it must never replace live runner state.
   const normalPreview =
@@ -1154,7 +1155,7 @@ export function TokenCheckApp({
   ]);
 
   function chooseType(nextType: ApiType) {
-    if (controlsLocked || nextType === apiType) return;
+    if (controlsLocked || profileBusy || nextType === apiType) return;
     const sourceType = apiType;
     const targetTouched = draftTouched[nextType];
     const copyBaseUrl = !targetTouched.baseUrl;
@@ -1203,7 +1204,7 @@ export function TokenCheckApp({
   }
 
   function selectProfile(id: string) {
-    if (controlsLocked) return;
+    if (controlsLocked || profileBusy) return;
     setSelectedProfileId(id);
     setSelectedModels([]);
     setProfileMessage('');
@@ -1261,7 +1262,7 @@ export function TokenCheckApp({
   }
 
   function removeModel(item: string) {
-    if (controlsLocked) return;
+    if (controlsLocked || profileBusy) return;
     setSelectedModels((current) => current.filter((name) => name !== item));
     const next = activeProfileModels.filter((modelName) => modelName !== item);
     updateProfileModels(next);
@@ -1370,6 +1371,80 @@ export function TokenCheckApp({
     }
   }
 
+  async function rememberProfileModels(
+    profileId: string,
+    forType: ApiType,
+    forBaseUrl: string,
+    models?: string[],
+  ) {
+    const data = await jsonFetch<{
+      profileId: string;
+      apiType: ApiType;
+      models: string[];
+      added: number;
+    }>(`/api/profiles/${profileId}/models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        apiType: forType,
+        baseUrl: forBaseUrl,
+        ...(models ? { models } : { source: 'history' }),
+      }),
+    });
+    setProfiles((current) =>
+      current.map((profile) =>
+        profile.id !== profileId
+          ? profile
+          : {
+              ...profile,
+              configs: {
+                ...profile.configs,
+                [forType]: { ...profile.configs[forType], models: data.models },
+              },
+            },
+      ),
+    );
+    // Connection edits are locked while awaiting this response. Preserve other API
+    // settings and any additional model drafts; never replace the key or default model.
+    setProfileModels((current) => ({
+      ...current,
+      [forType]: [...new Set([...data.models, ...current[forType]])],
+    }));
+    return data;
+  }
+
+  async function restoreHistoryModels() {
+    if (
+      !selectedProfileId ||
+      controlsLocked ||
+      profileBusy ||
+      queueStartingRef.current
+    )
+      return;
+    queueStartingRef.current = true;
+    setProfileBusy(true);
+    setProfileMessage('');
+    try {
+      const data = await rememberProfileModels(
+        selectedProfileId,
+        apiType,
+        baseUrl,
+      );
+      setProfileMessage(
+        data.added
+          ? `${data.added} models restored and saved for ${apiType === 'anthropic' ? 'Anthropic' : 'OpenAI'}. No tests were sent.`
+          : 'All historical models are already saved. No tests were sent.',
+      );
+    } catch (error) {
+      setProfileMessage(
+        error instanceof Error ? error.message : 'Could not restore models.',
+      );
+    } finally {
+      queueStartingRef.current = false;
+      setProfileBusy(false);
+    }
+  }
+
   async function deleteProfile() {
     if (!selectedProfileId || !user) return;
     setProfileBusy(true);
@@ -1469,9 +1544,9 @@ export function TokenCheckApp({
     }
   }
 
-  function runTests(event: SyntheticEvent<HTMLFormElement>) {
+  async function runTests(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isRpmRunning || profileBusy) return;
+    if (isRpmRunning || profileBusy || queueStartingRef.current) return;
     setFormError('');
     if (profileName.trim().length > 80)
       return setFormError(
@@ -1505,57 +1580,75 @@ export function TokenCheckApp({
     // Capture immutable connection/model values for both requests and saving.
     // Only the private task closures capture a one-time API key.
     const profileId = selectedProfileId || null;
-    const requestBase = {
-      allowInsecureHttp: isInsecureHttp(baseUrl),
-      profileId: profileId || undefined,
-      apiType,
-      baseUrl: profileId ? undefined : baseUrl.trim(),
-      apiKey: profileId ? undefined : apiKey.trim(),
-    };
-    normalQueue.setConcurrency(concurrency);
-    const ids = normalQueue.enqueue(
-      modelsToEnqueue.map((modelName) => ({
-        key: JSON.stringify([profileId, apiType, baseUrl.trim(), modelName]),
-        context: {
-          source: 'current' as const,
-          profileName: (selectedProfile?.name ?? profileName.trim()) || null,
+    queueStartingRef.current = true;
+    if (profileId) setProfileBusy(true);
+    try {
+      if (profileId)
+        await rememberProfileModels(
+          profileId,
           apiType,
-          baseUrl: baseUrl.trim(),
-          modelName,
-          createdAt: Date.now(),
-        },
-        questions: NORMAL_QUESTIONS,
-        request: (
-          question: NormalQuestion,
-          _index: number,
-          signal: AbortSignal,
-        ) =>
-          testFetch({
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              ...requestBase,
-              model: modelName,
-              prompt: question.prompt,
+          baseUrl.trim(),
+          modelsToEnqueue,
+        );
+      const requestBase = {
+        allowInsecureHttp: isInsecureHttp(baseUrl),
+        profileId: profileId || undefined,
+        apiType,
+        baseUrl: profileId ? undefined : baseUrl.trim(),
+        apiKey: profileId ? undefined : apiKey.trim(),
+      };
+      normalQueue.setConcurrency(concurrency);
+      const ids = normalQueue.enqueue(
+        modelsToEnqueue.map((modelName) => ({
+          key: JSON.stringify([profileId, apiType, baseUrl.trim(), modelName]),
+          context: {
+            source: 'current' as const,
+            profileName: (selectedProfile?.name ?? profileName.trim()) || null,
+            apiType,
+            baseUrl: baseUrl.trim(),
+            modelName,
+            createdAt: Date.now(),
+          },
+          questions: NORMAL_QUESTIONS,
+          request: (
+            question: NormalQuestion,
+            _index: number,
+            signal: AbortSignal,
+          ) =>
+            testFetch({
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                ...requestBase,
+                model: modelName,
+                prompt: question.prompt,
+              }),
+              signal,
             }),
-            signal,
-          }),
-        classify: classifyResult,
-        save: user
-          ? (finished: TestResult[], context: RunContext) =>
-              saveCompletedRun(finished, context, profileId)
-          : undefined,
-      })),
-    );
-    if (!ids.length)
-      return setFormError(
-        'Those models are already running or queued. Select a different model.',
+          classify: classifyResult,
+          save: user
+            ? (finished: TestResult[], context: RunContext) =>
+                saveCompletedRun(finished, context, profileId)
+            : undefined,
+        })),
       );
-    if (!isRunning) setSelectedJobId(ids[0]);
-    setSelectedModels([]);
-    showCurrent('normal');
-    setLastRunMode('normal');
-    setShownApiType(apiType);
+      if (!ids.length)
+        return setFormError(
+          'Those models are already running or queued. Select a different model.',
+        );
+      if (!isRunning) setSelectedJobId(ids[0]);
+      setSelectedModels([]);
+      showCurrent('normal');
+      setLastRunMode('normal');
+      setShownApiType(apiType);
+    } catch (error) {
+      setFormError(
+        `Could not save the batch model list. No new tests were started. ${error instanceof Error ? error.message : 'Try again.'}`,
+      );
+    } finally {
+      queueStartingRef.current = false;
+      if (profileId) setProfileBusy(false);
+    }
   }
 
   function stopNormalTest() {
@@ -1811,7 +1904,10 @@ export function TokenCheckApp({
               }
               className="space-y-4"
             >
-              <fieldset disabled={controlsLocked} className="space-y-1.5">
+              <fieldset
+                disabled={controlsLocked || profileBusy}
+                className="space-y-1.5"
+              >
                 <legend className="text-xs font-medium text-muted-foreground">
                   API type
                 </legend>
@@ -1855,7 +1951,7 @@ export function TokenCheckApp({
                     markDraftTouched(['baseUrl']);
                     if (selectedProfileId) setProfileDirty(true);
                   }}
-                  disabled={controlsLocked}
+                  disabled={controlsLocked || profileBusy}
                   placeholder={
                     apiType === 'anthropic'
                       ? 'https://api.anthropic.com'
@@ -1903,7 +1999,7 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       setProfileDirty(true);
                     }}
-                    disabled={isRpmRunning}
+                    disabled={isRpmRunning || profileBusy}
                     className="h-10 w-full rounded-lg border border-input bg-background px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring/30"
                   >
                     {activeProfileModels.map((item) => (
@@ -1922,7 +2018,7 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       if (selectedProfileId) setProfileDirty(true);
                     }}
-                    disabled={isRpmRunning}
+                    disabled={isRpmRunning || profileBusy}
                     placeholder={
                       apiType === 'anthropic'
                         ? 'e.g. claude-sonnet-4-6'
@@ -1950,7 +2046,7 @@ export function TokenCheckApp({
                           <button
                             type="button"
                             onClick={() => removeModel(item)}
-                            disabled={controlsLocked}
+                            disabled={controlsLocked || profileBusy}
                             aria-label={`Remove ${item}`}
                             className="text-muted-foreground hover:text-rose-700"
                           >
@@ -1989,6 +2085,23 @@ export function TokenCheckApp({
                       <Plus className="size-3" /> Add
                     </Button>
                   </div>
+                  {selectedProfileId && testMode === 'normal' ? (
+                    <div className="space-y-2">
+                      <p className="text-sm text-muted-foreground">
+                        Batch models are saved automatically for this connection
+                        and API type before testing.
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={controlsLocked || profileBusy}
+                        onClick={() => void restoreHistoryModels()}
+                      >
+                        Restore models from history
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -2090,7 +2203,7 @@ export function TokenCheckApp({
                       updateApiKey(event.target.value);
                       if (selectedProfileId) setProfileDirty(true);
                     }}
-                    disabled={controlsLocked}
+                    disabled={controlsLocked || profileBusy}
                     placeholder={
                       selectedProfileConfig?.hasSavedKey
                         ? 'Saved securely — enter only to replace'
@@ -3049,7 +3162,7 @@ export function TokenCheckApp({
                 model={model}
                 profileDirty={profileDirty}
                 openedRunId=""
-                startBlocked={isRunning}
+                startBlocked={isRunning || profileBusy}
                 discoverActiveRun={testMode === 'rpm'}
                 onRunningChange={onRpmRunningChange}
                 onProgressChange={setRpmMessage}
