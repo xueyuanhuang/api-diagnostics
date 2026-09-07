@@ -5,6 +5,7 @@ import {
   type ApiType,
   endpointFromBaseUrl,
   validateBaseUrl,
+  validateOutboundUrl,
 } from '@/lib/server/connection';
 import { decryptApiKey } from '@/lib/server/encryption';
 import { noStore } from '@/lib/server/http';
@@ -13,6 +14,7 @@ import { readProviderStream } from '@/lib/server/provider-stream';
 import { combinedRequestSignal } from '@/lib/server/abort-signals';
 
 type RequestPayload = {
+  allowInsecureHttp?: unknown;
   profileId?: unknown;
   apiType?: unknown;
   baseUrl?: unknown;
@@ -172,6 +174,9 @@ export async function POST(request: NextRequest) {
   }
 
   const { apiType, baseUrl, apiKey, model } = connection;
+  const outbound = validateOutboundUrl(baseUrl, payload.allowInsecureHttp);
+  if ('error' in outbound)
+    return noStore({ error: outbound.error }, { status: 400 });
   const headers: Record<string, string> = {
     accept: 'text/event-stream',
     'content-type': 'application/json',

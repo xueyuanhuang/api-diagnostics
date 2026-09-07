@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { validateOutboundUrl } from '@/lib/server/connection';
 import { desc, eq } from 'drizzle-orm';
 import { NextRequest } from 'next/server';
 
@@ -21,6 +22,7 @@ const STALE_PREFLIGHT_MS = 90_000;
 const DEFAULT_MAX_REQUESTS_PER_RUN = 25_000;
 
 type StartPayload = {
+  allowInsecureHttp?: unknown;
   profileId?: unknown;
   apiType?: unknown;
   model?: unknown;
@@ -120,6 +122,12 @@ export async function POST(request: NextRequest) {
       { status: 404 },
     );
 
+  const outbound = validateOutboundUrl(
+    config.baseUrl,
+    payload.allowInsecureHttp,
+  );
+  if ('error' in outbound)
+    return noStore({ error: outbound.error }, { status: 400 });
   const targets = buildRampTargets(targetRpm, rampMode).map((stage) => ({
     ...stage,
     scheduledCount: Math.max(

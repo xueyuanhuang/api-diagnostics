@@ -1,4 +1,5 @@
 'use client';
+import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -666,6 +667,8 @@ export function RpmRampTest({
       );
     }
 
+    if (!confirmHttpRisk([baseUrl], (message) => window.confirm(message)))
+      return;
     const controller = new AbortController();
     abortRef.current = controller;
     setNow(Date.now());
@@ -686,6 +689,7 @@ export function RpmRampTest({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           profileId: selectedProfileId,
+          allowInsecureHttp: isInsecureHttp(baseUrl),
           apiType,
           model: model.trim(),
           targetRpm,

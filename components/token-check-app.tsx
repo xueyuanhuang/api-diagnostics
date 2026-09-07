@@ -1,4 +1,6 @@
 'use client';
+import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
+import { validateBaseUrl } from '@/lib/server/connection';
 /* oxlint-disable react/react-compiler */
 
 import {
@@ -274,15 +276,8 @@ function stripEndpoint(endpoint: string, apiType: ApiType) {
 }
 
 function clientBaseUrlError(baseUrl: string) {
-  try {
-    const url = new URL(baseUrl);
-    if (url.protocol !== 'https:')
-      return 'Only public HTTPS base URLs are supported.';
-    if (url.search) return 'The base URL cannot contain query parameters.';
-    return '';
-  } catch {
-    return 'Enter a valid base URL.';
-  }
+  const result = validateBaseUrl(baseUrl);
+  return 'error' in result ? result.error : '';
 }
 
 function classifyResult(
@@ -1268,6 +1263,13 @@ export function TokenCheckApp({
 
   async function saveProfile() {
     if (!user) return;
+    if (
+      !confirmHttpRisk(
+        Object.values(connections).map((config) => config.baseUrl),
+        (message) => window.confirm(message),
+      )
+    )
+      return;
     setProfileMessage('');
     setProfileBusy(true);
     const configs = {
@@ -1457,10 +1459,13 @@ export function TokenCheckApp({
         'Select valid model names (up to 120 characters each).',
       );
 
+    if (!confirmHttpRisk([baseUrl], (message) => window.confirm(message)))
+      return;
     // Capture immutable connection/model values for both requests and saving.
     // Only the private task closures capture a one-time API key.
     const profileId = selectedProfileId || null;
     const requestBase = {
+      allowInsecureHttp: isInsecureHttp(baseUrl),
       profileId: profileId || undefined,
       apiType,
       baseUrl: profileId ? undefined : baseUrl.trim(),
@@ -1814,9 +1819,22 @@ export function TokenCheckApp({
                 />
                 <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
                   Use the provider root. The tester adds the correct Messages or
-                  Chat Completions path.
+                  Chat Completions path. Public HTTP/HTTPS URLs and custom ports
+                  are supported; HTTPS is recommended.
                 </span>
               </label>
+
+              {isInsecureHttp(baseUrl) && (
+                <Alert className="border-amber-300 bg-amber-50">
+                  <AlertTriangle className="size-4" />
+                  <AlertTitle>Unencrypted HTTP connection</AlertTitle>
+                  <AlertDescription>
+                    Your API key, prompts, and responses will travel unencrypted
+                    from the relay to this provider. Use HTTPS if available. You
+                    must confirm this risk before saving or starting a test.
+                  </AlertDescription>
+                </Alert>
+              )}
 
               <label
                 htmlFor="model-name"

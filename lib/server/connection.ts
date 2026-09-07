@@ -2,7 +2,8 @@ export type ApiType = 'anthropic' | 'openai';
 
 function parseIpv4(hostname: string) {
   const parts = hostname.split('.');
-  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return null;
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part)))
+    return null;
   const numbers = parts.map(Number);
   return numbers.some((part) => part < 0 || part > 255) ? null : numbers;
 }
@@ -27,7 +28,10 @@ function isNonPublicIpv4(parts: number[]) {
 }
 
 function isBlockedHostname(rawHostname: string) {
-  const hostname = rawHostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  const hostname = rawHostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
   if (
     hostname === 'localhost' ||
     hostname === 'localhost.localdomain' ||
@@ -43,31 +47,53 @@ function isBlockedHostname(rawHostname: string) {
   return hostname.includes(':');
 }
 
-export function validateBaseUrl(rawBaseUrl: string): { baseUrl: string } | { error: string } {
+export function validateBaseUrl(
+  rawBaseUrl: string,
+): { baseUrl: string } | { error: string } {
   let url: URL;
   try {
     url = new URL(rawBaseUrl);
   } catch {
     return { error: 'Enter a valid base URL.' };
   }
-  if (url.protocol !== 'https:') return { error: 'Only public HTTPS base URLs are supported.' };
-  if (url.username || url.password || (url.port && url.port !== '443')) {
-    return { error: 'URL credentials and custom ports are not supported.' };
+  if (!['http:', 'https:'].includes(url.protocol))
+    return { error: 'Only public HTTP or HTTPS base URLs are supported.' };
+  if (url.username || url.password) {
+    return { error: 'Credentials embedded in URLs are not supported.' };
   }
   if (isBlockedHostname(url.hostname)) {
     return { error: 'Local and private-network base URLs are blocked.' };
   }
-  if (url.search) return { error: 'The base URL cannot contain query parameters.' };
+  if (url.search)
+    return { error: 'The base URL cannot contain query parameters.' };
   url.hash = '';
   url.pathname = url.pathname.replace(/\/+$/, '') || '/';
   return { baseUrl: url.toString().replace(/\/$/, '') };
 }
 
+export function validateOutboundUrl(
+  baseUrl: string,
+  allowInsecureHttp: unknown,
+) {
+  const validated = validateBaseUrl(baseUrl);
+  if ('error' in validated) return validated;
+  if (
+    new URL(validated.baseUrl).protocol === 'http:' &&
+    allowInsecureHttp !== true
+  )
+    return {
+      error: 'Confirm the unencrypted HTTP risk before starting this test.',
+    };
+  return validated;
+}
+
 export function endpointFromBaseUrl(baseUrl: string, apiType: ApiType) {
   const url = new URL(baseUrl);
   const path = url.pathname.replace(/\/+$/, '');
-  const completePath = apiType === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
-  const finalSegment = apiType === 'anthropic' ? '/messages' : '/chat/completions';
+  const completePath =
+    apiType === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
+  const finalSegment =
+    apiType === 'anthropic' ? '/messages' : '/chat/completions';
   if (path.endsWith(completePath)) {
     url.pathname = path;
   } else if (path.endsWith('/v1')) {
@@ -80,5 +106,12 @@ export function endpointFromBaseUrl(baseUrl: string, apiType: ApiType) {
 
 export function normalizeModels(value: unknown) {
   if (!Array.isArray(value)) return [];
-  return [...new Set(value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean))].slice(0, 20);
+  return [
+    ...new Set(
+      value
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ].slice(0, 20);
 }
