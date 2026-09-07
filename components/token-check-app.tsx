@@ -65,7 +65,7 @@ type ResultStatus =
   | 'large'
   | 'unavailable'
   | 'error';
-type ViewMode = 'current' | 'saved';
+type ViewMode = 'current' | 'saved' | 'detail';
 type ResultsView = 'tokens' | 'performance';
 type TestMode = 'normal' | 'rpm';
 type NormalPhase =
@@ -645,7 +645,7 @@ export function TokenCheckApp({
 }) {
   const [user, setUser] = useState<User>(null);
   const [apiType, setApiType] = useState<ApiType>('anthropic');
-  const [shownApiType, setShownApiType] = useState<ApiType>('anthropic');
+  const [liveShownApiType, setShownApiType] = useState<ApiType>('anthropic');
   const [connections, setConnections] =
     useState<Record<ApiType, ConnectionSettings>>(DEFAULT_CONNECTIONS);
   const [apiKeys, setApiKeys] = useState<ApiKeys>(EMPTY_API_KEYS);
@@ -653,13 +653,13 @@ export function TokenCheckApp({
     useState<DraftTouched>(EMPTY_DRAFT_TOUCHED);
   const [showKey, setShowKey] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
-  const [results, setResults] = useState<TestResult[]>(initialResults);
+  const [liveResults, setResults] = useState<TestResult[]>(initialResults);
   const [isRunning, setIsRunning] = useState(false);
-  const [normalPhase, setNormalPhase] = useState<NormalPhase>('idle');
+  const [liveNormalPhase, setNormalPhase] = useState<NormalPhase>('idle');
   const [isRpmRunning, setIsRpmRunning] = useState(false);
   const [testMode, setTestMode] = useState<TestMode>('normal');
   const [formError, setFormError] = useState('');
-  const [runMessage, setRunMessage] = useState(
+  const [liveRunMessage, setRunMessage] = useState(
     'Ready for a new 12-question check.',
   );
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -682,12 +682,52 @@ export function TokenCheckApp({
   );
   const [viewMode, setViewMode] = useState<ViewMode>('current');
   const [resultsView, setResultsView] = useState<ResultsView>('tokens');
-  const [runContext, setRunContext] = useState<RunContext | null>(null);
-  const [selectedRunId, setSelectedRunId] = useState('');
-  const [openedRpmRunId, setOpenedRpmRunId] = useState('');
+  const [liveRunContext, setRunContext] = useState<RunContext | null>(null);
+  const [savedPreview, setSavedPreview] = useState<{
+    run: SavedRunSummary;
+    results: TestResult[];
+  } | null>(null);
+  const [lastRunMode, setLastRunMode] = useState<TestMode | null>(null);
+  const [rpmMessage, setRpmMessage] = useState('');
   const [historyBusy, setHistoryBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const previewRequestRef = useRef(0);
   const controlsLocked = isRunning || isRpmRunning;
+  // History is a read-only snapshot; it must never replace live runner state.
+  const normalPreview =
+    viewMode === 'detail' && savedPreview?.run.testKind === 'normal'
+      ? savedPreview
+      : null;
+  const results = normalPreview?.results ?? liveResults;
+  const normalPhase = normalPreview ? 'complete' : liveNormalPhase;
+  const shownApiType = normalPreview?.run.apiType ?? liveShownApiType;
+  const runContext: RunContext | null = normalPreview
+    ? { ...normalPreview.run, source: 'saved' }
+    : liveRunContext;
+  const runMessage = normalPreview
+    ? `Saved run from ${new Date(normalPreview.run.createdAt).toLocaleString()}.`
+    : liveRunMessage;
+  const liveCompleted = liveResults.filter((result) =>
+    ['normal', 'cached', 'large', 'unavailable', 'error'].includes(
+      result.status,
+    ),
+  ).length;
+
+  function showCurrent(mode = testMode) {
+    previewRequestRef.current += 1;
+    setTestMode(mode);
+    setViewMode('current');
+  }
+
+  function showHistory() {
+    previewRequestRef.current += 1;
+    setViewMode('saved');
+  }
+
+  function onRpmRunningChange(running: boolean) {
+    setIsRpmRunning(running);
+    if (running) setLastRunMode('rpm');
+  }
   const { baseUrl, model } = connections[apiType];
   const apiKey = apiKeys[apiType];
   const activeProfileModels = profileModels[apiType];
@@ -1204,6 +1244,7 @@ export function TokenCheckApp({
   }
 
   function removeModel(item: string) {
+    if (controlsLocked) return;
     const next = activeProfileModels.filter((modelName) => modelName !== item);
     updateProfileModels(next);
     if (selectedProfileId) setProfileDirty(true);
@@ -1369,9 +1410,6 @@ export function TokenCheckApp({
       evidenceRun(context, exportedResults),
       exportedResults,
     );
-    setRunMessage(
-      'Evidence ZIP exported. API keys and cookie values were not included.',
-    );
   }
 
   async function exportSavedRun(run: SavedRunSummary) {
@@ -1424,8 +1462,8 @@ export function TokenCheckApp({
     abortRef.current = controller;
     setIsRunning(true);
     setNormalPhase('running');
-    setViewMode('current');
-    setSelectedRunId('');
+    showCurrent('normal');
+    setLastRunMode('normal');
     setShownApiType(apiType);
     setRunContext({
       source: 'current',
@@ -1496,40 +1534,27 @@ export function TokenCheckApp({
   }
 
   async function openRun(run: SavedRunSummary) {
+    const requestId = ++previewRequestRef.current;
     if (run.testKind === 'rpm') {
-      setTestMode('rpm');
-      setOpenedRpmRunId(run.id);
-      setSelectedRunId(run.id);
-      setViewMode('current');
+      setSavedPreview({ run, results: [] });
+      setViewMode('detail');
       return;
     }
-    setTestMode('normal');
-    setOpenedRpmRunId('');
     setHistoryBusy(true);
     try {
       const data = await jsonFetch<{
         run: RunSummary;
         results: Array<TestResult & { questionId: string }>;
       }>(`/api/runs/${run.id}`);
-      setResults(
-        data.results.map((result) => ({ ...result, id: result.questionId })),
-      );
-      setShownApiType(data.run.apiType);
-      setRunContext({
-        id: data.run.id,
-        source: 'saved',
-        profileName: data.run.profileName,
-        apiType: data.run.apiType,
-        baseUrl: data.run.baseUrl,
-        modelName: data.run.modelName,
-        createdAt: data.run.createdAt,
+      if (previewRequestRef.current !== requestId) return;
+      setSavedPreview({
+        run: { ...data.run, testKind: 'normal' },
+        results: data.results.map((result) => ({
+          ...result,
+          id: result.questionId,
+        })),
       });
-      setSelectedRunId(run.id);
-      setNormalPhase('complete');
-      setRunMessage(
-        `Saved run from ${new Date(run.createdAt).toLocaleString()}.`,
-      );
-      setViewMode('current');
+      setViewMode('detail');
     } catch (error) {
       setProfileMessage(
         error instanceof Error
@@ -1542,6 +1567,11 @@ export function TokenCheckApp({
   }
 
   async function deleteRun(run: SavedRunSummary) {
+    if (
+      run.testKind === 'rpm' &&
+      ['preflight', 'ready', 'running'].includes(run.status)
+    )
+      return;
     setHistoryBusy(true);
     try {
       await jsonFetch<{ deleted: boolean }>(
@@ -1553,13 +1583,9 @@ export function TokenCheckApp({
         },
       );
       setRuns((current) => current.filter((item) => item.id !== run.id));
-      if (selectedRunId === run.id) {
-        setSelectedRunId('');
-        setOpenedRpmRunId('');
-        setResults(initialResults());
-        setNormalPhase('idle');
-        setRunContext(null);
-        setRunMessage('Saved run deleted.');
+      if (savedPreview?.run.id === run.id) {
+        setSavedPreview(null);
+        showHistory();
       }
     } catch (error) {
       setProfileMessage(
@@ -1576,8 +1602,6 @@ export function TokenCheckApp({
         (left, right) => right.createdAt - left.createdAt,
       ),
     );
-    setOpenedRpmRunId(run.id);
-    setSelectedRunId(run.id);
   }
 
   function resetResults() {
@@ -1585,7 +1609,6 @@ export function TokenCheckApp({
     setResults(initialResults());
     setNormalPhase('idle');
     setRunContext(null);
-    setSelectedRunId('');
     setShownApiType(apiType);
     setRunMessage('Ready for a new 12-question check.');
     setFormError('');
@@ -1641,12 +1664,8 @@ export function TokenCheckApp({
         >
           <button
             type="button"
-            disabled={controlsLocked}
             aria-pressed={testMode === 'normal'}
-            onClick={() => {
-              setTestMode('normal');
-              setViewMode('current');
-            }}
+            onClick={() => showCurrent('normal')}
             className={`flex items-start gap-4 rounded-2xl border p-4 text-left shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${testMode === 'normal' ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:border-primary/40'}`}
           >
             <span
@@ -1667,12 +1686,8 @@ export function TokenCheckApp({
           </button>
           <button
             type="button"
-            disabled={controlsLocked}
             aria-pressed={testMode === 'rpm'}
-            onClick={() => {
-              setTestMode('rpm');
-              setViewMode('current');
-            }}
+            onClick={() => showCurrent('rpm')}
             className={`flex items-start gap-4 rounded-2xl border p-4 text-left shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${testMode === 'rpm' ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:border-primary/40'}`}
           >
             <span
@@ -1883,6 +1898,7 @@ export function TokenCheckApp({
                           <button
                             type="button"
                             onClick={() => removeModel(item)}
+                            disabled={controlsLocked}
                             aria-label={`Remove ${item}`}
                             className="text-muted-foreground hover:text-rose-700"
                           >
@@ -2020,19 +2036,20 @@ export function TokenCheckApp({
                   RPM ramp settings and the start control are shown with the
                   live results on the right.
                 </div>
-              ) : normalPhase === 'running' || normalPhase === 'stopping' ? (
+              ) : liveNormalPhase === 'running' ||
+                liveNormalPhase === 'stopping' ? (
                 <Button
                   key="normal-stop"
                   type="button"
                   variant="outline"
                   className="h-11 w-full gap-2"
                   onClick={stopNormalTest}
-                  disabled={normalPhase === 'stopping'}
+                  disabled={liveNormalPhase === 'stopping'}
                 >
                   <Square className="size-3.5 fill-current" />{' '}
-                  {normalPhase === 'stopping' ? 'Stopping…' : 'Stop test'}
+                  {liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop test'}
                 </Button>
-              ) : normalPhase === 'saving' ? (
+              ) : liveNormalPhase === 'saving' ? (
                 <Button
                   key="normal-saving"
                   type="button"
@@ -2046,6 +2063,7 @@ export function TokenCheckApp({
                 <Button
                   key="normal-run"
                   type="submit"
+                  disabled={controlsLocked}
                   className="h-11 w-full gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
                 >
                   <Play className="size-4 fill-current" /> Run 12-question check
@@ -2061,21 +2079,60 @@ export function TokenCheckApp({
           </aside>
 
           <div className="min-w-0 space-y-5">
+            {controlsLocked ||
+            (lastRunMode &&
+              (viewMode !== 'current' || testMode !== lastRunMode)) ? (
+              <div
+                className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 shadow-sm"
+                data-testid="active-test-notice"
+              >
+                <div className="min-w-0 text-xs text-blue-950">
+                  <output className="block font-semibold">
+                    {isRunning
+                      ? `Normal check ${liveNormalPhase === 'saving' ? 'saving' : liveNormalPhase === 'stopping' ? 'stopping' : 'running'} · ${liveCompleted}/12 complete`
+                      : isRpmRunning
+                        ? `RPM test running${rpmMessage ? ` · ${rpmMessage}` : ''}`
+                        : `${lastRunMode === 'rpm' ? 'RPM test' : 'Normal check'} is no longer running — results available`}
+                  </output>
+                  {controlsLocked ? (
+                    <p className="mt-1 leading-5">
+                      You can browse history and switch views. Keep this browser
+                      tab open. Connection settings and starting another test
+                      stay locked until this test ends.
+                    </p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    showCurrent(
+                      isRunning
+                        ? 'normal'
+                        : isRpmRunning
+                          ? 'rpm'
+                          : (lastRunMode ?? testMode),
+                    )
+                  }
+                >
+                  {controlsLocked ? 'View live test' : 'View latest results'}
+                </Button>
+              </div>
+            ) : null}
             <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card p-1.5 shadow-sm">
               <div className="flex gap-1">
                 <button
                   type="button"
-                  onClick={() => setViewMode('current')}
-                  disabled={controlsLocked}
+                  onClick={() => showCurrent()}
                   className={`inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-semibold ${viewMode === 'current' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
                 >
                   <Activity className="size-3.5" /> Current results
                 </button>
                 <button
                   type="button"
-                  onClick={() => setViewMode('saved')}
-                  disabled={controlsLocked}
-                  className={`inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-semibold ${viewMode === 'saved' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+                  onClick={showHistory}
+                  className={`inline-flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-semibold ${viewMode !== 'current' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
                 >
                   <History className="size-3.5" /> Saved runs{' '}
                   {user ? `(${runs.length})` : ''}
@@ -2098,7 +2155,7 @@ export function TokenCheckApp({
                   <button
                     type="button"
                     onClick={resetResults}
-                    disabled={isRunning}
+                    disabled={controlsLocked}
                     className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
                   >
                     <RotateCcw className="size-3" /> Reset
@@ -2106,6 +2163,42 @@ export function TokenCheckApp({
                 </div>
               ) : null}
             </div>
+
+            {viewMode === 'detail' && savedPreview ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+                <div>
+                  <p className="text-sm font-semibold">
+                    Saved result ·{' '}
+                    {savedPreview.run.profileName ?? 'One-time connection'}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {savedPreview.run.modelName} · {savedPreview.run.apiType} ·{' '}
+                    {new Date(savedPreview.run.createdAt).toLocaleString()}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={showHistory}
+                  >
+                    Back to saved runs
+                  </Button>
+                  {normalPreview && runContext ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => exportEvidence(runContext, results)}
+                    >
+                      <Download className="mr-1 size-3" />
+                      Export saved evidence
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
 
             {viewMode === 'saved' ? (
               <section className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_18px_50px_rgb(15_23_42/0.06)]">
@@ -2329,7 +2422,13 @@ export function TokenCheckApp({
                           <button
                             type="button"
                             onClick={() => void deleteRun(run)}
-                            disabled={historyBusy}
+                            disabled={
+                              historyBusy ||
+                              (run.testKind === 'rpm' &&
+                                ['preflight', 'ready', 'running'].includes(
+                                  run.status,
+                                ))
+                            }
                             className="grid size-8 place-items-center rounded-lg text-muted-foreground hover:bg-rose-50 hover:text-rose-700"
                             aria-label="Delete saved run"
                           >
@@ -2342,21 +2441,8 @@ export function TokenCheckApp({
                   </div>
                 )}
               </section>
-            ) : testMode === 'rpm' ? (
-              <RpmRampTest
-                user={user}
-                signInPath={signInPath}
-                selectedProfileId={selectedProfileId}
-                profileName={selectedProfile?.name ?? profileName ?? null}
-                apiType={apiType}
-                baseUrl={baseUrl}
-                model={model}
-                profileDirty={profileDirty}
-                openedRunId={openedRpmRunId}
-                onRunningChange={setIsRpmRunning}
-                onRunSaved={upsertRpmRun}
-              />
-            ) : (
+            ) : normalPreview ||
+              (viewMode === 'current' && testMode === 'normal') ? (
               <>
                 <div className="grid gap-5 lg:grid-cols-2">
                   <section
@@ -2732,7 +2818,46 @@ export function TokenCheckApp({
                   run cannot prove permanent zero injection.
                 </p>
               </>
-            )}
+            ) : null}
+
+            {viewMode === 'detail' && savedPreview?.run.testKind === 'rpm' ? (
+              <RpmRampTest
+                key={savedPreview.run.id}
+                user={user}
+                signInPath={signInPath}
+                selectedProfileId=""
+                profileName={savedPreview.run.profileName}
+                apiType={savedPreview.run.apiType}
+                baseUrl={savedPreview.run.baseUrl}
+                model={savedPreview.run.modelName}
+                profileDirty={false}
+                openedRunId={savedPreview.run.id}
+                readOnly
+              />
+            ) : null}
+
+            {/* Keep the live runner and its progress connections mounted across navigation. */}
+            <div
+              hidden={viewMode !== 'current' || testMode !== 'rpm'}
+              data-testid="live-rpm-panel"
+            >
+              <RpmRampTest
+                user={user}
+                signInPath={signInPath}
+                selectedProfileId={selectedProfileId}
+                profileName={selectedProfile?.name ?? profileName ?? null}
+                apiType={apiType}
+                baseUrl={baseUrl}
+                model={model}
+                profileDirty={profileDirty}
+                openedRunId=""
+                startBlocked={isRunning}
+                discoverActiveRun={testMode === 'rpm'}
+                onRunningChange={onRpmRunningChange}
+                onProgressChange={setRpmMessage}
+                onRunSaved={upsertRpmRun}
+              />
+            </div>
           </div>
         </section>
       </div>

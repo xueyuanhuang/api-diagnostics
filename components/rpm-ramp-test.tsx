@@ -387,7 +387,11 @@ export function RpmRampTest({
   model,
   profileDirty,
   openedRunId,
+  readOnly = false,
+  startBlocked = false,
+  discoverActiveRun = true,
   onRunningChange,
+  onProgressChange,
   onRunSaved,
 }: {
   user: { displayName: string; email: string } | null;
@@ -399,8 +403,12 @@ export function RpmRampTest({
   model: string;
   profileDirty: boolean;
   openedRunId: string;
-  onRunningChange: (running: boolean) => void;
-  onRunSaved: (run: RpmRunSummary) => void;
+  readOnly?: boolean;
+  startBlocked?: boolean;
+  discoverActiveRun?: boolean;
+  onRunningChange?: (running: boolean) => void;
+  onProgressChange?: (message: string) => void;
+  onRunSaved?: (run: RpmRunSummary) => void;
 }) {
   const [targetRpm, setTargetRpm] = useState(1_000);
   const [threshold, setThreshold] = useState(90);
@@ -421,6 +429,10 @@ export function RpmRampTest({
   const abortRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const loadedOpenedRunIdRef = useRef('');
+
+  useEffect(() => {
+    if (!readOnly) onProgressChange?.(message);
+  }, [message, onProgressChange, readOnly]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -511,7 +523,16 @@ export function RpmRampTest({
   }, [isRunning, openedRunId]);
 
   useEffect(() => {
-    if (!user || isRunning || openedRunId || detail) return;
+    if (
+      readOnly ||
+      startBlocked ||
+      !discoverActiveRun ||
+      !user ||
+      isRunning ||
+      openedRunId ||
+      detail
+    )
+      return;
     let ignore = false;
     void jsonFetch<{ runs: RpmRunSummary[] }>('/api/rpm-runs')
       .then(async ({ runs }) => {
@@ -538,9 +559,18 @@ export function RpmRampTest({
     return () => {
       ignore = true;
     };
-  }, [detail, isRunning, openedRunId, user]);
+  }, [
+    detail,
+    discoverActiveRun,
+    isRunning,
+    openedRunId,
+    readOnly,
+    startBlocked,
+    user,
+  ]);
 
   async function cancelRun() {
+    if (readOnly || startBlocked) return;
     const runId = activeRunIdRef.current ?? detail?.run.id;
     if (!runId) {
       setMessage('The run is still being created. Try Stop again in a moment.');
@@ -559,7 +589,7 @@ export function RpmRampTest({
       abortRef.current?.abort();
       loadedOpenedRunIdRef.current = cancelled.run.id;
       setDetail(cancelled);
-      onRunSaved(cancelled.run);
+      onRunSaved?.(cancelled.run);
       if (cancelled.run.status === 'cancelled') {
         activeRunIdRef.current = null;
         setRecoverableRunId('');
@@ -603,7 +633,7 @@ export function RpmRampTest({
   }
 
   async function runRamp() {
-    if (isRunning) return;
+    if (readOnly || startBlocked || isRunning) return;
     setError('');
     if (!user) return setError('Sign in before running an RPM load test.');
     if (!selectedProfileId)
@@ -623,9 +653,9 @@ export function RpmRampTest({
       return setError(
         'Minimum success rate must be a whole number from 1 to 100.',
       );
-    const navigation = performance.getEntriesByType(
-      'navigation',
-    )[0] as PerformanceNavigationTiming | undefined;
+    const navigation = performance.getEntriesByType('navigation')[0] as
+      | PerformanceNavigationTiming
+      | undefined;
     if (
       targetRpm > 75 &&
       navigation?.nextHopProtocol &&
@@ -640,7 +670,7 @@ export function RpmRampTest({
     abortRef.current = controller;
     setNow(Date.now());
     setIsRunning(true);
-    onRunningChange(true);
+    onRunningChange?.(true);
     setLive({});
     setDetail(null);
     setPreflight(null);
@@ -667,7 +697,7 @@ export function RpmRampTest({
       loadedOpenedRunIdRef.current = createdRun.run.id;
       setRecoverableRunId(createdRun.run.id);
       setDetail(createdRun);
-      onRunSaved(createdRun.run);
+      onRunSaved?.(createdRun.run);
       setPhase('preflight');
       setPhaseStartedAt(Date.now());
       setPhaseEndsAt(Date.now() + 45_000);
@@ -687,7 +717,7 @@ export function RpmRampTest({
         stages: preflightRun.stages,
       };
       setDetail(current);
-      onRunSaved(current.run);
+      onRunSaved?.(current.run);
       if (current.run.status !== 'ready') {
         activeRunIdRef.current = null;
         setRecoverableRunId('');
@@ -762,8 +792,7 @@ export function RpmRampTest({
                 );
                 if (uniqueDispatchCount === null) return;
                 setLive((existing) => {
-                  const stageLive =
-                    existing[stage.stageIndex] ?? EMPTY_LIVE;
+                  const stageLive = existing[stage.stageIndex] ?? EMPTY_LIVE;
                   return {
                     ...existing,
                     [stage.stageIndex]: {
@@ -906,7 +935,7 @@ export function RpmRampTest({
           controller.signal,
         );
         setDetail(current);
-        onRunSaved(current.run);
+        onRunSaved?.(current.run);
         const finalized = current.stages.find(
           (item) => item.stageIndex === stage.stageIndex,
         );
@@ -983,7 +1012,7 @@ export function RpmRampTest({
             );
             setDetail(active);
             setPreflight(active.preflight ?? null);
-            onRunSaved(active.run);
+            onRunSaved?.(active.run);
           } catch {
             // The cancel control can still use the ID returned by the 409.
           }
@@ -1008,7 +1037,7 @@ export function RpmRampTest({
     } finally {
       controller.abort();
       setIsRunning(false);
-      onRunningChange(false);
+      onRunningChange?.(false);
       abortRef.current = null;
     }
   }
@@ -1034,10 +1063,12 @@ export function RpmRampTest({
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              RPM ramp settings
+              {readOnly ? 'Saved RPM results' : 'RPM ramp settings'}
             </p>
             <h2 className="mt-1 text-xl font-semibold tracking-tight">
-              Staged request-rate test
+              {readOnly
+                ? 'Saved request-rate test'
+                : 'Staged request-rate test'}
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
               Each stage schedules requests over 60 seconds. A provider
@@ -1059,106 +1090,121 @@ export function RpmRampTest({
           ) : null}
         </div>
 
-        {!user ? (
-          <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50/70 p-4 text-sm text-blue-950">
-            RPM testing creates real provider load and is available only after
-            sign-in.{' '}
-            <a
-              href={signInPath}
-              target="_top"
-              className="font-semibold underline"
-            >
-              <LogIn className="mr-1 inline size-4" /> Sign in with ChatGPT
-            </a>
-          </div>
-        ) : (
-          <div className="mt-5 grid gap-4 lg:grid-cols-3">
-            <label
-              htmlFor="rpm-target"
-              className="grid gap-1.5 text-xs font-medium"
-            >
-              Target RPM
-              <Input
-                id="rpm-target"
-                type="number"
-                min={1}
-                max={RPM_MAX_TARGET_RPM}
-                step={1}
-                value={targetRpm}
-                disabled={isRunning}
-                onChange={(event) => setTargetRpm(Number(event.target.value))}
-                className="h-10 font-mono"
-              />
-              <span className="font-normal text-muted-foreground">
-                This public runner is engineered for targets up to 1,000 RPM.
-              </span>
-            </label>
-            <label
-              htmlFor="rpm-threshold"
-              className="grid gap-1.5 text-xs font-medium"
-            >
-              Minimum success rate
-              <div className="relative">
-                <Input
-                  id="rpm-threshold"
-                  type="number"
-                  min={1}
-                  max={100}
-                  step={1}
-                  value={threshold}
-                  disabled={isRunning}
-                  onChange={(event) => setThreshold(Number(event.target.value))}
-                  className="h-10 pr-8 font-mono"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                  %
-                </span>
+        {!readOnly ? (
+          <>
+            {!user ? (
+              <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50/70 p-4 text-sm text-blue-950">
+                RPM testing creates real provider load and is available only
+                after sign-in.{' '}
+                <a
+                  href={signInPath}
+                  target="_top"
+                  className="font-semibold underline"
+                >
+                  <LogIn className="mr-1 inline size-4" /> Sign in with ChatGPT
+                </a>
               </div>
-              <span className="font-normal text-muted-foreground">
-                Default 90%. Exactly 90.00% passes.
-              </span>
-            </label>
-            <label className="grid gap-1.5 text-xs font-medium">
-              Ramp detail
-              <select
-                value={rampMode}
-                disabled={isRunning}
-                onChange={(event) =>
-                  setRampMode(event.target.value as RpmRampMode)
-                }
-                className="h-10 rounded-lg border border-input bg-background px-3 text-sm shadow-xs outline-none focus:ring-2 focus:ring-ring/30"
-              >
-                <option value="balanced">Balanced · 5 stages</option>
-                <option value="detailed">Detailed · 10% steps</option>
-              </select>
-              <span className="font-normal text-muted-foreground">
-                Balanced: 10%, 25%, 50%, 75%, 100%.
-              </span>
-            </label>
-          </div>
-        )}
+            ) : (
+              <div className="mt-5 grid gap-4 lg:grid-cols-3">
+                <label
+                  htmlFor="rpm-target"
+                  className="grid gap-1.5 text-xs font-medium"
+                >
+                  Target RPM
+                  <Input
+                    id="rpm-target"
+                    type="number"
+                    min={1}
+                    max={RPM_MAX_TARGET_RPM}
+                    step={1}
+                    value={targetRpm}
+                    disabled={isRunning}
+                    onChange={(event) =>
+                      setTargetRpm(Number(event.target.value))
+                    }
+                    className="h-10 font-mono"
+                  />
+                  <span className="font-normal text-muted-foreground">
+                    This public runner is engineered for targets up to 1,000
+                    RPM.
+                  </span>
+                </label>
+                <label
+                  htmlFor="rpm-threshold"
+                  className="grid gap-1.5 text-xs font-medium"
+                >
+                  Minimum success rate
+                  <div className="relative">
+                    <Input
+                      id="rpm-threshold"
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={threshold}
+                      disabled={isRunning}
+                      onChange={(event) =>
+                        setThreshold(Number(event.target.value))
+                      }
+                      className="h-10 pr-8 font-mono"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                      %
+                    </span>
+                  </div>
+                  <span className="font-normal text-muted-foreground">
+                    Default 90%. Exactly 90.00% passes.
+                  </span>
+                </label>
+                <label className="grid gap-1.5 text-xs font-medium">
+                  Ramp detail
+                  <select
+                    value={rampMode}
+                    disabled={isRunning}
+                    onChange={(event) =>
+                      setRampMode(event.target.value as RpmRampMode)
+                    }
+                    className="h-10 rounded-lg border border-input bg-background px-3 text-sm shadow-xs outline-none focus:ring-2 focus:ring-ring/30"
+                  >
+                    <option value="balanced">Balanced · 5 stages</option>
+                    <option value="detailed">Detailed · 10% steps</option>
+                  </select>
+                  <span className="font-normal text-muted-foreground">
+                    Balanced: 10%, 25%, 50%, 75%, 100%.
+                  </span>
+                </label>
+              </div>
+            )}
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          {plan.map((stage) => (
-            <Badge
-              key={`${stage.percentage}-${stage.targetRpm}`}
-              variant="outline"
-            >
-              {stage.percentage}% · {stage.targetRpm.toLocaleString()} RPM
-            </Badge>
-          ))}
-        </div>
-        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/75 p-3 text-xs leading-5 text-amber-950">
-          <strong>Planned load:</strong> about{' '}
-          {estimatedRequests.toLocaleString()} paid API requests, plus one
-          preflight. A 60-second quiet window separates stages so rolling-minute
-          limits do not overlap.
-          <br />
-          <strong>Keep this tab open:</strong> dispatch timing runs on the
-          server, while this deployment keeps those workers attached through
-          live progress connections. Closing the tab or losing the connection
-          makes the stage inconclusive, never a provider failure.
-        </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {plan.map((stage) => (
+                <Badge
+                  key={`${stage.percentage}-${stage.targetRpm}`}
+                  variant="outline"
+                >
+                  {stage.percentage}% · {stage.targetRpm.toLocaleString()} RPM
+                </Badge>
+              ))}
+            </div>
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/75 p-3 text-xs leading-5 text-amber-950">
+              <strong>Planned load:</strong> about{' '}
+              {estimatedRequests.toLocaleString()} paid API requests, plus one
+              preflight. A 60-second quiet window separates stages so
+              rolling-minute limits do not overlap.
+              <br />
+              <strong>Keep this tab open:</strong> dispatch timing runs on the
+              server, while this deployment keeps those workers attached through
+              live progress connections. Closing the tab or losing the
+              connection makes the stage inconclusive, never a provider failure.
+              You can browse saved runs or switch test views within this page
+              without interrupting the test.
+            </div>
+          </>
+        ) : !detail && !error ? (
+          <output className="mt-4 block text-sm text-muted-foreground">
+            Loading saved RPM evidence…
+          </output>
+        ) : null}
         {error ? (
           <Alert variant="destructive" className="mt-4">
             <AlertTriangle />
@@ -1170,53 +1216,63 @@ export function RpmRampTest({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          {isRunning ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void cancelRun()}
-              disabled={phase === 'creating' || phase === 'cancelling'}
-              className="gap-2"
-            >
-              {phase === 'creating' ? (
-                <>
-                  <Activity className="size-3.5 animate-pulse motion-reduce:animate-none" />{' '}
-                  Creating run…
-                </>
-              ) : phase === 'cancelling' ? (
-                <>
-                  <Square className="size-3.5 fill-current" /> Cancelling…
-                </>
-              ) : (
-                <>
-                  <Square className="size-3.5 fill-current" /> Stop and save
-                  partial evidence
-                </>
-              )}
-            </Button>
-          ) : recoverableRunId ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void cancelRun()}
-              disabled={phase === 'cancelling'}
-              className="gap-2 border-amber-300 text-amber-950"
-            >
-              <Square className="size-3.5 fill-current" />
-              {phase === 'cancelling' ? 'Cancelling…' : 'Cancel active run'}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              onClick={() => void runRamp()}
-              disabled={!user || !selectedProfileId || profileDirty}
-              className="gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
-            >
-              <Play className="size-4 fill-current" /> Start RPM ramp
-            </Button>
-          )}
-        </div>
+        {!readOnly ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            {isRunning ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void cancelRun()}
+                disabled={phase === 'creating' || phase === 'cancelling'}
+                className="gap-2"
+              >
+                {phase === 'creating' ? (
+                  <>
+                    <Activity className="size-3.5 animate-pulse motion-reduce:animate-none" />{' '}
+                    Creating run…
+                  </>
+                ) : phase === 'cancelling' ? (
+                  <>
+                    <Square className="size-3.5 fill-current" /> Cancelling…
+                  </>
+                ) : (
+                  <>
+                    <Square className="size-3.5 fill-current" /> Stop and save
+                    partial evidence
+                  </>
+                )}
+              </Button>
+            ) : recoverableRunId ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void cancelRun()}
+                disabled={startBlocked || phase === 'cancelling'}
+                className="gap-2 border-amber-300 text-amber-950"
+              >
+                <Square className="size-3.5 fill-current" />
+                {phase === 'cancelling' ? 'Cancelling…' : 'Cancel active run'}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                onClick={() => void runRamp()}
+                disabled={
+                  startBlocked || !user || !selectedProfileId || profileDirty
+                }
+                className="gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
+              >
+                <Play className="size-4 fill-current" /> Start RPM ramp
+              </Button>
+            )}
+            {startBlocked ? (
+              <p className="text-xs text-muted-foreground">
+                A normal token check is running. You can browse here; starting
+                another test will be available when it finishes.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <RunStatusCard
           phase={phase}
           message={message}
