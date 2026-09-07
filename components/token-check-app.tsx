@@ -45,6 +45,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import { ToolBoundaryTest } from '@/components/tool-boundary-test';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
 import { ModelTestQueue } from '@/components/model-test-queue';
@@ -80,7 +81,7 @@ type ResultStatus =
   | 'error';
 type ViewMode = 'current' | 'saved' | 'detail';
 type ResultsView = 'tokens' | 'performance';
-type TestMode = 'normal' | 'rpm';
+type TestMode = 'normal' | 'rpm' | 'boundary';
 type NormalPhase =
   | 'idle'
   | 'queued'
@@ -660,6 +661,7 @@ export function TokenCheckApp({
   const liveNormalPhase: NormalPhase = liveJob?.phase ?? 'idle';
   const isRunning = queueJobs.some((job) => isQueueActive(job.phase));
   const [isRpmRunning, setIsRpmRunning] = useState(false);
+  const [isBoundaryRunning, setIsBoundaryRunning] = useState(false);
   const [testMode, setTestMode] = useState<TestMode>('normal');
   const [formError, setFormError] = useState('');
   const liveRunMessage =
@@ -694,7 +696,7 @@ export function TokenCheckApp({
   const [historyBusy, setHistoryBusy] = useState(false);
   const previewRequestRef = useRef(0);
   const queueStartingRef = useRef(false);
-  const controlsLocked = isRunning || isRpmRunning;
+  const controlsLocked = isRunning || isRpmRunning || isBoundaryRunning;
   // History is a read-only snapshot; it must never replace live runner state.
   const normalPreview =
     viewMode === 'detail' && savedPreview?.run.testKind === 'normal'
@@ -1546,7 +1548,13 @@ export function TokenCheckApp({
 
   async function runTests(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isRpmRunning || profileBusy || queueStartingRef.current) return;
+    if (
+      isRpmRunning ||
+      isBoundaryRunning ||
+      profileBusy ||
+      queueStartingRef.current
+    )
+      return;
     setFormError('');
     if (profileName.trim().length > 80)
       return setFormError(
@@ -1751,8 +1759,8 @@ export function TokenCheckApp({
               API Diagnostics
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
-              Check token usage or measure staged request-rate capacity through
-              Anthropic Messages and OpenAI Chat Completions.
+              Check token usage, tool self-description or request-rate capacity
+              through Anthropic Messages and OpenAI Chat Completions.
             </p>
           </div>
           {user ? (
@@ -1779,7 +1787,7 @@ export function TokenCheckApp({
         </header>
 
         <section
-          className="mb-5 grid gap-3 md:grid-cols-2"
+          className="mb-5 grid gap-3 md:grid-cols-3"
           aria-label="Choose a test"
         >
           <button
@@ -1821,6 +1829,28 @@ export function TokenCheckApp({
                 className={`mt-1 block text-xs leading-5 ${testMode === 'rpm' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
               >
                 Staged capacity · stops after the first failed stage
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={testMode === 'boundary'}
+            onClick={() => showCurrent('boundary')}
+            className={`flex items-start gap-4 rounded-2xl border p-4 text-left shadow-sm transition-colors ${testMode === 'boundary' ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:border-primary/40'}`}
+          >
+            <span
+              className={`grid size-10 shrink-0 place-items-center rounded-xl ${testMode === 'boundary' ? 'bg-white/15' : 'bg-muted'}`}
+            >
+              <ShieldCheck className="size-5" />
+            </span>
+            <span>
+              <span className="block text-sm font-semibold">
+                Tool Boundary Probe
+              </span>
+              <span
+                className={`mt-1 block text-xs leading-5 ${testMode === 'boundary' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
+              >
+                3 identical questions · full raw request / response
               </span>
             </span>
           </button>
@@ -1999,7 +2029,7 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       setProfileDirty(true);
                     }}
-                    disabled={isRpmRunning || profileBusy}
+                    disabled={isRpmRunning || isBoundaryRunning || profileBusy}
                     className="h-10 w-full rounded-lg border border-input bg-background px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring/30"
                   >
                     {activeProfileModels.map((item) => (
@@ -2018,7 +2048,7 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       if (selectedProfileId) setProfileDirty(true);
                     }}
-                    disabled={isRpmRunning || profileBusy}
+                    disabled={isRpmRunning || isBoundaryRunning || profileBusy}
                     placeholder={
                       apiType === 'anthropic'
                         ? 'e.g. claude-sonnet-4-6'
@@ -2070,7 +2100,9 @@ export function TokenCheckApp({
                           addModel();
                         }
                       }}
-                      disabled={isRpmRunning || profileBusy}
+                      disabled={
+                        isRpmRunning || isBoundaryRunning || profileBusy
+                      }
                       placeholder="Add another model"
                       className="h-8 bg-white font-mono text-[11px]"
                     />
@@ -2079,7 +2111,12 @@ export function TokenCheckApp({
                       variant="outline"
                       size="sm"
                       onClick={addModel}
-                      disabled={!newModel.trim() || isRpmRunning || profileBusy}
+                      disabled={
+                        !newModel.trim() ||
+                        isRpmRunning ||
+                        isBoundaryRunning ||
+                        profileBusy
+                      }
                       className="h-8 gap-1"
                     >
                       <Plus className="size-3" /> Add
@@ -2107,7 +2144,7 @@ export function TokenCheckApp({
 
               {testMode === 'normal' ? (
                 <fieldset
-                  disabled={isRpmRunning || profileBusy}
+                  disabled={isRpmRunning || isBoundaryRunning || profileBusy}
                   className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/50 p-3"
                 >
                   <legend className="px-1 text-sm font-semibold">
@@ -2277,10 +2314,11 @@ export function TokenCheckApp({
                   <AlertDescription>{formError}</AlertDescription>
                 </Alert>
               ) : null}
-              {testMode === 'rpm' ? (
+              {testMode !== 'normal' ? (
                 <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-xs leading-5 text-blue-950">
-                  RPM ramp settings and the start control are shown with the
-                  live results on the right.
+                  {testMode === 'boundary'
+                    ? 'Tool-boundary settings and the start control are shown with the results. These probes stay in this tab and can be downloaded as raw JSON.'
+                    : 'RPM ramp settings and the start control are shown with the live results on the right.'}
                 </div>
               ) : (
                 <>
@@ -2309,7 +2347,10 @@ export function TokenCheckApp({
                     key="normal-run"
                     type="submit"
                     disabled={
-                      isRpmRunning || profileBusy || !modelsToEnqueue.length
+                      isRpmRunning ||
+                      isBoundaryRunning ||
+                      profileBusy ||
+                      !modelsToEnqueue.length
                     }
                     className="h-11 w-full gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
                   >
@@ -2362,7 +2403,9 @@ export function TokenCheckApp({
                       ? `Model tests active · ${queueJobs.filter((job) => job.phase === 'running').length} running · ${queueJobs.filter((job) => job.phase === 'queued').length} queued · ${queueJobs.filter((job) => job.phase === 'saving').length} saving · ${queueJobs.filter((job) => job.phase === 'complete').length} completed`
                       : isRpmRunning
                         ? `RPM test running${rpmMessage ? ` · ${rpmMessage}` : ''}`
-                        : `${lastRunMode === 'rpm' ? 'RPM test' : 'Normal check'} is no longer running — results available`}
+                        : isBoundaryRunning
+                          ? 'Tool-boundary probe running'
+                          : `${lastRunMode === 'rpm' ? 'RPM test' : lastRunMode === 'boundary' ? 'Tool-boundary probe' : 'Normal check'} is no longer running — results available`}
                   </output>
                   {controlsLocked ? (
                     <p className="mt-1 leading-5">
@@ -2370,7 +2413,7 @@ export function TokenCheckApp({
                       tab open.{' '}
                       {isRunning
                         ? 'You can change the model and add more to the queue. The connection and API type stay fixed while models are active.'
-                        : 'Connection settings stay locked until the RPM test ends.'}
+                        : 'Connection settings stay locked until the test ends.'}
                     </p>
                   ) : null}
                 </div>
@@ -2384,7 +2427,9 @@ export function TokenCheckApp({
                         ? 'normal'
                         : isRpmRunning
                           ? 'rpm'
-                          : (lastRunMode ?? testMode),
+                          : isBoundaryRunning
+                            ? 'boundary'
+                            : (lastRunMode ?? testMode),
                     )
                   }
                 >
@@ -3147,6 +3192,23 @@ export function TokenCheckApp({
               />
             ) : null}
 
+            <div hidden={viewMode !== 'current' || testMode !== 'boundary'}>
+              <ToolBoundaryTest
+                apiType={apiType}
+                baseUrl={baseUrl}
+                model={model}
+                apiKey={apiKey}
+                selectedProfileId={selectedProfileId}
+                profileName={selectedProfile?.name || profileName}
+                profileDirty={profileDirty}
+                startBlocked={isRunning || isRpmRunning || profileBusy}
+                onRunningChange={(running) => {
+                  setIsBoundaryRunning(running);
+                  if (running) setLastRunMode('boundary');
+                }}
+              />
+            </div>
+
             {/* Keep the live runner and its progress connections mounted across navigation. */}
             <div
               hidden={viewMode !== 'current' || testMode !== 'rpm'}
@@ -3162,7 +3224,7 @@ export function TokenCheckApp({
                 model={model}
                 profileDirty={profileDirty}
                 openedRunId=""
-                startBlocked={isRunning || profileBusy}
+                startBlocked={isRunning || isBoundaryRunning || profileBusy}
                 discoverActiveRun={testMode === 'rpm'}
                 onRunningChange={onRpmRunningChange}
                 onProgressChange={setRpmMessage}

@@ -156,7 +156,16 @@ test('production wires per-job context and retains ownership for unsaved model o
   const profile = source('../lib/server/profile-config.ts');
   assert.match(profile, /eq\(connectionProfiles\.userId, userId\)/);
   assert.match(profile, /allowModelOverride = false/);
-  for (const path of ['../app/api/test/route.ts', '../app/api/runs/route.ts']) {
+  for (const path of [
+    '../app/api/test/route.ts',
+    '../app/api/tool-boundary/route.ts',
+  ]) {
+    assert.match(source(path), /resolveTestConnection\(payload\)/);
+  }
+  for (const path of [
+    '../lib/server/test-connection.ts',
+    '../app/api/runs/route.ts',
+  ]) {
     assert.match(source(path), /allowModelOverride: true/);
     assert.match(source(path), /model\.length > 120/);
   }

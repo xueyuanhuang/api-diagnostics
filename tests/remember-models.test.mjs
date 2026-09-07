@@ -201,5 +201,8 @@ test('metadata endpoint authenticates and never touches provider requests or cre
     new URL('../components/token-check-app.tsx', import.meta.url),
     'utf8',
   );
-  assert.match(component, /startBlocked=\{isRunning \|\| profileBusy\}/);
+  assert.match(
+    component,
+    /startBlocked=\{isRunning \|\| isBoundaryRunning \|\| profileBusy\}/,
+  );
 });

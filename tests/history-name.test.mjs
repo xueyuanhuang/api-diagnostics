@@ -24,6 +24,7 @@ test('actual batch handler freezes the entered history name for every model', as
   let tasks;
   const scope = {
     isRpmRunning: false,
+    isBoundaryRunning: false,
     profileBusy: false,
     queueStartingRef: { current: false },
     setFormError: () => {},
@@ -66,6 +67,14 @@ test('actual batch handler freezes the entered history name for every model', as
     assert.equal(task.context.profileName, 'IDT-ccmax-蒸馏');
   scope.profileName = 'changed after start';
   assert.equal(tasks[0].context.profileName, 'IDT-ccmax-蒸馏');
+  scope.isBoundaryRunning = true;
+  tasks = null;
+  await scope.runTests({ preventDefault() {} });
+  assert.equal(
+    tasks,
+    null,
+    'normal tests cannot start during a boundary probe',
+  );
 });
 
 test('saved-profile batch persists every model before dispatch; failed persistence sends nothing', async () => {
@@ -79,6 +88,7 @@ test('saved-profile batch persists every model before dispatch; failed persisten
   const scope = {
     Error,
     isRpmRunning: false,
+    isBoundaryRunning: false,
     profileBusy: false,
     queueStartingRef: { current: false },
     setFormError: (message) => events.push(['error', message]),
