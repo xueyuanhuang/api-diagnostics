@@ -48,6 +48,7 @@ import { Progress } from '@/components/ui/progress';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
 import { ModelTestQueue } from '@/components/model-test-queue';
+import { AssignRunConnection } from '@/components/assign-run-connection';
 import { normalOutcomes, normalOutcomeTitle } from '@/lib/normal-outcomes';
 import {
   Table,
@@ -719,6 +720,25 @@ export function TokenCheckApp({
   function showHistory() {
     previewRequestRef.current += 1;
     setViewMode('saved');
+  }
+
+  function showJobHistory(id: string) {
+    const job = queueJobs.find((item) => item.id === id);
+    if (!job?.context.id) return;
+    setSavedConnectionFilter(job.context.profileName || 'One-time connection');
+    setSavedModelFilter(job.context.modelName);
+    setSavedApiTypeFilter(job.context.apiType);
+    setSavedTestTypeFilter('normal');
+    showHistory();
+  }
+
+  function onHistoryAssigned(id: string, profileId: string, name: string) {
+    const update = (run: SavedRunSummary) =>
+      run.id === id ? { ...run, profileId, profileName: name } : run;
+    setRuns((current) => current.map(update));
+    setSavedPreview((current) =>
+      current ? { ...current, run: update(current.run) } : null,
+    );
   }
 
   function onRpmRunningChange(running: boolean) {
@@ -1393,6 +1413,7 @@ export function TokenCheckApp({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         profileId,
+        profileName: context.profileName,
         apiType: context.apiType,
         baseUrl: context.baseUrl,
         model: context.modelName,
@@ -1404,7 +1425,7 @@ export function TokenCheckApp({
       savedRun,
       ...current.filter((run) => run.id !== savedRun.id),
     ]);
-    return { ...context, id: savedRun.id };
+    return { ...context, id: savedRun.id, profileName: savedRun.profileName };
   }
 
   function exportEvidence(context: RunContext, exportedResults: TestResult[]) {
@@ -1452,6 +1473,14 @@ export function TokenCheckApp({
     event.preventDefault();
     if (isRpmRunning || profileBusy) return;
     setFormError('');
+    if (profileName.trim().length > 80)
+      return setFormError(
+        'Use a connection / history name of up to 80 characters.',
+      );
+    if (selectedProfileId && profileName.trim() !== selectedProfile?.name)
+      return setFormError(
+        'Save the connection name change before starting, so the saved profile and test history agree.',
+      );
     const baseUrlError = clientBaseUrlError(baseUrl.trim());
     if (baseUrlError) return setFormError(baseUrlError);
     if (!selectedProfileId && !apiKey.trim())
@@ -1489,7 +1518,7 @@ export function TokenCheckApp({
         key: JSON.stringify([profileId, apiType, baseUrl.trim(), modelName]),
         context: {
           source: 'current' as const,
-          profileName: selectedProfile?.name ?? null,
+          profileName: (selectedProfile?.name ?? profileName.trim()) || null,
           apiType,
           baseUrl: baseUrl.trim(),
           modelName,
@@ -1738,9 +1767,12 @@ export function TokenCheckApp({
                   htmlFor="profile-name"
                   className="block space-y-1.5 text-xs font-medium text-emerald-950"
                 >
-                  Save as name
+                  {testMode === 'normal'
+                    ? 'Connection / history name'
+                    : 'Save as name'}
                   <Input
                     id="profile-name"
+                    maxLength={80}
                     value={profileName}
                     onChange={(event) => {
                       setProfileName(event.target.value);
@@ -1752,7 +1784,9 @@ export function TokenCheckApp({
                   />
                 </label>
                 <p className="text-[10px] leading-4 text-emerald-900/75">
-                  One saved connection stores both API types.
+                  {testMode === 'normal'
+                    ? 'This name labels your test history. Save profile separately to remember the connection and encrypted key.'
+                    : 'One saved connection stores both API types.'}
                 </p>
               </div>
             ) : (
@@ -2137,6 +2171,27 @@ export function TokenCheckApp({
                 </div>
               ) : (
                 <>
+                  <p
+                    className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-sm text-blue-950"
+                    aria-live="polite"
+                  >
+                    {user ? (
+                      <>
+                        Results will be saved under:{' '}
+                        <strong>
+                          {selectedProfile?.name ||
+                            profileName.trim() ||
+                            'One-time connection'}
+                        </strong>
+                        .
+                        {!selectedProfileId && !profileName.trim()
+                          ? ' Enter a name above to make them easy to find.'
+                          : ''}
+                      </>
+                    ) : (
+                      'Sign in to save results to history; otherwise they remain in this tab.'
+                    )}
+                  </p>
                   <Button
                     key="normal-run"
                     type="submit"
@@ -2275,6 +2330,7 @@ export function TokenCheckApp({
                 onView={(id) => setSelectedJobId(id)}
                 onStop={(id) => normalQueue.stop(id)}
                 onStopAll={() => normalQueue.stopAll()}
+                onHistory={showJobHistory}
               />
             ) : null}
 
@@ -2323,6 +2379,22 @@ export function TokenCheckApp({
                       ? `Showing ${filteredRuns.length} of ${runs.length} saved runs.`
                       : 'Completed tests are saved automatically when you are signed in.'}
                   </p>
+                  {hasSavedRunFilters ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => {
+                        setSavedConnectionFilter('');
+                        setSavedModelFilter('');
+                        setSavedApiTypeFilter('');
+                        setSavedTestTypeFilter('');
+                      }}
+                    >
+                      Show all saved runs
+                    </Button>
+                  ) : null}
                   {user && runs.length ? (
                     <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                       <label className="grid gap-1.5 text-xs font-medium text-foreground">
@@ -2449,7 +2521,7 @@ export function TokenCheckApp({
                       return (
                         <div
                           key={run.id}
-                          className="flex items-center gap-4 px-5 py-4 hover:bg-muted/35"
+                          className="flex flex-wrap items-center gap-4 px-5 py-4 hover:bg-muted/35"
                         >
                           <button
                             type="button"
@@ -2558,6 +2630,15 @@ export function TokenCheckApp({
                             <Trash2 className="size-4" />
                           </button>
                           <ChevronRight className="size-4 text-muted-foreground" />
+                          {run.testKind === 'normal' &&
+                          !run.profileId &&
+                          !run.profileName ? (
+                            <AssignRunConnection
+                              run={run}
+                              profiles={profiles}
+                              onAssigned={onHistoryAssigned}
+                            />
+                          ) : null}
                         </div>
                       );
                     })}

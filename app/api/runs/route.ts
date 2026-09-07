@@ -80,7 +80,20 @@ export async function POST(request: NextRequest) {
   let apiType = payload.apiType;
   let rawBaseUrl =
     typeof payload.baseUrl === 'string' ? payload.baseUrl.trim() : '';
-  let profileName: string | null = null;
+  if (
+    payload.profileName != null &&
+    (typeof payload.profileName !== 'string' ||
+      payload.profileName.trim().length > 80)
+  )
+    return noStore(
+      { error: 'Invalid history name (maximum 80 characters).' },
+      { status: 400 },
+    );
+  // A label is not a saved credential profile. Only profileId grants that association.
+  let profileName: string | null =
+    typeof payload.profileName === 'string'
+      ? payload.profileName.trim() || null
+      : null;
   if (profileId) {
     if (
       apiType !== undefined &&

@@ -4,7 +4,11 @@ import { isQueueActive, type QueuePhase } from '@/lib/normal-test-queue';
 type QueueRow = {
   id: string;
   phase: QueuePhase;
-  context: { modelName: string; profileName?: string | null };
+  context: {
+    id?: string | null;
+    modelName: string;
+    profileName?: string | null;
+  };
   message: string;
   results: {
     status: string;
@@ -33,12 +37,14 @@ export function ModelTestQueue({
   onView,
   onStop,
   onStopAll,
+  onHistory,
 }: {
   jobs: QueueRow[];
   selectedId?: string;
   onView: (id: string) => void;
   onStop: (id: string) => void;
   onStopAll: () => void;
+  onHistory: (id: string) => void;
 }) {
   if (!jobs.length) return null;
   const active = jobs.filter((job) => isQueueActive(job.phase));
@@ -113,6 +119,16 @@ export function ModelTestQueue({
                 ) : null}
               </div>
               <div className="flex gap-2">
+                {job.context.id ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onHistory(job.id)}
+                  >
+                    View in history
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="outline"
