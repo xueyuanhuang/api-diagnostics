@@ -515,7 +515,8 @@ function RequestResponseDetails({ result }: { result: TestResult }) {
             </summary>
             <div className="mt-2 space-y-2">
               <p className="break-all font-mono text-[10px] text-foreground">
-                {result.requestMethod || 'POST'} {result.requestUrl}
+                Actual request: {result.requestMethod || 'POST'}{' '}
+                {result.requestUrl}
               </p>
               <p className="text-[10px]">
                 Not sent: system, tools, explicit cache settings, temperature,
@@ -1821,6 +1822,13 @@ export function TokenCheckApp({
                   Use the provider root. The tester adds the correct Messages or
                   Chat Completions path. Public HTTP/HTTPS URLs and custom ports
                   are supported; HTTPS is recommended.
+                </span>
+                <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                  Signed-in users can paste a public HTTP IPv4 address directly.
+                  The tester prepares a DNS-only hostname before measuring;
+                  first use may take a few seconds. The actual URL appears in
+                  request details and exports. HTTPS IPs need the provider’s
+                  certificate-matching hostname.
                 </span>
               </label>
 

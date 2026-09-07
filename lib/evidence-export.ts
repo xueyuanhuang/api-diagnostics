@@ -279,6 +279,10 @@ export function buildEvidenceArchive(
     exportFormat: 'normal-token-check-evidence-v1',
     exportedAt: exportedAt.toISOString(),
     run,
+    configuredBaseUrl: run.baseUrl,
+    actualRequestUrls: [
+      ...new Set(results.map((result) => result.requestUrl).filter(Boolean)),
+    ],
     captureNotes: {
       requestHeaders:
         'Headers explicitly set by the tester relay. Platform-added transport headers are not observable.',
@@ -287,7 +291,9 @@ export function buildEvidenceArchive(
       responseBody:
         'Complete upstream response body captured by the tester within its 1 MB safety limit.',
       timing:
-        'Measured from the tester relay. DNS, TCP, and TLS phase timings are not included.',
+        'Measured from the tester relay after automatic IP mapping is prepared. DNS, TCP, and TLS phase timings are not reported separately.',
+      ipMapping:
+        'Public HTTP IP origins use a DNS-only hostname. run.baseUrl is the original configuration; requestUrl and cURL show the actual hostname used. Host changes; scheme, port, and path are preserved. HTTP remains unencrypted.',
       apiKey:
         'Never stored or exported. Reproducible cURL files use the $API_KEY environment variable.',
     },

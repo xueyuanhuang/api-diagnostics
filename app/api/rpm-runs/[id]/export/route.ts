@@ -55,6 +55,10 @@ export async function GET(_request: NextRequest, context: Context) {
     );
 
   const detail = await runDetail(rows[0]);
+  const connectionObject = await env.EVIDENCE.get(
+    `rpm/v1/${id}/connection.json`,
+  );
+  const connection = connectionObject ? await connectionObject.json() : null;
   const preflightObject = await env.EVIDENCE.get(`rpm/v1/${id}/preflight.json`);
   const preflightText = preflightObject ? await preflightObject.text() : '';
   let preflight: unknown = null;
@@ -90,6 +94,7 @@ export async function GET(_request: NextRequest, context: Context) {
   const header = `${JSON.stringify({
     schemaVersion: 'rpm-evidence-v1',
     exportedAt: new Date().toISOString(),
+    connection,
     evidenceScope:
       'Every preflight, dispatcher manifest, and request/response evidence object present when this export snapshot began. Responses stored after the verdict freeze are retained with verdictEligible=false. Re-export an active or partial run after it settles to include later raw evidence. API keys and sensitive response headers are redacted.',
     requestPolicy: {

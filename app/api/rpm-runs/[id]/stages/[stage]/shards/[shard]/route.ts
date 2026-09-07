@@ -16,6 +16,8 @@ import {
   RPM_REQUEST_TIMEOUT_MS,
 } from '@/lib/rpm-types';
 import { decryptApiKey } from '@/lib/server/encryption';
+import { loadRpmConnection } from '@/lib/server/hosted-ip-mapping';
+import { IpMappingError } from '@/lib/server/ip-mapping';
 import {
   countRpmOutcomes,
   type RpmOutcomeSummary,
@@ -165,6 +167,7 @@ export async function POST(request: NextRequest, context: Context) {
     const shardPart = String(shardIndex).padStart(3, '0');
     const claimKey =
       'rpm/v1/' + id + '/claims/s' + stagePart + '/shard-' + shardPart;
+    const resolved = await loadRpmConnection(id, run.baseUrl);
     const claimed = await env.EVIDENCE.put(claimKey, String(workerReceivedAt), {
       onlyIf: { etagDoesNotMatch: '*' },
     });
@@ -451,7 +454,8 @@ export async function POST(request: NextRequest, context: Context) {
               const schedulerWokeAt = Date.now();
               const common = {
                 apiType: run.apiType,
-                baseUrl: run.baseUrl,
+                baseUrl: resolved.actualBaseUrl,
+                originalBaseUrl: run.baseUrl,
                 apiKey,
                 model: run.modelName,
                 runId: id,
@@ -656,6 +660,8 @@ export async function POST(request: NextRequest, context: Context) {
       },
     });
   } catch (error) {
+    if (error instanceof IpMappingError)
+      return noStore({ error: error.message }, { status: error.status });
     return serverError(error);
   }
 }

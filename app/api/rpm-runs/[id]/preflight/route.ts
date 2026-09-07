@@ -13,6 +13,8 @@ import {
   type RpmRequestEvidence,
 } from '@/lib/server/rpm-provider';
 import { runDetail } from '@/lib/server/rpm-store';
+import { prepareRpmConnection } from '@/lib/server/hosted-ip-mapping';
+import { IpMappingError } from '@/lib/server/ip-mapping';
 
 type Context = { params: Promise<{ id: string }> };
 
@@ -186,9 +188,11 @@ export async function POST(_request: NextRequest, context: Context) {
       secrets[0].encryptedApiKey,
       secrets[0].keyIv,
     );
+    const resolved = await prepareRpmConnection(id, run.baseUrl);
     const evidence = await runProviderRequest({
       apiType: run.apiType,
-      baseUrl: run.baseUrl,
+      baseUrl: resolved.actualBaseUrl,
+      originalBaseUrl: run.baseUrl,
       apiKey,
       model: run.modelName,
       runId: id,
@@ -221,11 +225,15 @@ export async function POST(_request: NextRequest, context: Context) {
       await failPreflight(
         id,
         user.userId,
-        'Preflight could not be completed or saved. No ramp traffic was started.',
+        error instanceof IpMappingError
+          ? error.message
+          : 'Preflight could not be completed or saved. No ramp traffic was started.',
       );
     } catch {
       // Preserve the original server error if cleanup itself also fails.
     }
+    if (error instanceof IpMappingError)
+      return noStore({ error: error.message }, { status: error.status });
     return serverError(error);
   }
 }

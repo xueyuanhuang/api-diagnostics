@@ -15,6 +15,7 @@ const SENSITIVE_RESPONSE_HEADERS = new Set([
 type ProviderRequest = {
   apiType: ApiType;
   baseUrl: string;
+  originalBaseUrl?: string;
   apiKey: string;
   model: string;
   runId: string;
@@ -51,6 +52,7 @@ export type RpmRequestEvidence = {
   request: {
     method: 'POST';
     url: string;
+    originalUrl?: string;
     headers: Array<[string, string]>;
     body: string;
     curl: string;
@@ -201,6 +203,10 @@ export function missedDispatchEvidence(
     request: {
       method: 'POST',
       url,
+      originalUrl: endpointFromBaseUrl(
+        input.originalBaseUrl ?? input.baseUrl,
+        input.apiType,
+      ).toString(),
       headers: Object.entries(headers).map(([name, value]) => [
         name,
         redact(value, input.apiKey).replace('[REDACTED]', '$API_KEY'),
@@ -319,6 +325,10 @@ export async function runProviderRequest(
       request: {
         method: 'POST',
         url,
+        originalUrl: endpointFromBaseUrl(
+          input.originalBaseUrl ?? input.baseUrl,
+          input.apiType,
+        ).toString(),
         headers: exportedHeaders,
         body,
         curl: curlFor(url, headers, body, input.apiKey),
@@ -374,6 +384,10 @@ export async function runProviderRequest(
       request: {
         method: 'POST',
         url,
+        originalUrl: endpointFromBaseUrl(
+          input.originalBaseUrl ?? input.baseUrl,
+          input.apiType,
+        ).toString(),
         headers: exportedHeaders,
         body,
         curl: curlFor(url, headers, body, input.apiKey),

@@ -12,6 +12,8 @@ import { noStore } from '@/lib/server/http';
 import { getOwnedProfileConfig } from '@/lib/server/profile-config';
 import { readProviderStream } from '@/lib/server/provider-stream';
 import { combinedRequestSignal } from '@/lib/server/abort-signals';
+import { IpMappingError, isRawIpv4 } from '@/lib/server/ip-mapping';
+import { resolveHostedConnection } from '@/lib/server/hosted-ip-mapping';
 
 type RequestPayload = {
   allowInsecureHttp?: unknown;
@@ -177,6 +179,23 @@ export async function POST(request: NextRequest) {
   const outbound = validateOutboundUrl(baseUrl, payload.allowInsecureHttp);
   if ('error' in outbound)
     return noStore({ error: outbound.error }, { status: 400 });
+  let resolved;
+  try {
+    resolved = await resolveHostedConnection(
+      baseUrl,
+      isRawIpv4(baseUrl) ? Boolean(await getChatGPTUser()) : false,
+    );
+  } catch (error) {
+    return noStore(
+      {
+        error:
+          error instanceof IpMappingError
+            ? error.message
+            : 'IP mapping could not be prepared.',
+      },
+      { status: error instanceof IpMappingError ? error.status : 503 },
+    );
+  }
   const headers: Record<string, string> = {
     accept: 'text/event-stream',
     'content-type': 'application/json',
@@ -188,7 +207,7 @@ export async function POST(request: NextRequest) {
     headers.authorization = `Bearer ${apiKey}`;
   }
 
-  const requestUrl = endpointFromBaseUrl(baseUrl, apiType);
+  const requestUrl = endpointFromBaseUrl(resolved.actualBaseUrl, apiType);
   const requestBody = JSON.stringify({
     model,
     max_tokens: 96,
