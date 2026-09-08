@@ -46,6 +46,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { AvailabilityMonitor } from '@/components/availability-monitor';
+import { EndpointCheck } from '@/components/endpoint-check';
 import { ToolBoundaryTest } from '@/components/tool-boundary-test';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
@@ -82,7 +83,7 @@ type ResultStatus =
   | 'error';
 type ViewMode = 'current' | 'saved' | 'detail';
 type ResultsView = 'tokens' | 'performance';
-type TestMode = 'normal' | 'rpm' | 'boundary' | 'availability';
+type TestMode = 'normal' | 'rpm' | 'boundary' | 'endpoints' | 'availability';
 type NormalPhase =
   | 'idle'
   | 'queued'
@@ -663,6 +664,7 @@ export function TokenCheckApp({
   const isRunning = queueJobs.some((job) => isQueueActive(job.phase));
   const [isRpmRunning, setIsRpmRunning] = useState(false);
   const [isBoundaryRunning, setIsBoundaryRunning] = useState(false);
+  const [isEndpointRunning, setIsEndpointRunning] = useState(false);
   const [testMode, setTestMode] = useState<TestMode>('normal');
   const [formError, setFormError] = useState('');
   const liveRunMessage =
@@ -697,7 +699,8 @@ export function TokenCheckApp({
   const [historyBusy, setHistoryBusy] = useState(false);
   const previewRequestRef = useRef(0);
   const queueStartingRef = useRef(false);
-  const controlsLocked = isRunning || isRpmRunning || isBoundaryRunning;
+  const controlsLocked =
+    isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning;
   // History is a read-only snapshot; it must never replace live runner state.
   const normalPreview =
     viewMode === 'detail' && savedPreview?.run.testKind === 'normal'
@@ -1552,6 +1555,7 @@ export function TokenCheckApp({
     if (
       isRpmRunning ||
       isBoundaryRunning ||
+      isEndpointRunning ||
       profileBusy ||
       queueStartingRef.current
     )
@@ -1760,8 +1764,8 @@ export function TokenCheckApp({
               API Diagnostics
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
-              Check token usage, tool self-description or request-rate capacity
-              through Anthropic Messages and OpenAI Chat Completions.
+              Check token usage, compare three API endpoints, inspect tool
+              self-description and measure request-rate capacity.
             </p>
           </div>
           {user ? (
@@ -1788,7 +1792,7 @@ export function TokenCheckApp({
         </header>
 
         <section
-          className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4"
+          className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5"
           aria-label="Choose a test"
         >
           <button
@@ -1852,6 +1856,28 @@ export function TokenCheckApp({
                 className={`mt-1 block text-xs leading-5 ${testMode === 'boundary' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
               >
                 3 identical questions · full raw request / response
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={testMode === 'endpoints'}
+            onClick={() => showCurrent('endpoints')}
+            className={`flex items-start gap-4 rounded-2xl border p-4 text-left shadow-sm transition-colors ${testMode === 'endpoints' ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:border-primary/40'}`}
+          >
+            <span
+              className={`grid size-10 shrink-0 place-items-center rounded-xl ${testMode === 'endpoints' ? 'bg-white/15' : 'bg-muted'}`}
+            >
+              <Code2 className="size-5" />
+            </span>
+            <span>
+              <span className="block text-sm font-semibold">
+                Three Endpoints
+              </span>
+              <span
+                className={`mt-1 block text-xs leading-5 ${testMode === 'endpoints' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
+              >
+                Messages · Chat Completions · Responses
               </span>
             </span>
           </button>
@@ -1976,7 +2002,9 @@ export function TokenCheckApp({
                 className="space-y-1.5"
               >
                 <legend className="text-xs font-medium text-muted-foreground">
-                  API type
+                  {testMode === 'endpoints'
+                    ? 'Connection configuration'
+                    : 'API type'}
                 </legend>
                 <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted/70 p-1">
                   {(['anthropic', 'openai'] as const).map((item) => (
@@ -1997,8 +2025,9 @@ export function TokenCheckApp({
                   ))}
                 </div>
                 <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
-                  Switching keeps your connection details. Each API type can be
-                  edited and saved separately.
+                  {testMode === 'endpoints'
+                    ? 'Select the connection configuration to use. All tested endpoints use this same base URL, model and key.'
+                    : 'Switching keeps your connection details. Each API type can be edited and saved separately.'}
                 </span>
               </fieldset>
 
@@ -2027,9 +2056,11 @@ export function TokenCheckApp({
                   className="h-10 bg-background font-mono text-xs"
                 />
                 <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
-                  Use the provider root. The tester adds the correct Messages or
-                  Chat Completions path. Public HTTP/HTTPS URLs and custom ports
-                  are supported; HTTPS is recommended.
+                  {testMode === 'endpoints'
+                    ? 'Use the provider root, /v1, or a full Messages, Chat Completions or Responses URL. The comparison uses the correct path for each endpoint.'
+                    : 'Use the provider root. The tester adds the correct Messages or Chat Completions path.'}{' '}
+                  Public HTTP/HTTPS URLs and custom ports are supported; HTTPS
+                  is recommended.
                 </span>
                 <span className="block text-xs font-normal leading-5 text-muted-foreground">
                   Signed-in users can paste a public HTTP IPv4 address directly.
@@ -2066,7 +2097,12 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       setProfileDirty(true);
                     }}
-                    disabled={isRpmRunning || isBoundaryRunning || profileBusy}
+                    disabled={
+                      isRpmRunning ||
+                      isBoundaryRunning ||
+                      isEndpointRunning ||
+                      profileBusy
+                    }
                     className="h-10 w-full rounded-lg border border-input bg-background px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring/30"
                   >
                     {activeProfileModels.map((item) => (
@@ -2085,7 +2121,12 @@ export function TokenCheckApp({
                       markDraftTouched(['model']);
                       if (selectedProfileId) setProfileDirty(true);
                     }}
-                    disabled={isRpmRunning || isBoundaryRunning || profileBusy}
+                    disabled={
+                      isRpmRunning ||
+                      isBoundaryRunning ||
+                      isEndpointRunning ||
+                      profileBusy
+                    }
                     placeholder={
                       apiType === 'anthropic'
                         ? 'e.g. claude-sonnet-4-6'
@@ -2138,7 +2179,10 @@ export function TokenCheckApp({
                         }
                       }}
                       disabled={
-                        isRpmRunning || isBoundaryRunning || profileBusy
+                        isRpmRunning ||
+                        isBoundaryRunning ||
+                        isEndpointRunning ||
+                        profileBusy
                       }
                       placeholder="Add another model"
                       className="h-8 bg-white font-mono text-[11px]"
@@ -2152,6 +2196,7 @@ export function TokenCheckApp({
                         !newModel.trim() ||
                         isRpmRunning ||
                         isBoundaryRunning ||
+                        isEndpointRunning ||
                         profileBusy
                       }
                       className="h-8 gap-1"
@@ -2181,7 +2226,12 @@ export function TokenCheckApp({
 
               {testMode === 'normal' ? (
                 <fieldset
-                  disabled={isRpmRunning || isBoundaryRunning || profileBusy}
+                  disabled={
+                    isRpmRunning ||
+                    isBoundaryRunning ||
+                    isEndpointRunning ||
+                    profileBusy
+                  }
                   className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/50 p-3"
                 >
                   <legend className="px-1 text-sm font-semibold">
@@ -2353,9 +2403,11 @@ export function TokenCheckApp({
               ) : null}
               {testMode !== 'normal' ? (
                 <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-xs leading-5 text-blue-950">
-                  {testMode === 'boundary'
-                    ? 'Tool-boundary settings and the start control are shown with the results. These probes stay in this tab and can be downloaded as raw JSON.'
-                    : 'RPM ramp settings and the start control are shown with the live results on the right.'}
+                  {testMode === 'endpoints'
+                    ? 'Choose endpoints and start the comparison on the right. Results stay in this tab and can be downloaded as raw JSON.'
+                    : testMode === 'boundary'
+                      ? 'Tool-boundary settings and the start control are shown with the results. These probes stay in this tab and can be downloaded as raw JSON.'
+                      : 'RPM ramp settings and the start control are shown with the live results on the right.'}
                 </div>
               ) : (
                 <>
@@ -2386,6 +2438,7 @@ export function TokenCheckApp({
                     disabled={
                       isRpmRunning ||
                       isBoundaryRunning ||
+                      isEndpointRunning ||
                       profileBusy ||
                       !modelsToEnqueue.length
                     }
@@ -2442,7 +2495,9 @@ export function TokenCheckApp({
                         ? `RPM test running${rpmMessage ? ` · ${rpmMessage}` : ''}`
                         : isBoundaryRunning
                           ? 'Tool-boundary probe running'
-                          : `${lastRunMode === 'rpm' ? 'RPM test' : lastRunMode === 'boundary' ? 'Tool-boundary probe' : 'Normal check'} is no longer running — results available`}
+                          : isEndpointRunning
+                            ? 'Three-endpoint comparison running'
+                            : `${lastRunMode === 'rpm' ? 'RPM test' : lastRunMode === 'boundary' ? 'Tool-boundary probe' : lastRunMode === 'endpoints' ? 'Three-endpoint comparison' : 'Normal check'} is no longer running — results available`}
                   </output>
                   {controlsLocked ? (
                     <p className="mt-1 leading-5">
@@ -2466,7 +2521,9 @@ export function TokenCheckApp({
                           ? 'rpm'
                           : isBoundaryRunning
                             ? 'boundary'
-                            : (lastRunMode ?? testMode),
+                            : isEndpointRunning
+                              ? 'endpoints'
+                              : (lastRunMode ?? testMode),
                     )
                   }
                 >
@@ -3229,6 +3286,25 @@ export function TokenCheckApp({
               />
             ) : null}
 
+            <div hidden={viewMode !== 'current' || testMode !== 'endpoints'}>
+              <EndpointCheck
+                apiType={apiType}
+                baseUrl={baseUrl}
+                model={model}
+                apiKey={apiKey}
+                selectedProfileId={selectedProfileId}
+                profileName={selectedProfile?.name || profileName}
+                profileDirty={profileDirty}
+                startBlocked={
+                  isRunning || isRpmRunning || isBoundaryRunning || profileBusy
+                }
+                onRunningChange={(running) => {
+                  setIsEndpointRunning(running);
+                  if (running) setLastRunMode('endpoints');
+                }}
+              />
+            </div>
+
             <div hidden={viewMode !== 'current' || testMode !== 'boundary'}>
               <ToolBoundaryTest
                 apiType={apiType}
@@ -3238,7 +3314,9 @@ export function TokenCheckApp({
                 selectedProfileId={selectedProfileId}
                 profileName={selectedProfile?.name || profileName}
                 profileDirty={profileDirty}
-                startBlocked={isRunning || isRpmRunning || profileBusy}
+                startBlocked={
+                  isRunning || isRpmRunning || isEndpointRunning || profileBusy
+                }
                 onRunningChange={(running) => {
                   setIsBoundaryRunning(running);
                   if (running) setLastRunMode('boundary');
@@ -3261,7 +3339,12 @@ export function TokenCheckApp({
                 model={model}
                 profileDirty={profileDirty}
                 openedRunId=""
-                startBlocked={isRunning || isBoundaryRunning || profileBusy}
+                startBlocked={
+                  isRunning ||
+                  isBoundaryRunning ||
+                  isEndpointRunning ||
+                  profileBusy
+                }
                 discoverActiveRun={testMode === 'rpm'}
                 onRunningChange={onRpmRunningChange}
                 onProgressChange={setRpmMessage}

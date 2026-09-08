@@ -203,6 +203,6 @@ test('metadata endpoint authenticates and never touches provider requests or cre
   );
   assert.match(
     component,
-    /startBlocked=\{isRunning \|\| isBoundaryRunning \|\| profileBusy\}/,
+    /startBlocked=\{\s*isRunning\s*\|\|\s*isBoundaryRunning\s*\|\|\s*isEndpointRunning\s*\|\|\s*profileBusy\s*\}/,
   );
 });
