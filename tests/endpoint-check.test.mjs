@@ -8,7 +8,7 @@ import {
   endpointRequestBody,
   normalizeEndpointUsage,
   summarizeEndpointResponse,
-  runEndpointSequence,
+  runEndpointRequests,
 } from '../lib/endpoint-check.ts';
 import { captureEndpointExchange } from '../lib/server/endpoint-check.ts';
 import { HTTP_CAPTURE_LIMIT } from '../lib/server/http-exchange.ts';
@@ -379,42 +379,109 @@ test('one OK request per selected endpoint, with no repeats', () => {
   assert.throws(() => endpointPlan('unknown'));
 });
 
-test('failures do not prevent subsequent endpoints and Stop preserves completed results', async () => {
-  const tasks = endpointPlan('all'),
-    starts = [],
-    results = [];
-  await runEndpointSequence({
-    tasks,
+test('all selected endpoints start before any response completes and finish independently', async () => {
+  const starts = [],
+    results = [],
+    pending = new Map();
+  let finished = false;
+  const running = runEndpointRequests({
+    tasks: endpointPlan('all'),
     signal: new AbortController().signal,
     onStart: (i) => starts.push(i),
     onResult: (i, result, error) => results.push({ i, result, error }),
-    request: async (task) => {
-      if (task.protocol === 'messages') throw new Error('failure');
-      return 'done';
-    },
-    delay: async (ms) => assert.equal(ms, 3000),
+    request: (task) =>
+      new Promise((resolve, reject) =>
+        pending.set(task.protocol, { resolve, reject }),
+      ),
+  }).then(() => {
+    finished = true;
   });
-  assert.equal(starts.length, 3);
+  assert.deepEqual(
+    starts,
+    [0, 1, 2],
+    'dispatch must not wait for an earlier endpoint',
+  );
+  assert.equal(pending.size, 3);
+  assert.equal(results.length, 0);
+  pending.get('responses').resolve('responses done');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(results, [{ i: 2, result: 'responses done', error: null }]);
+  assert.equal(
+    finished,
+    false,
+    'running state remains active until every request settles',
+  );
+  pending.get('messages').reject(new Error('unavailable'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    finished,
+    false,
+    'one failed endpoint does not release the remaining request',
+  );
+  pending.get('chat').resolve('chat done');
+  await running;
+  assert.equal(starts.length, 3, 'failures must not create retries');
   assert.equal(results.length, 3);
-  assert.ok(results[0].error);
-  assert.equal(results[2].result, 'done');
+  assert.ok(results.find((item) => item.i === 0).error);
+  assert.equal(results.find((item) => item.i === 1).result, 'chat done');
+});
+
+test('Stop cancels every in-flight request while preserving completed results', async () => {
   const abort = new AbortController(),
-    captured = [],
-    called = [];
-  await runEndpointSequence({
-    tasks,
+    starts = [],
+    cancelled = [],
+    results = [];
+  const running = runEndpointRequests({
+    tasks: endpointPlan('all'),
     signal: abort.signal,
-    onStart: (i) => called.push(i),
-    onResult: (i, value) => captured.push([i, value]),
-    request: async (_task, signal) => {
-      if (called.length === 2) {
-        abort.abort();
-        signal.throwIfAborted();
-      }
-      return 'captured';
-    },
-    delay: async () => {},
+    onStart: (i) => starts.push(i),
+    onResult: (i, value) => results.push([i, value]),
+    request: (task, signal) =>
+      task.protocol === 'messages'
+        ? Promise.resolve('captured')
+        : new Promise((_resolve, reject) =>
+            signal.addEventListener(
+              'abort',
+              () => {
+                cancelled.push(task.protocol);
+                reject(signal.reason);
+              },
+              { once: true },
+            ),
+          ),
   });
-  assert.deepEqual(called, [0, 1]);
-  assert.deepEqual(captured, [[0, 'captured']]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, [0, 1, 2]);
+  assert.deepEqual(results, [[0, 'captured']]);
+  abort.abort();
+  await running;
+  assert.deepEqual(cancelled, ['chat', 'responses']);
+  assert.deepEqual(results, [[0, 'captured']]);
+});
+
+test('an already stopped run sends nothing and a single selection sends exactly one request', async () => {
+  const abort = new AbortController();
+  abort.abort();
+  const starts = [],
+    results = [];
+  await runEndpointRequests({
+    tasks: endpointPlan('all'),
+    signal: abort.signal,
+    onStart: (i) => starts.push(i),
+    onResult: () => assert.fail('No result should be emitted'),
+    request: () => assert.fail('No request should be sent'),
+  });
+  assert.deepEqual(starts, []);
+  await runEndpointRequests({
+    tasks: endpointPlan('responses'),
+    signal: new AbortController().signal,
+    onStart: (i) => starts.push(i),
+    onResult: (_i, value) => results.push(value),
+    request: async (task) => {
+      assert.equal(task.protocol, 'responses');
+      return 'OK';
+    },
+  });
+  assert.deepEqual(starts, [0]);
+  assert.deepEqual(results, ['OK']);
 });

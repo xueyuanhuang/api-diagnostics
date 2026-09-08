@@ -5,6 +5,16 @@ import { Download, Play, ShieldQuestion, Square } from 'lucide-react';
 import { RawData } from '@/components/raw-exchange-data';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  diagnosticExport,
+  type BoundaryRun,
+  type BoundaryRow,
+  type DiagnosticRunSummary,
+} from '@/lib/diagnostic-runs';
+import {
+  useDiagnosticHistory,
+  DiagnosticHistorySave,
+} from '@/components/diagnostic-history-save';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import {
   BOUNDARY_PROMPT,
@@ -16,20 +26,8 @@ import {
   type BoundaryReview,
 } from '@/lib/tool-boundary';
 
-type Row = {
-  status: 'waiting' | 'running' | 'complete' | 'error' | 'stopped';
-  exchange: BoundaryExchange | null;
-  error: string | null;
-  review: BoundaryReview;
-};
-type Probe = {
-  id: string;
-  label: string;
-  model: string;
-  apiType: BoundaryApiType;
-  createdAt: string;
-  rows: Row[];
-};
+type Row = BoundaryRow;
+type Probe = BoundaryRun;
 
 export function ToolBoundaryTest(props: {
   apiType: BoundaryApiType;
@@ -41,14 +39,24 @@ export function ToolBoundaryTest(props: {
   profileDirty: boolean;
   startBlocked: boolean;
   onRunningChange: (running: boolean) => void;
+  signedIn?: boolean;
+  onSaved?: (run: DiagnosticRunSummary) => void;
+  savedRun?: BoundaryRun;
 }) {
-  const [probes, setProbes] = useState<Probe[]>([]);
+  const [probes, setProbes] = useState<Probe[]>(
+    props.savedRun ? [props.savedRun] : [],
+  );
   const [selectedId, setSelectedId] = useState('');
   const [running, setRunning] = useState(false);
   const [formError, setFormError] = useState('');
   const controller = useRef<AbortController | null>(null);
   const probe = probes.find((item) => item.id === selectedId) ?? probes.at(-1);
   useEffect(() => () => controller.current?.abort(), []);
+  const history = useDiagnosticHistory(
+    probes,
+    Boolean(props.signedIn && !props.savedRun),
+    props.onSaved,
+  );
 
   function updateRow(id: string, index: number, values: Partial<Row>) {
     setProbes((all) =>
@@ -66,7 +74,7 @@ export function ToolBoundaryTest(props: {
   }
 
   async function start() {
-    if (controller.current || props.startBlocked) return;
+    if (controller.current || props.startBlocked || props.savedRun) return;
     setFormError('');
     if (
       !props.model.trim() ||
@@ -98,6 +106,9 @@ export function ToolBoundaryTest(props: {
     const id = crypto.randomUUID();
     const item: Probe = {
       id,
+      testKind: 'boundary',
+      baseUrl: props.baseUrl.trim(),
+      profileId: props.selectedProfileId || null,
       label: props.profileName.trim() || hostname,
       model: props.model.trim(),
       apiType: props.apiType,
@@ -181,16 +192,7 @@ export function ToolBoundaryTest(props: {
 
   function download() {
     if (!probe) return;
-    const data = {
-      format: 'tool-boundary-v1',
-      captureNotes:
-        'Application-level HTTP evidence, not a wire capture. Transport-added headers are not recorded. API keys and sensitive response headers are redacted. Response text is unchanged otherwise, including reasoning/signature fields. Captures exceeding 2 MiB or interrupted by a timeout are explicitly marked partial. Review labels are manual assessments of self-description, not proof of injection or execution.',
-      prompt: BOUNDARY_PROMPT,
-      repeats: 3,
-      intervalAfterCompletionMs: 3000,
-      providerTimeoutMs: 120000,
-      ...probe,
-    };
+    const data = diagnosticExport(probe);
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
     );
@@ -203,7 +205,10 @@ export function ToolBoundaryTest(props: {
 
   return (
     <section className="space-y-5" aria-label="Tool Boundary Probe">
-      <div className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6">
+      <div
+        hidden={Boolean(props.savedRun)}
+        className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
+      >
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="max-w-xl">
             <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
@@ -288,16 +293,25 @@ export function ToolBoundaryTest(props: {
         )}
         <p className="mt-4 text-xs leading-5 text-muted-foreground">
           Self-description alone does not prove tool access, execution or prompt
-          injection. Review each answer in context. Results stay in this tab;
-          download the evidence before closing it.
+          injection. Review each answer in context.{' '}
+          {props.signedIn
+            ? 'Results and review labels save to your private history.'
+            : 'Sign in to save results, or download the evidence before closing this tab.'}
         </p>
       </div>
 
       {probe && (
         <>
+          {!props.savedRun && (
+            <DiagnosticHistorySave
+              signedIn={Boolean(props.signedIn)}
+              status={history.statuses[probe.id]}
+              retry={() => history.retry(probe.id)}
+            />
+          )}
           <div className="flex flex-wrap items-end justify-between gap-3 rounded-xl border border-border bg-card p-4">
             <label className="min-w-0 flex-1 space-y-2 text-xs font-medium">
-              Probes in this tab
+              {props.savedRun ? 'Saved probe' : 'Probes in this tab'}
               <select
                 value={probe.id}
                 onChange={(event) => setSelectedId(event.target.value)}
@@ -416,7 +430,9 @@ export function ToolBoundaryTest(props: {
                       <select
                         aria-label={`Review request ${index + 1}`}
                         value={row.review}
-                        disabled={row.status !== 'complete'}
+                        disabled={
+                          Boolean(props.savedRun) || row.status !== 'complete'
+                        }
                         onChange={(event) =>
                           updateRow(probe.id, index, {
                             review: event.target.value as BoundaryReview,

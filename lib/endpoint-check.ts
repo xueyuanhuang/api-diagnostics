@@ -1,5 +1,3 @@
-import { abortableBoundaryDelay } from './tool-boundary';
-
 export const ENDPOINTS = {
   messages: { label: 'Messages', path: '/v1/messages' },
   chat: { label: 'Chat Completions', path: '/v1/chat/completions' },
@@ -17,7 +15,6 @@ export type EndpointTask = {
   repeat: number;
 };
 export const ENDPOINT_TIMEOUT_MS = 120_000;
-export const ENDPOINT_INTERVAL_MS = 3_000;
 
 export function isEndpointProtocol(value: unknown): value is EndpointProtocol {
   return typeof value === 'string' && Object.hasOwn(ENDPOINTS, value);
@@ -302,42 +299,31 @@ export function summarizeEndpointResponse(
   return result;
 }
 
-export async function runEndpointSequence<T>(options: {
+export async function runEndpointRequests<T>(options: {
   tasks: EndpointTask[];
   signal: AbortSignal;
   request: (task: EndpointTask, signal: AbortSignal) => Promise<T>;
   onStart: (index: number) => void;
   onResult: (index: number, result: T | null, error: string | null) => void;
-  delay?: typeof abortableBoundaryDelay;
 }) {
-  for (const [index, task] of options.tasks.entries()) {
-    if (options.signal.aborted) break;
-    if (index > 0) {
+  await Promise.all(
+    options.tasks.map(async (task, index) => {
+      if (options.signal.aborted) return;
+      options.onStart(index);
       try {
-        await (options.delay ?? abortableBoundaryDelay)(
-          ENDPOINT_INTERVAL_MS,
-          options.signal,
+        options.onResult(
+          index,
+          await options.request(task, options.signal),
+          null,
         );
       } catch {
-        if (options.signal.aborted) break;
-        throw new Error('Request interval failed.');
+        if (options.signal.aborted) return;
+        options.onResult(
+          index,
+          null,
+          'The relay request failed. No provider exchange was captured.',
+        );
       }
-    }
-    if (options.signal.aborted) break;
-    options.onStart(index);
-    try {
-      options.onResult(
-        index,
-        await options.request(task, options.signal),
-        null,
-      );
-    } catch {
-      if (options.signal.aborted) break;
-      options.onResult(
-        index,
-        null,
-        'The relay request failed. No provider exchange was captured.',
-      );
-    }
-  }
+    }),
+  );
 }

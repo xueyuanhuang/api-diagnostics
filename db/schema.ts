@@ -1,11 +1,31 @@
 import {
   index,
   integer,
+  primaryKey,
   real,
   sqliteTable,
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
+
+export const diagnosticRuns = sqliteTable(
+  'diagnostic_runs',
+  {
+    userId: text('user_id').notNull(),
+    id: text('id').notNull(),
+    testKind: text('test_kind', { enum: ['boundary', 'endpoints'] }).notNull(),
+    summaryJson: text('summary_json').notNull(),
+    evidenceKey: text('evidence_key').notNull(),
+    revision: integer('revision').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    deletedAt: integer('deleted_at'),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.id] }),
+    index('diagnostic_runs_user_created_idx').on(table.userId, table.createdAt),
+  ],
+);
 
 export const connectionProfiles = sqliteTable(
   'connection_profiles',

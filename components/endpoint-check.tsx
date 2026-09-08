@@ -18,28 +18,24 @@ import {
   ENDPOINTS,
   ENDPOINT_CASES,
   endpointPlan,
-  runEndpointSequence,
+  runEndpointRequests,
   type EndpointSelection,
-  type EndpointTask,
-  type EndpointSummary,
 } from '@/lib/endpoint-check';
-import type { HttpExchange } from '@/lib/http-exchange';
+import {
+  diagnosticExport,
+  type EndpointExchange,
+  type EndpointRow,
+  type EndpointRun,
+  type DiagnosticRunSummary,
+} from '@/lib/diagnostic-runs';
+import {
+  useDiagnosticHistory,
+  DiagnosticHistorySave,
+} from '@/components/diagnostic-history-save';
 
-type Exchange = HttpExchange &
-  EndpointSummary &
-  Pick<EndpointTask, 'protocol' | 'caseId'>;
-type Row = EndpointTask & {
-  status: 'waiting' | 'running' | 'pass' | 'issue' | 'stopped';
-  exchange: Exchange | null;
-  error: string | null;
-};
-type Run = {
-  id: string;
-  label: string;
-  model: string;
-  createdAt: string;
-  rows: Row[];
-};
+type Exchange = EndpointExchange;
+type Row = EndpointRow;
+type Run = EndpointRun;
 const number = (value: number | null | undefined) =>
   value == null ? '—' : value.toLocaleString();
 
@@ -53,15 +49,25 @@ export function EndpointCheck(props: {
   profileDirty: boolean;
   startBlocked: boolean;
   onRunningChange: (running: boolean) => void;
+  signedIn?: boolean;
+  onSaved?: (run: DiagnosticRunSummary) => void;
+  savedRun?: EndpointRun;
 }) {
   const [selection, setSelection] = useState<EndpointSelection>('all');
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [runs, setRuns] = useState<Run[]>(
+    props.savedRun ? [props.savedRun] : [],
+  );
   const [selectedId, setSelectedId] = useState('');
   const [running, setRunning] = useState(false);
   const [formError, setFormError] = useState('');
   const controller = useRef<AbortController | null>(null);
   const run = runs.find((item) => item.id === selectedId) ?? runs.at(-1);
   const plan = endpointPlan(selection);
+  const history = useDiagnosticHistory(
+    runs,
+    Boolean(props.signedIn && !props.savedRun),
+    props.onSaved,
+  );
   useEffect(() => () => controller.current?.abort(), []);
 
   function update(id: string, index: number, patch: Partial<Row>) {
@@ -79,7 +85,7 @@ export function EndpointCheck(props: {
     );
   }
   async function start() {
-    if (controller.current || props.startBlocked) return;
+    if (controller.current || props.startBlocked || props.savedRun) return;
     setFormError('');
     if (
       !props.model.trim() ||
@@ -111,6 +117,10 @@ export function EndpointCheck(props: {
     const id = crypto.randomUUID();
     const item: Run = {
       id,
+      testKind: 'endpoints',
+      apiType: props.apiType,
+      baseUrl: props.baseUrl.trim(),
+      profileId: props.selectedProfileId || null,
       label: props.profileName.trim() || hostname,
       model: props.model.trim(),
       createdAt: new Date().toISOString(),
@@ -135,7 +145,7 @@ export function EndpointCheck(props: {
     setRunning(true);
     props.onRunningChange(true);
     try {
-      await runEndpointSequence<{ exchange?: Exchange; error?: string }>({
+      await runEndpointRequests<{ exchange?: Exchange; error?: string }>({
         tasks: plan,
         signal: abort.signal,
         onStart: (index) => update(id, index, { status: 'running' }),
@@ -176,7 +186,7 @@ export function EndpointCheck(props: {
       });
     } catch {
       setFormError(
-        'The test sequence stopped unexpectedly. Captured results are still available.',
+        'The test stopped unexpectedly. Captured results are still available.',
       );
     } finally {
       setRuns((all) =>
@@ -207,16 +217,7 @@ export function EndpointCheck(props: {
   }
   function download() {
     if (!run) return;
-    const data = {
-      format: 'three-endpoints-v1',
-      captureNotes:
-        'Application-level HTTP evidence. API keys and sensitive response headers are redacted; other response text is preserved, including reasoning and signature fields. Transport-added headers are not captured. Captures above 2 MiB or interrupted by timeout are marked partial. Usage is provider-reported, not verified billing.',
-      prompts: ENDPOINT_CASES,
-      stream: false,
-      providerTimeoutMs: 120000,
-      intervalAfterCompletionMs: 3000,
-      ...run,
-    };
+    const data = diagnosticExport(run);
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
     );
@@ -230,7 +231,10 @@ export function EndpointCheck(props: {
     run?.rows.filter((row) => row.exchange !== null).length ?? 0;
   return (
     <section className="space-y-5" aria-label="Three Endpoints">
-      <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+      <div
+        hidden={Boolean(props.savedRun)}
+        className="rounded-2xl border border-border bg-card p-5 shadow-sm"
+      >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold tracking-tight">
@@ -266,7 +270,7 @@ export function EndpointCheck(props: {
           </label>
         </fieldset>
         <p className="mt-4 text-sm leading-6 text-muted-foreground">
-          Sends “只回复 OK。” once per endpoint.{' '}
+          Sends “只回复 OK。” once per endpoint, at the same time.{' '}
           <strong className="text-foreground">
             {plan.length} request{plan.length === 1 ? '' : 's'} total.
           </strong>
@@ -306,9 +310,16 @@ export function EndpointCheck(props: {
 
       {run ? (
         <>
+          {!props.savedRun && (
+            <DiagnosticHistorySave
+              signedIn={Boolean(props.signedIn)}
+              status={history.statuses[run.id]}
+              retry={() => history.retry(run.id)}
+            />
+          )}
           <div className="flex flex-wrap items-end justify-between gap-3">
             <label className="min-w-0 space-y-2 text-xs font-medium">
-              Results in this tab
+              {props.savedRun ? 'Saved result' : 'Results in this tab'}
               <select
                 aria-label="Endpoint comparison run"
                 value={run.id}

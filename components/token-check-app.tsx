@@ -46,6 +46,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { AvailabilityMonitor } from '@/components/availability-monitor';
+import {
+  DIAGNOSTIC_LABELS,
+  type DiagnosticRun,
+  type DiagnosticRunSummary,
+} from '@/lib/diagnostic-runs';
 import { EndpointCheck } from '@/components/endpoint-check';
 import { ToolBoundaryTest } from '@/components/tool-boundary-test';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
@@ -149,7 +154,7 @@ type RunSummary = {
   createdAt: number;
 };
 
-type SavedRunSummary = RunSummary | RpmRunSummary;
+type SavedRunSummary = RunSummary | RpmRunSummary | DiagnosticRunSummary;
 
 type TestResult = {
   id: string;
@@ -693,11 +698,13 @@ export function TokenCheckApp({
   const [savedPreview, setSavedPreview] = useState<{
     run: SavedRunSummary;
     results: TestResult[];
+    diagnostic?: DiagnosticRun;
   } | null>(null);
   const [lastRunMode, setLastRunMode] = useState<TestMode | null>(null);
   const [rpmMessage, setRpmMessage] = useState('');
   const [historyBusy, setHistoryBusy] = useState(false);
   const previewRequestRef = useRef(0);
+  const deletedDiagnosticIds = useRef(new Set<string>());
   const queueStartingRef = useRef(false);
   const controlsLocked =
     isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning;
@@ -977,7 +984,8 @@ export function TokenCheckApp({
           jsonFetch<{ profiles: Profile[] }>('/api/profiles'),
           jsonFetch<{ runs: Array<Omit<RunSummary, 'testKind'>> }>('/api/runs'),
           jsonFetch<{ runs: RpmRunSummary[] }>('/api/rpm-runs'),
-        ]).then(([profilesData, runsData, rpmRunsData]) => {
+          jsonFetch<{ runs: DiagnosticRunSummary[] }>('/api/diagnostic-runs'),
+        ]).then(([profilesData, runsData, rpmRunsData, diagnosticRunsData]) => {
           setProfiles(profilesData.profiles);
           setRuns(
             [
@@ -986,6 +994,7 @@ export function TokenCheckApp({
                 testKind: 'normal' as const,
               })),
               ...rpmRunsData.runs,
+              ...diagnosticRunsData.runs,
             ].sort((left, right) => right.createdAt - left.createdAt),
           );
         });
@@ -1517,6 +1526,10 @@ export function TokenCheckApp({
   }
 
   async function exportSavedRun(run: SavedRunSummary) {
+    if (run.testKind === 'boundary' || run.testKind === 'endpoints') {
+      window.location.href = `/api/diagnostic-runs/${run.id}/export`;
+      return;
+    }
     if (run.testKind === 'rpm') {
       window.location.href = `/api/rpm-runs/${run.id}/export`;
       return;
@@ -1677,6 +1690,20 @@ export function TokenCheckApp({
     }
     setHistoryBusy(true);
     try {
+      if (run.testKind === 'boundary' || run.testKind === 'endpoints') {
+        const data = await jsonFetch<{
+          run: DiagnosticRunSummary;
+          document: DiagnosticRun;
+        }>(`/api/diagnostic-runs/${run.id}`);
+        if (previewRequestRef.current !== requestId) return;
+        setSavedPreview({
+          run: data.run,
+          results: [],
+          diagnostic: data.document,
+        });
+        setViewMode('detail');
+        return;
+      }
       const data = await jsonFetch<{
         run: RunSummary;
         results: Array<TestResult & { questionId: string }>;
@@ -1712,11 +1739,15 @@ export function TokenCheckApp({
       await jsonFetch<{ deleted: boolean }>(
         run.testKind === 'rpm'
           ? `/api/rpm-runs/${run.id}`
-          : `/api/runs/${run.id}`,
+          : run.testKind === 'normal'
+            ? `/api/runs/${run.id}`
+            : `/api/diagnostic-runs/${run.id}`,
         {
           method: 'DELETE',
         },
       );
+      if (run.testKind === 'boundary' || run.testKind === 'endpoints')
+        deletedDiagnosticIds.current.add(run.id);
       setRuns((current) => current.filter((item) => item.id !== run.id));
       if (savedPreview?.run.id === run.id) {
         setSavedPreview(null);
@@ -1729,6 +1760,15 @@ export function TokenCheckApp({
     } finally {
       setHistoryBusy(false);
     }
+  }
+
+  function upsertDiagnosticRun(run: DiagnosticRunSummary) {
+    if (deletedDiagnosticIds.current.has(run.id)) return;
+    setRuns((current) =>
+      [run, ...current.filter((item) => item.id !== run.id)].sort(
+        (a, b) => b.createdAt - a.createdAt,
+      ),
+    );
   }
 
   function upsertRpmRun(run: RpmRunSummary) {
@@ -2591,6 +2631,9 @@ export function TokenCheckApp({
                 <div>
                   <p className="text-sm font-semibold">
                     Saved result ·{' '}
+                    {savedPreview.diagnostic
+                      ? `${DIAGNOSTIC_LABELS[savedPreview.diagnostic.testKind]} · `
+                      : ''}
                     {savedPreview.run.profileName ?? 'One-time connection'}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -2663,6 +2706,8 @@ export function TokenCheckApp({
                           <option value="">All tests</option>
                           <option value="normal">Normal token</option>
                           <option value="rpm">RPM ramp</option>
+                          <option value="boundary">Tool Boundary Probe</option>
+                          <option value="endpoints">Three Endpoints</option>
                         </select>
                       </label>
                       <label className="grid gap-1.5 text-xs font-medium text-foreground">
@@ -2795,7 +2840,9 @@ export function TokenCheckApp({
                               >
                                 {run.testKind === 'rpm'
                                   ? 'RPM ramp'
-                                  : 'Normal token'}
+                                  : run.testKind === 'normal'
+                                    ? 'Normal token'
+                                    : DIAGNOSTIC_LABELS[run.testKind]}
                               </Badge>
                               <Badge
                                 variant="outline"
@@ -2831,6 +2878,19 @@ export function TokenCheckApp({
                                 Worst-stage P95{' '}
                                 {durationOrDash(run.p95LatencyMs)}
                               </p>
+                            ) : run.testKind !== 'normal' ? (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {run.status === 'stopped'
+                                  ? 'Stopped'
+                                  : run.status === 'issues'
+                                    ? 'Finished with issues'
+                                    : 'Completed'}{' '}
+                                · {run.capturedCount} / {run.totalCount}{' '}
+                                responses captured · {run.issueCount} issues
+                                {run.testKind === 'boundary'
+                                  ? ` · ${run.reviewedCount} / ${run.totalCount} reviewed`
+                                  : ''}
+                              </p>
                             ) : (
                               <>
                                 <NormalOutcomeCounts source={run} />
@@ -2859,7 +2919,7 @@ export function TokenCheckApp({
                             className="grid size-8 place-items-center rounded-lg text-muted-foreground hover:bg-blue-50 hover:text-blue-700"
                             aria-label="Export saved run evidence"
                             title={
-                              run.testKind === 'rpm'
+                              run.testKind !== 'normal'
                                 ? 'Export full JSON evidence'
                                 : 'Export evidence ZIP'
                             }
@@ -3286,8 +3346,42 @@ export function TokenCheckApp({
               />
             ) : null}
 
+            {viewMode === 'detail' && savedPreview?.diagnostic ? (
+              savedPreview.diagnostic.testKind === 'endpoints' ? (
+                <EndpointCheck
+                  key={`saved-${savedPreview.run.id}`}
+                  savedRun={savedPreview.diagnostic}
+                  apiType={savedPreview.run.apiType}
+                  baseUrl={savedPreview.run.baseUrl}
+                  model={savedPreview.run.modelName}
+                  apiKey=""
+                  selectedProfileId=""
+                  profileName={savedPreview.run.profileName || ''}
+                  profileDirty={false}
+                  startBlocked
+                  onRunningChange={() => {}}
+                />
+              ) : (
+                <ToolBoundaryTest
+                  key={`saved-${savedPreview.run.id}`}
+                  savedRun={savedPreview.diagnostic}
+                  apiType={savedPreview.run.apiType}
+                  baseUrl={savedPreview.run.baseUrl}
+                  model={savedPreview.run.modelName}
+                  apiKey=""
+                  selectedProfileId=""
+                  profileName={savedPreview.run.profileName || ''}
+                  profileDirty={false}
+                  startBlocked
+                  onRunningChange={() => {}}
+                />
+              )
+            ) : null}
+
             <div hidden={viewMode !== 'current' || testMode !== 'endpoints'}>
               <EndpointCheck
+                signedIn={Boolean(user)}
+                onSaved={upsertDiagnosticRun}
                 apiType={apiType}
                 baseUrl={baseUrl}
                 model={model}
@@ -3307,6 +3401,8 @@ export function TokenCheckApp({
 
             <div hidden={viewMode !== 'current' || testMode !== 'boundary'}>
               <ToolBoundaryTest
+                signedIn={Boolean(user)}
+                onSaved={upsertDiagnosticRun}
                 apiType={apiType}
                 baseUrl={baseUrl}
                 model={model}
