@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertDialog } from '@base-ui/react/alert-dialog';
 import { Activity, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -60,6 +61,16 @@ export function AvailabilityMonitor({
   const [data, setData] = useState<AvailabilityData | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [pendingRemoval, setPendingRemoval] = useState<{
+    id: string;
+    modelName: string;
+    profileName: string;
+    apiType: ApiType;
+  } | null>(null);
+  const [removalError, setRemovalError] = useState('');
+  const cancelRemovalRef = useRef<HTMLButtonElement>(null);
+  const removalTriggerRef = useRef<HTMLButtonElement>(null);
+  const refreshButtonRef = useRef<HTMLButtonElement>(null);
   const [profileId, setProfileId] = useState('');
   const [chosenApiType, setApiType] = useState<ApiType | null>(null);
   const [clock, setClock] = useState(0);
@@ -160,10 +171,11 @@ export function AvailabilityMonitor({
       setBusy('');
     }
   }
-  async function remove(id: string) {
-    if (busy) return;
+  async function remove() {
+    if (busy || !pendingRemoval) return;
+    const { id } = pendingRemoval;
     setBusy(id);
-    setError('');
+    setRemovalError('');
     try {
       const response = await fetch(
         `/api/availability/${encodeURIComponent(id)}`,
@@ -183,8 +195,9 @@ export function AvailabilityMonitor({
           : current,
       );
       if (inspected?.id === id) setInspected(null);
+      setPendingRemoval(null);
     } catch (cause) {
-      setError(
+      setRemovalError(
         cause instanceof Error ? cause.message : 'Could not remove target.',
       );
     } finally {
@@ -393,6 +406,7 @@ export function AvailabilityMonitor({
               </label>
               <Badge variant="secondary">{targets.length} targets</Badge>
               <Button
+                ref={refreshButtonRef}
                 type="button"
                 size="sm"
                 variant="outline"
@@ -508,7 +522,17 @@ export function AvailabilityMonitor({
                         size="sm"
                         disabled={Boolean(busy)}
                         aria-label={`Remove ${target.modelName} on ${target.profileName}`}
-                        onClick={() => void remove(target.id)}
+                        aria-haspopup="dialog"
+                        onClick={(event) => {
+                          removalTriggerRef.current = event.currentTarget;
+                          setRemovalError('');
+                          setPendingRemoval({
+                            id: target.id,
+                            modelName: target.modelName,
+                            profileName: target.profileName,
+                            apiType: target.apiType,
+                          });
+                        }}
                         className="text-muted-foreground hover:text-rose-700"
                       >
                         <Trash2 className="size-4" />
@@ -598,6 +622,68 @@ export function AvailabilityMonitor({
           </p>
         </div>
       )}
+      <AlertDialog.Root
+        open={pendingRemoval !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setPendingRemoval(null);
+        }}
+      >
+        <AlertDialog.Portal>
+          <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-slate-950/40" />
+          <AlertDialog.Popup
+            initialFocus={cancelRemovalRef}
+            finalFocus={() =>
+              removalTriggerRef.current?.isConnected
+                ? removalTriggerRef.current
+                : refreshButtonRef.current
+            }
+            className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-xl outline-none"
+          >
+            <AlertDialog.Title className="text-lg font-semibold">
+              Remove this probe target?
+            </AlertDialog.Title>
+            <AlertDialog.Description className="mt-2 text-sm leading-6 text-muted-foreground">
+              Availability checks every 10 minutes will stop for this model and
+              connection.
+            </AlertDialog.Description>
+            <div className="my-4 rounded-xl bg-muted/50 p-3 text-sm">
+              <p className="break-words font-semibold">
+                {pendingRemoval?.modelName}
+              </p>
+              <p className="mt-1 break-words text-muted-foreground">
+                {pendingRemoval?.profileName} ·{' '}
+                {pendingRemoval?.apiType === 'anthropic'
+                  ? 'Messages'
+                  : 'Chat Completions'}
+              </p>
+            </div>
+            {removalError && (
+              <p role="alert" className="mb-4 text-sm text-rose-700">
+                {removalError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                ref={cancelRemovalRef}
+                type="button"
+                variant="outline"
+                disabled={Boolean(busy)}
+                onClick={() => setPendingRemoval(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={Boolean(busy)}
+                onClick={() => void remove()}
+              >
+                {busy ? 'Removing…' : 'Remove target'}
+              </Button>
+            </div>
+          </AlertDialog.Popup>
+        </AlertDialog.Portal>
+      </AlertDialog.Root>
     </section>
   );
 }
