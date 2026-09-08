@@ -55,14 +55,13 @@ export function EndpointCheck(props: {
   onRunningChange: (running: boolean) => void;
 }) {
   const [selection, setSelection] = useState<EndpointSelection>('all');
-  const [repeats, setRepeats] = useState(3);
   const [runs, setRuns] = useState<Run[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [running, setRunning] = useState(false);
   const [formError, setFormError] = useState('');
   const controller = useRef<AbortController | null>(null);
   const run = runs.find((item) => item.id === selectedId) ?? runs.at(-1);
-  const plan = endpointPlan(selection, repeats);
+  const plan = endpointPlan(selection);
   useEffect(() => () => controller.current?.abort(), []);
 
   function update(id: string, index: number, patch: Partial<Row>) {
@@ -229,13 +228,6 @@ export function EndpointCheck(props: {
   }
   const completed =
     run?.rows.filter((row) => row.exchange !== null).length ?? 0;
-  const inputs =
-    run?.rows
-      .filter(
-        (row) =>
-          row.caseId === 'arithmetic' && row.exchange?.usage.totalInput != null,
-      )
-      .map((row) => row.exchange!.usage.totalInput!) ?? [];
   return (
     <section className="space-y-5" aria-label="Three Endpoints">
       <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
@@ -272,43 +264,13 @@ export function EndpointCheck(props: {
               ))}
             </select>
           </label>
-          <label className="space-y-2 text-xs font-medium">
-            Arithmetic requests per endpoint
-            <select
-              value={repeats}
-              onChange={(event) => setRepeats(Number(event.target.value))}
-              className="block h-10 rounded-lg border border-border bg-background px-3 text-sm"
-            >
-              <option value={3}>3 · compare token variation</option>
-              <option value={1}>1 · quick check</option>
-            </select>
-          </label>
         </fieldset>
-        <div className="mt-4 rounded-xl bg-muted/60 p-3 text-xs leading-6 text-muted-foreground">
-          <p>
-            One “OK” request (limit 4,096), then {repeats} arithmetic request
-            {repeats === 1 ? '' : 's'} (limit 8,192) per endpoint.{' '}
-            <strong className="text-foreground">
-              {plan.length} paid requests
-            </strong>
-            , sent one at a time with a 3-second gap and a 120-second timeout.
-          </p>
-          <p>
-            No system prompt, tools, history, explicit caching or sampling
-            overrides. This checks basic text compatibility; results stay in
-            this tab and can be downloaded.
-          </p>
-          <details className="mt-2">
-            <summary className="cursor-pointer font-medium text-foreground">
-              See the exact prompts
-            </summary>
-            {Object.values(ENDPOINT_CASES).map((sample) => (
-              <p key={sample.label} className="mt-1 font-mono">
-                {sample.prompt} → {sample.expected}
-              </p>
-            ))}
-          </details>
-        </div>
+        <p className="mt-4 text-sm leading-6 text-muted-foreground">
+          Sends “只回复 OK。” once per endpoint.{' '}
+          <strong className="text-foreground">
+            {plan.length} request{plan.length === 1 ? '' : 's'} total.
+          </strong>
+        </p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button
             type="button"
@@ -366,13 +328,6 @@ export function EndpointCheck(props: {
               <Download className="size-4" /> Download raw JSON
             </Button>
           </div>
-          {new Set(inputs).size > 1 ? (
-            <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
-              Identical arithmetic prompts reported different total input counts
-              ({[...new Set(inputs)].map(number).join(', ')}). Review the
-              per-request usage and ask the provider to explain the variation.
-            </p>
-          ) : null}
           {Object.entries(ENDPOINTS).map(([protocol, endpoint]) => {
             const rows = run.rows
               .map((row, index) => ({ ...row, index }))
@@ -413,9 +368,6 @@ export function EndpointCheck(props: {
                       <TableRow key={row.index}>
                         <TableCell className="whitespace-nowrap">
                           {ENDPOINT_CASES[row.caseId].label}
-                          {row.caseId === 'arithmetic'
-                            ? ` · ${row.repeat}`
-                            : ''}
                         </TableCell>
                         <TableCell>{row.exchange?.httpStatus ?? '—'}</TableCell>
                         <TableCell>
@@ -474,8 +426,7 @@ export function EndpointCheck(props: {
                         className="rounded-xl border border-border"
                       >
                         <summary className="cursor-pointer px-3 py-3 text-xs font-medium">
-                          {ENDPOINT_CASES[row.caseId].label} · request{' '}
-                          {row.repeat} · details &amp; raw data
+                          Details &amp; raw data
                           {row.exchange?.warnings.length
                             ? ' · usage warning'
                             : ''}

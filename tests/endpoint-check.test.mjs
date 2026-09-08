@@ -31,7 +31,7 @@ const fixtures = {
         thinking: 'internal',
         signature: 'original-signature',
       },
-      { type: 'text', text: '46' },
+      { type: 'text', text: 'OK' },
     ],
     usage: {
       input_tokens: 2,
@@ -47,7 +47,7 @@ const fixtures = {
     object: 'chat.completion',
     model: 'test-model',
     choices: [
-      { message: { role: 'assistant', content: '46' }, finish_reason: 'stop' },
+      { message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' },
     ],
     usage: {
       prompt_tokens: 27525,
@@ -68,7 +68,7 @@ const fixtures = {
         type: 'message',
         role: 'assistant',
         status: 'completed',
-        content: [{ type: 'output_text', text: '46' }],
+        content: [{ type: 'output_text', text: 'OK' }],
       },
     ],
     usage: {
@@ -129,9 +129,9 @@ test('actual WorldRouter usage shapes normalize without adding caches twice', ()
     const result = summarizeEndpointResponse(
       JSON.stringify(fixture),
       protocol,
-      'arithmetic',
+      'ok',
     );
-    assert.equal(result.answer, '46');
+    assert.equal(result.answer, 'OK');
     assert.deepEqual(result.issues, []);
     assert.equal(result.usage.totalInput, 27525);
     assert.equal(result.usage.total, 27528);
@@ -155,7 +155,7 @@ test('missing, negative, nonnumeric and nonfinite usage is unavailable, not zero
     const result = summarizeEndpointResponse(
       JSON.stringify({ ...fixtures[protocol], usage: null }),
       protocol,
-      'arithmetic',
+      'ok',
     );
     assert.deepEqual(result.issues, []);
     assert.ok(result.warnings.some((x) => x.includes('missing')));
@@ -182,24 +182,22 @@ test('malformed JSON, wrong protocol, provider errors, refusal and incomplete ou
       '{}',
       '{"error":{"message":"messages is required"}}',
     ]) {
-      assert.ok(
-        summarizeEndpointResponse(raw, protocol, 'arithmetic').issues.length,
-      );
+      assert.ok(summarizeEndpointResponse(raw, protocol, 'ok').issues.length);
     }
     const error = {
       ...fixtures[protocol],
       error: { message: 'provider failed' },
     };
     assert.ok(
-      summarizeEndpointResponse(JSON.stringify(error), protocol, 'arithmetic')
-        .issues.length,
+      summarizeEndpointResponse(JSON.stringify(error), protocol, 'ok').issues
+        .length,
     );
     for (const other of Object.keys(ENDPOINTS).filter((x) => x !== protocol))
       assert.ok(
         summarizeEndpointResponse(
           JSON.stringify(fixtures[other]),
           protocol,
-          'arithmetic',
+          'ok',
         ).issues.length,
       );
   }
@@ -211,7 +209,7 @@ test('malformed JSON, wrong protocol, provider errors, refusal and incomplete ou
         ...fixtures.chat,
         choices: [
           {
-            message: { role: 'assistant', content: '46' },
+            message: { role: 'assistant', content: 'OK' },
             finish_reason: 'length',
           },
         ],
@@ -247,8 +245,8 @@ test('malformed JSON, wrong protocol, provider errors, refusal and incomplete ou
   ];
   for (const [protocol, body] of incomplete)
     assert.ok(
-      summarizeEndpointResponse(JSON.stringify(body), protocol, 'arithmetic')
-        .issues.length,
+      summarizeEndpointResponse(JSON.stringify(body), protocol, 'ok').issues
+        .length,
     );
 });
 
@@ -267,7 +265,7 @@ test('explicit invalid cache counters get a warning even when base counters are 
       const result = summarizeEndpointResponse(
         JSON.stringify(fixture),
         protocol,
-        'arithmetic',
+        'ok',
       );
       assert.equal(result.usage.cacheRead, null);
       assert.ok(result.warnings.some((x) => x.includes('counter is invalid')));
@@ -282,7 +280,7 @@ test('capture sends correct authentication and keeps raw response including sign
     const exchange = await captureEndpointExchange(
       connection,
       protocol,
-      'arithmetic',
+      'ok',
       new AbortController().signal,
       async (url, init) => {
         sent = { url, ...init };
@@ -305,7 +303,7 @@ test('capture sends correct authentication and keeps raw response including sign
       assert.equal(sent.headers['anthropic-version'], '2023-06-01');
     assert.deepEqual(
       JSON.parse(sent.body),
-      endpointRequestBody(protocol, connection.model, 'arithmetic'),
+      endpointRequestBody(protocol, connection.model, 'ok'),
     );
     assert.equal(sent.redirect, 'manual');
     assert.equal(exchange.rawResponse, raw);
@@ -322,7 +320,7 @@ test('Responses missing messages HTTP 500 remains visible with unchanged valid i
   const exchange = await captureEndpointExchange(
     connection,
     'responses',
-    'arithmetic',
+    'ok',
     new AbortController().signal,
     async () => new Response(raw, { status: 500 }),
   );
@@ -333,7 +331,7 @@ test('Responses missing messages HTTP 500 remains visible with unchanged valid i
   assert.equal('messages' in JSON.parse(exchange.requestBody), false);
   assert.equal(
     JSON.parse(exchange.requestBody).input,
-    ENDPOINT_CASES.arithmetic.prompt,
+    ENDPOINT_CASES.ok.prompt,
   );
 });
 
@@ -348,7 +346,7 @@ test('partial capture and escaped key echoes cannot expose a credential or pass 
   const result = await captureEndpointExchange(
     connection,
     'responses',
-    'arithmetic',
+    'ok',
     new AbortController().signal,
     async () => new Response(raw),
   );
@@ -357,7 +355,7 @@ test('partial capture and escaped key echoes cannot expose a credential or pass 
   const partial = await captureEndpointExchange(
     connection,
     'responses',
-    'arithmetic',
+    'ok',
     new AbortController().signal,
     async () => new Response('x'.repeat(HTTP_CAPTURE_LIMIT + 1)),
   );
@@ -366,15 +364,23 @@ test('partial capture and escaped key echoes cannot expose a credential or pass 
   assert.equal(partial.rawResponse.length, HTTP_CAPTURE_LIMIT);
 });
 
-test('comparison plans match the six-request baseline and twelve-request repeat check', () => {
-  assert.equal(endpointPlan('all', 1).length, 6);
-  assert.equal(endpointPlan('all', 3).length, 12);
-  assert.equal(endpointPlan('responses', 3).length, 4);
-  assert.throws(() => endpointPlan('all', 99));
+test('one OK request per selected endpoint, with no repeats', () => {
+  assert.deepEqual(endpointPlan('all'), [
+    { protocol: 'messages', caseId: 'ok', repeat: 1 },
+    { protocol: 'chat', caseId: 'ok', repeat: 1 },
+    { protocol: 'responses', caseId: 'ok', repeat: 1 },
+  ]);
+  for (const protocol of Object.keys(ENDPOINTS)) {
+    assert.deepEqual(endpointPlan(protocol), [
+      { protocol, caseId: 'ok', repeat: 1 },
+    ]);
+  }
+  assert.deepEqual(Object.keys(ENDPOINT_CASES), ['ok']);
+  assert.throws(() => endpointPlan('unknown'));
 });
 
 test('failures do not prevent subsequent endpoints and Stop preserves completed results', async () => {
-  const tasks = endpointPlan('all', 1),
+  const tasks = endpointPlan('all'),
     starts = [],
     results = [];
   await runEndpointSequence({
@@ -388,10 +394,10 @@ test('failures do not prevent subsequent endpoints and Stop preserves completed 
     },
     delay: async (ms) => assert.equal(ms, 3000),
   });
-  assert.equal(starts.length, 6);
-  assert.equal(results.length, 6);
+  assert.equal(starts.length, 3);
+  assert.equal(results.length, 3);
   assert.ok(results[0].error);
-  assert.equal(results[5].result, 'done');
+  assert.equal(results[2].result, 'done');
   const abort = new AbortController(),
     captured = [],
     called = [];

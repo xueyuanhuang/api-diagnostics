@@ -9,12 +9,6 @@ export type EndpointProtocol = keyof typeof ENDPOINTS;
 export type EndpointSelection = EndpointProtocol | 'all';
 export const ENDPOINT_CASES = {
   ok: { label: 'OK', prompt: '只回复 OK。', expected: 'OK', maxTokens: 4096 },
-  arithmetic: {
-    label: '17 + 29',
-    prompt: '请计算 17+29，仅输出结果数字。',
-    expected: '46',
-    maxTokens: 8192,
-  },
 } as const;
 export type EndpointCase = keyof typeof ENDPOINT_CASES;
 export type EndpointTask = {
@@ -64,26 +58,14 @@ export function endpointRequestBody(
   };
 }
 
-export function endpointPlan(
-  selection: EndpointSelection,
-  arithmeticRepeats: number,
-): EndpointTask[] {
+export function endpointPlan(selection: EndpointSelection): EndpointTask[] {
   if (selection !== 'all' && !isEndpointProtocol(selection))
     throw new Error('Invalid endpoint selection.');
-  if (![1, 3].includes(arithmeticRepeats))
-    throw new Error('Choose one or three arithmetic requests.');
   const protocols =
     selection === 'all'
       ? (Object.keys(ENDPOINTS) as EndpointProtocol[])
       : [selection];
-  return protocols.flatMap((protocol) => [
-    { protocol, caseId: 'ok' as const, repeat: 1 },
-    ...Array.from({ length: arithmeticRepeats }, (_, index) => ({
-      protocol,
-      caseId: 'arithmetic' as const,
-      repeat: index + 1,
-    })),
-  ]);
+  return protocols.map((protocol) => ({ protocol, caseId: 'ok', repeat: 1 }));
 }
 
 function record(value: unknown): Record<string, unknown> | null {
