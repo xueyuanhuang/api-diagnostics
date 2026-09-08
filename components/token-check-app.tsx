@@ -45,6 +45,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import { AvailabilityMonitor } from '@/components/availability-monitor';
 import { ToolBoundaryTest } from '@/components/tool-boundary-test';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
@@ -81,7 +82,7 @@ type ResultStatus =
   | 'error';
 type ViewMode = 'current' | 'saved' | 'detail';
 type ResultsView = 'tokens' | 'performance';
-type TestMode = 'normal' | 'rpm' | 'boundary';
+type TestMode = 'normal' | 'rpm' | 'boundary' | 'availability';
 type NormalPhase =
   | 'idle'
   | 'queued'
@@ -1787,7 +1788,7 @@ export function TokenCheckApp({
         </header>
 
         <section
-          className="mb-5 grid gap-3 md:grid-cols-3"
+          className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4"
           aria-label="Choose a test"
         >
           <button
@@ -1854,9 +1855,45 @@ export function TokenCheckApp({
               </span>
             </span>
           </button>
+          <button
+            type="button"
+            aria-pressed={testMode === 'availability'}
+            onClick={() => showCurrent('availability')}
+            className={`flex items-start gap-4 rounded-2xl border p-4 text-left shadow-sm transition-colors ${testMode === 'availability' ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:border-primary/40'}`}
+          >
+            <span
+              className={`grid size-10 shrink-0 place-items-center rounded-xl ${testMode === 'availability' ? 'bg-white/15' : 'bg-muted'}`}
+            >
+              <Activity className="size-5" />
+            </span>
+            <span>
+              <span className="block text-sm font-semibold">
+                Availability Monitor
+              </span>
+              <span
+                className={`mt-1 block text-xs leading-5 ${testMode === 'availability' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
+              >
+                Every 10 minutes · model health history
+              </span>
+            </span>
+          </button>
         </section>
 
-        <section className="grid gap-5 xl:grid-cols-[390px_minmax(0,1fr)]">
+        <div hidden={testMode !== 'availability'}>
+          <AvailabilityMonitor
+            key={user?.email || 'anonymous'}
+            signedIn={Boolean(user)}
+            signInPath={signInPath}
+            profiles={profiles}
+            active={testMode === 'availability'}
+            onConnections={() => showCurrent('normal')}
+          />
+        </div>
+
+        <section
+          style={testMode === 'availability' ? { display: 'none' } : undefined}
+          className="grid gap-5 xl:grid-cols-[390px_minmax(0,1fr)]"
+        >
           <aside className="self-start rounded-2xl border border-border bg-card p-5 shadow-[0_18px_50px_rgb(15_23_42/0.06)] xl:sticky xl:top-6">
             <div className="mb-5 flex items-start justify-between gap-4">
               <div>

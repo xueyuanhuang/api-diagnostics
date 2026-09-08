@@ -253,3 +253,65 @@ export const rpmActiveLeases = sqliteTable('rpm_active_leases', {
     .references(() => rpmRuns.id, { onDelete: 'cascade' }),
   expiresAt: integer('expires_at').notNull(),
 });
+
+export const availabilityTargets = sqliteTable(
+  'availability_targets',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull(),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => connectionProfiles.id, { onDelete: 'cascade' }),
+    apiType: text('api_type', { enum: ['anthropic', 'openai'] }).notNull(),
+    modelName: text('model_name').notNull(),
+    baseUrl: text('base_url').notNull(),
+    allowInsecureHttp: integer('allow_insecure_http', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    createdAt: integer('created_at').notNull(),
+    deletedAt: integer('deleted_at'),
+  },
+  (table) => [
+    uniqueIndex('availability_target_unique').on(
+      table.userId,
+      table.profileId,
+      table.apiType,
+      table.modelName,
+    ),
+    index('availability_target_user_active_idx').on(
+      table.userId,
+      table.deletedAt,
+    ),
+  ],
+);
+
+export const availabilitySamples = sqliteTable(
+  'availability_samples',
+  {
+    id: text('id').primaryKey(),
+    targetId: text('target_id')
+      .notNull()
+      .references(() => availabilityTargets.id, { onDelete: 'cascade' }),
+    slotStart: integer('slot_start').notNull(),
+    startedAt: integer('started_at').notNull(),
+    finishedAt: integer('finished_at'),
+    status: text('status').notNull(),
+    httpStatus: integer('http_status'),
+    latencyMs: integer('latency_ms'),
+    returnedModel: text('returned_model'),
+    requestId: text('request_id'),
+    answer: text('answer'),
+    error: text('error'),
+  },
+  (table) => [
+    uniqueIndex('availability_sample_target_slot_unique').on(
+      table.targetId,
+      table.slotStart,
+    ),
+  ],
+);
+
+export const availabilityScheduler = sqliteTable('availability_scheduler', {
+  id: text('id').primaryKey(),
+  lastTickAt: integer('last_tick_at').notNull(),
+});
