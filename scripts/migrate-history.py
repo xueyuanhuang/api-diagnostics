@@ -139,7 +139,9 @@ def main():
     # bytes before skipping already stored objects after an interrupted copy.
     stored_etags = {}
     cursor = None
-    while True:
+    checkpoint = Path('/tmp/api-diagnostics-migration-verified.json')
+    completed = set(json.loads(checkpoint.read_text())) & keys if checkpoint.exists() else set()
+    while completed != keys:
         listing_url = BASE + '/r2/buckets/' + BUCKET + '/objects?per_page=1000'
         if cursor: listing_url += '&cursor=' + quote(cursor, safe='')
         listing = json.loads(request(listing_url, headers=headers))
@@ -224,7 +226,7 @@ def main():
             if table == 'availability_targets':
                 row['paused'] = 1
             columns = list(row)
-            if any(not re.fullmatch('[a-z_]+', col) for col in columns):
+            if any(not re.fullmatch('[a-z_][a-z0-9_]*', col) for col in columns):
                 raise RuntimeError('Unexpected export column.')
             sql = 'INSERT OR IGNORE INTO "' + table + '" (' + ','.join('"'+c+'"' for c in columns) + ') VALUES (' + ','.join(sql_value(row[col]) for col in columns) + ')'
             statements.append(sql)

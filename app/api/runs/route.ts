@@ -49,7 +49,7 @@ export async function GET() {
       .from(testRuns)
       .where(eq(testRuns.userId, user.userId))
       .orderBy(desc(testRuns.createdAt))
-      .limit(50);
+      .limit(500);
     return noStore({ runs });
   } catch (error) {
     return serverError(error);

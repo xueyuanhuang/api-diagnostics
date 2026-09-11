@@ -46,7 +46,7 @@ export async function GET() {
       .from(rpmRuns)
       .where(eq(rpmRuns.userId, user.userId))
       .orderBy(desc(rpmRuns.createdAt))
-      .limit(50);
+      .limit(500);
     return noStore({ runs: rows.map(runSummary) });
   } catch (error) {
     return serverError(error);
