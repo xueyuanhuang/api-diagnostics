@@ -23,11 +23,14 @@ export async function POST(request:Request){
     if(manifest.sourceUser!==grant.sourceUser)return fail();
     const rpm=new Set(manifest.rpmRunIds),exact=new Set(manifest.exactKeys);
     const prepared:{key:string;bytes:Uint8Array;sha256:string}[]=[];
+    const ownership=new Map<string,Promise<{user_id:string}|null>>();
     for(const item of body.objects){
       if(typeof item.key!=='string'||item.key.length>2048||typeof item.data!=='string'||typeof item.sha256!=='string')return fail();
       const match=/^rpm\/v1\/([^/]+)\//.exec(item.key);
       if(match?!rpm.has(match[1]):!exact.has(item.key))return fail();
-      const existing=match?await env.DB.prepare('SELECT user_id FROM rpm_runs WHERE id=?').bind(match[1]).first<{user_id:string}>():await env.DB.prepare('SELECT user_id FROM diagnostic_runs WHERE evidence_key=? UNION ALL SELECT user_id FROM animation_results WHERE evidence_key=?').bind(item.key,item.key).first<{user_id:string}>();
+      const ownerKey=match?`rpm:${match[1]}`:item.key;
+      if(!ownership.has(ownerKey))ownership.set(ownerKey,match?env.DB.prepare('SELECT user_id FROM rpm_runs WHERE id=?').bind(match[1]).first<{user_id:string}>():env.DB.prepare('SELECT user_id FROM diagnostic_runs WHERE evidence_key=? UNION ALL SELECT user_id FROM animation_results WHERE evidence_key=?').bind(item.key,item.key).first<{user_id:string}>());
+      const existing=await ownership.get(ownerKey);
       if(existing&&existing.user_id!==body.owner)return fail();
       const bytes=Uint8Array.from(atob(item.data),(c)=>c.charCodeAt(0));
       const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
