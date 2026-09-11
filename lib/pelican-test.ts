@@ -1,10 +1,13 @@
 export const PELICAN_PROMPT = '创建一个HTML，内容是SVG绘制的一个鹈鹕骑自行车的2D动画，你不需要任何测试';
-export const PELICAN_OUTPUT_LIMITS = [8192, 16384, 32768] as const;
+export const PELICAN_OUTPUT_CEILING = 2147483647;
 export const PELICAN_MAX_TOKENS = 32768;
 
 export function pelicanOutputLimit(value: unknown) {
   if (value === undefined) return PELICAN_MAX_TOKENS;
-  return typeof value === 'number' && PELICAN_OUTPUT_LIMITS.some(limit => limit === value) ? value : null;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= PELICAN_OUTPUT_CEILING ? value : null;
+}
+export function adjustPelicanOutputLimit(limit: number, percentage: number) {
+  return Math.min(PELICAN_OUTPUT_CEILING, Math.max(1, Math.round(limit * (1 + percentage / 100))));
 }
 export const PELICAN_TIMEOUT_MS = 300_000;
 

@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
   }
   const isPelican = payload.testKind === 'pelican';
   const maxOutputTokens = isPelican ? pelicanOutputLimit(payload.maxOutputTokens) : 96;
-  if (maxOutputTokens === null) return noStore({ error: 'Choose an output limit of 8,192, 16,384, or 32,768 tokens.' }, { status: 400 });
+  if (maxOutputTokens === null) return noStore({ error: 'Enter a positive whole-number output limit supported by your provider.' }, { status: 400 });
   const timeoutMs = isPelican ? PELICAN_TIMEOUT_MS : 45_000;
   const prompt = isPelican ? PELICAN_PROMPT : typeof payload.prompt === 'string' ? payload.prompt : '';
   if (!prompt || prompt.length > 1_000) {

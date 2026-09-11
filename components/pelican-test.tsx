@@ -7,7 +7,7 @@ import { chatGPTSignInPath } from '@/lib/auth-paths';
 import { animationConnectionLabel, type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
 import { ModelPicker } from '@/components/model-picker';
-import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_LIMITS, pelicanOutputLimit, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
+import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_CEILING, adjustPelicanOutputLimit, pelicanOutputLimit, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import { activeConnectionId, rememberConnection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
@@ -22,6 +22,8 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
   const [maxOutputTokens, setMaxOutputTokens] = useState<number>(PELICAN_MAX_TOKENS);
+  const [outputLimitDraft, setOutputLimitDraft] = useState(String(PELICAN_MAX_TOKENS));
+  useEffect(() => { setOutputLimitDraft(String(maxOutputTokens)); }, [maxOutputTokens]);
   const outputLimitChanged = useRef(false);
   const [outputLimitSaving, setOutputLimitSaving] = useState(false);
   const [outputLimitMessage, setOutputLimitMessage] = useState('');
@@ -112,6 +114,11 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const warning = result ? animationWarning(html, result) : null;
 
   async function changeOutputLimit(limit: number) {
+    if (pelicanOutputLimit(limit) === null) {
+      setOutputLimitMessage('Enter a positive whole number supported by your provider.');
+      return;
+    }
+    setOutputLimitDraft(String(limit));
     outputLimitChanged.current = true;
     setMaxOutputTokens(limit);
     setOutputLimitSaving(true);
@@ -271,13 +278,21 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
               </label>
             </fieldset></details>}
             <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <Link href="/connections" className="font-semibold text-primary underline">Connections page</Link>.</p>
-            <label className="block text-sm font-medium">Output limit
-              <select disabled={running || outputLimitSaving || !preferencesReady} value={maxOutputTokens} onChange={event => void changeOutputLimit(Number(event.target.value))} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm sm:max-w-xs">{PELICAN_OUTPUT_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}</select>
-            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm font-medium">Output limit (tokens)
+                <Input type="number" min={1} max={PELICAN_OUTPUT_CEILING} step={1} required disabled={running || outputLimitSaving || !preferencesReady} value={outputLimitDraft} onChange={event => { outputLimitChanged.current = true; setOutputLimitDraft(event.target.value); }} onBlur={() => { if (outputLimitDraft !== String(maxOutputTokens)) void changeOutputLimit(Number(outputLimitDraft)); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void changeOutputLimit(Number(outputLimitDraft)); } }} className="mt-2 h-10" />
+              </label>
+              <label className="block text-sm font-medium">Adjust by percentage
+                <select value="" disabled={running || outputLimitSaving || !preferencesReady} onChange={event => { if (event.target.value) void changeOutputLimit(adjustPelicanOutputLimit(pelicanOutputLimit(Number(outputLimitDraft)) ?? maxOutputTokens, Number(event.target.value))); }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
+                  <option value="">Increase or decrease…</option>
+                  {[-50, -25, -10, 10, 25, 50, 100].map(percent => <option key={percent} value={percent}>{percent > 0 ? '+' : '−'}{Math.abs(percent)}%</option>)}
+                </select>
+              </label>
+            </div>
             <p className="text-sm leading-6 text-muted-foreground">Changes save automatically {signedIn ? 'to your account' : 'on this device'} and apply to future tests until you change them. One request · up to {maxOutputTokens.toLocaleString('en-US')} output tokens · 5-minute limit.</p>
             {outputLimitMessage && <p role="status" className="text-sm text-muted-foreground">{outputLimitMessage}</p>}
             <div className="flex gap-2">
-              <Button type="submit" disabled={running || outputLimitSaving || !preferencesReady} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
+              <Button type="submit" disabled={running || outputLimitSaving || !preferencesReady || outputLimitDraft !== String(maxOutputTokens)} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
               {running && <Button type="button" variant="outline" className="h-11" onClick={() => controller.current?.abort()}>Stop</Button>}
             </div>
             {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}

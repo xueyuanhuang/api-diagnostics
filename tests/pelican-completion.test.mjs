@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readProviderStream } from '../lib/server/provider-stream.ts';
-import { animationWarning, extractAnimationHtml, pelicanOutputLimit } from '../lib/pelican-test.ts';
+import { animationWarning, extractAnimationHtml, pelicanOutputLimit, adjustPelicanOutputLimit } from '../lib/pelican-test.ts';
 
 const event = data => `data: ${JSON.stringify(data)}\n\n`;
 const read = (body, apiType) => readProviderStream(new Response(body), apiType, '', performance.now());
@@ -45,6 +45,13 @@ test('the original clipped SVG is flagged when reopening an old saved result', (
 
 test('output budgets are bounded and invalid values cannot silently change the request', () => {
   assert.equal(pelicanOutputLimit(undefined), 32768);
-  for (const limit of [8192, 16384, 32768]) assert.equal(pelicanOutputLimit(limit), limit);
-  for (const limit of [null, '32768', -1, 0, 1000000, NaN]) assert.equal(pelicanOutputLimit(limit), null);
+  for (const limit of [1, 12000, 8192, 16384, 32768, 40960, 1000000]) assert.equal(pelicanOutputLimit(limit), limit);
+  for (const limit of [null, '32768', -1, 0, 1.5, Infinity, 2147483648, NaN]) assert.equal(pelicanOutputLimit(limit), null);
+});
+
+test('percentage adjustments use the current value and round to whole tokens', () => {
+  assert.equal(adjustPelicanOutputLimit(32768, 25), 40960);
+  assert.equal(adjustPelicanOutputLimit(40960, -25), 30720);
+  assert.equal(adjustPelicanOutputLimit(12001, 10), 13201);
+  assert.equal(adjustPelicanOutputLimit(1, -50), 1);
 });
