@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { chatGPTSignInPath } from '@/lib/auth-paths';
 import { animationConnectionLabel, type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
-import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
+import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_LIMITS, pelicanOutputLimit, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import { activeConnectionId, rememberConnection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
@@ -20,7 +20,15 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
-  const maxOutputTokens = PELICAN_MAX_TOKENS;
+  const [maxOutputTokens, setMaxOutputTokens] = useState<number>(PELICAN_MAX_TOKENS);
+  const outputLimitChanged = useRef(false);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('pelican-animation:output-limit:v1');
+      const limit = saved === null ? null : pelicanOutputLimit(Number(saved));
+      if (limit !== null) setMaxOutputTokens(limit);
+    } catch { /* Device preferences are optional. */ }
+  }, []);
   const [running, setRunning] = useState(false);
   useEffect(() => { onRunningChange?.(running); }, [running, onRunningChange]);
   const [error, setError] = useState('');
@@ -65,6 +73,9 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
       if (!alive) return;
       setSignedIn(Boolean(session.user));
       if (!session.user) return;
+      await connectionRequest<{ maxOutputTokens: number }>('/api/animation-preferences').then(saved => {
+        if (alive && !outputLimitChanged.current && !controller.current) setMaxOutputTokens(saved.maxOutputTokens);
+      }).catch(() => {});
       await loadHistory().catch(() => setSaveMessage('Could not load saved animations. Reload to try again.'));
       const data = await connectionRequest<{ profiles: SavedConnection[] }>('/api/profiles');
       if (!alive) return;
@@ -112,6 +123,11 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
     setSaveMessage('');
     setResultModel(model.trim());
     try {
+      outputLimitChanged.current = true;
+      if (signedIn) await connectionRequest('/api/animation-preferences', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxOutputTokens }),
+      });
+      try { localStorage.setItem('pelican-animation:output-limit:v1', String(maxOutputTokens)); } catch { /* Account preference still persists. */ }
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -234,7 +250,10 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
               </label>
             </fieldset></details>}
             <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <Link href="/connections" className="font-semibold text-primary underline">Connections page</Link>.</p>
-            <p className="text-sm leading-6 text-muted-foreground">One request · up to {maxOutputTokens.toLocaleString('en-US')} output tokens, set automatically · 5-minute limit.</p>
+            <label className="block text-sm font-medium">Output limit
+              <select disabled={running} value={maxOutputTokens} onChange={event => { outputLimitChanged.current = true; setMaxOutputTokens(Number(event.target.value)); }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm sm:max-w-xs">{PELICAN_OUTPUT_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}</select>
+            </label>
+            <p className="text-sm leading-6 text-muted-foreground">Your last used limit is remembered {signedIn ? 'in your account' : 'on this device'} for the next test. One request · up to {maxOutputTokens.toLocaleString('en-US')} output tokens · 5-minute limit.</p>
             <div className="flex gap-2">
               <Button type="submit" disabled={running} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
               {running && <Button type="button" variant="outline" className="h-11" onClick={() => controller.current?.abort()}>Stop</Button>}
