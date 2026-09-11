@@ -15,6 +15,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
+import { activeConnectionId } from '@/lib/saved-connections';
 import {
   historySlots,
   targetHealth,
@@ -72,6 +73,13 @@ export function AvailabilityMonitor({
   const removalTriggerRef = useRef<HTMLButtonElement>(null);
   const refreshButtonRef = useRef<HTMLButtonElement>(null);
   const [profileId, setProfileId] = useState('');
+  const preferredLoaded = useRef(false);
+  useEffect(() => {
+    if (preferredLoaded.current || !profiles.length) return;
+    preferredLoaded.current = true;
+    const id = activeConnectionId();
+    if (profiles.some(item => item.id === id)) setProfileId(id);
+  }, [profiles]);
   const [chosenApiType, setApiType] = useState<ApiType | null>(null);
   const [clock, setClock] = useState(0);
   const [receivedAt, setReceivedAt] = useState(0);

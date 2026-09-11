@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { PELICAN_PROMPT, extractAnimationHtml, animationPreviewDocument } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
+import { activeConnectionId, rememberConnection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
 
 type Result = {
   answer?: string;
@@ -20,6 +21,8 @@ const SAVED_RESULTS_KEY = 'pelican-animation:saved-results:v1';
 
 export function PelicanTest() {
   const [apiType, setApiType] = useState('openai');
+  const [profiles, setProfiles] = useState<SavedConnection[]>([]);
+  const [profileId, setProfileId] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
@@ -31,6 +34,29 @@ export function PelicanTest() {
   const [saveMessage, setSaveMessage] = useState('');
   const [resultModel, setResultModel] = useState('');
   const controller = useRef<AbortController | null>(null);
+  function chooseConnection(id: string, list = profiles) {
+    const profile = list.find(item => item.id === id);
+    setProfileId(profile?.id ?? '');
+    rememberConnection(profile?.id ?? '');
+    setApiKey('');
+    if (profile) {
+      setApiType(profile.defaultApiType);
+      setBaseUrl(profile.configs[profile.defaultApiType].baseUrl);
+      setModel(profile.configs[profile.defaultApiType].model);
+    }
+  }
+  useEffect(() => {
+    let alive = true;
+    void connectionRequest<{ user: unknown }>('/api/session').then(async session => {
+      if (!session.user) return;
+      const data = await connectionRequest<{ profiles: SavedConnection[] }>('/api/profiles');
+      if (!alive) return;
+      setProfiles(data.profiles);
+      const id = activeConnectionId();
+      if (data.profiles.some(item => item.id === id)) chooseConnection(id, data.profiles);
+    }).catch(() => { if (alive) setError('Could not load saved connections. Use a one-time connection or reload.'); });
+    return () => { alive = false; };
+  }, []);
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
     try {
@@ -57,7 +83,7 @@ export function PelicanTest() {
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testKind: 'pelican', apiType, baseUrl: checked.baseUrl, apiKey: apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
+        body: JSON.stringify({ testKind: 'pelican', apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
         signal: abort.signal,
       });
       const data = await response.json() as Result;
@@ -99,32 +125,43 @@ export function PelicanTest() {
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-[1480px] px-4 py-6 sm:px-6 lg:px-10">
-        <a href="/" className="text-sm font-semibold text-primary hover:underline">← API Diagnostics</a>
+        <nav className="flex justify-between gap-4"><a href="/" className="text-sm font-semibold text-primary hover:underline">← API Diagnostics</a><a href="/connections" className="text-sm font-semibold text-primary hover:underline">Manage connections</a></nav>
         <header className="my-6 border-b border-border pb-6">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Pelican Animation Test</h1>
           <p className="mt-2 text-base text-muted-foreground">Give a model the same drawing challenge, then see its animation. No sign-in required.</p>
         </header>
-        <div className="grid items-start gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="space-y-5">
           <form onSubmit={start} className="space-y-5 rounded-2xl border border-border bg-card p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">Your connection</h2>
-            <fieldset disabled={running} className="space-y-4">
+            <fieldset disabled={running} className="grid gap-4 md:grid-cols-3">
+              <label className="block text-sm font-medium">Connection
+                <select value={profileId} onChange={event => chooseConnection(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
+                  <option value="">One-time connection</option>
+                  {profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                </select>
+              </label>
               <label className="block text-sm font-medium">API format
-                <select value={apiType} onChange={event => setApiType(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
+                <select value={apiType} onChange={event => {
+                  const type = event.target.value as ConnectionApiType;
+                  setApiType(type);
+                  const config = profiles.find(item => item.id === profileId)?.configs[type];
+                  if (config) { setBaseUrl(config.baseUrl); setModel(config.model); }
+                }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
                   <option value="openai">OpenAI-compatible</option>
                   <option value="anthropic">Anthropic-compatible</option>
                 </select>
               </label>
-              <label className="block text-sm font-medium">Base URL
-                <Input className="mt-2 h-10" type="url" required value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://your-provider.com/v1" />
-              </label>
-              <label className="block text-sm font-medium">API key
-                <Input className="mt-2 h-10" type="password" autoComplete="off" required minLength={8} maxLength={512} value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder="Enter your API key" />
-              </label>
               <label className="block text-sm font-medium">Model name
-                <Input className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />
+                {profileId ? <select value={model} onChange={event => setModel(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">{profiles.find(item => item.id === profileId)?.configs[apiType as ConnectionApiType].models.map(name => <option key={name} value={name}>{name}</option>)}</select> : <Input className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />}
               </label>
             </fieldset>
-            <p className="text-sm leading-6 text-muted-foreground">Your key is sent through this site's relay to your provider for this request. Your key is never saved by this test. Results are saved in this browser only when you choose Save result.</p>
+            {!profileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><fieldset disabled={running} className="mt-4 grid gap-4 md:grid-cols-2"><label className="block text-sm font-medium">Base URL
+                <Input className="mt-2 h-10" type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://your-provider.com/v1" />
+              </label>
+              <label className="block text-sm font-medium">API key
+                <Input className="mt-2 h-10" type="password" autoComplete="off" minLength={8} maxLength={512} value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder="Enter your API key" />
+              </label>
+            </fieldset></details>}
+            <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <a href="/connections" className="font-semibold text-primary underline">Connections page</a>.</p>
             <p className="text-sm leading-6 text-muted-foreground">One request · up to 8,192 output tokens · 3-minute limit. Your provider may charge for usage.</p>
             <div className="flex gap-2">
               <Button type="submit" disabled={running} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>

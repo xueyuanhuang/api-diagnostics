@@ -1,5 +1,6 @@
 'use client';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
+import { activeConnectionId, rememberConnection } from '@/lib/saved-connections';
 import { validateBaseUrl } from '@/lib/server/connection';
 /* oxlint-disable react/react-compiler */
 
@@ -675,6 +676,13 @@ export function TokenCheckApp({
   const liveRunMessage =
     liveJob?.message ?? 'Ready for a new 12-question check.';
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const preferredLoaded = useRef(false);
+  useEffect(() => {
+    if (preferredLoaded.current || !profiles.length) return;
+    preferredLoaded.current = true;
+    const id = activeConnectionId();
+    if (profiles.some(item => item.id === id)) selectProfile(id);
+  }, [profiles]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [profileName, setProfileName] = useState('');
   const [profileModels, setProfileModels] =
@@ -981,7 +989,7 @@ export function TokenCheckApp({
         setUser(session.user);
         if (!session.user) return;
         return Promise.all([
-          jsonFetch<{ profiles: Profile[] }>('/api/profiles'),
+          jsonFetch<{ profiles: Profile[] }>('/api/profiles').then(data => { setProfiles(data.profiles); return data; }),
           jsonFetch<{ runs: Array<Omit<RunSummary, 'testKind'>> }>('/api/runs'),
           jsonFetch<{ runs: RpmRunSummary[] }>('/api/rpm-runs'),
           jsonFetch<{ runs: DiagnosticRunSummary[] }>('/api/diagnostic-runs'),
@@ -1221,6 +1229,7 @@ export function TokenCheckApp({
   function selectProfile(id: string) {
     if (controlsLocked || profileBusy) return;
     setSelectedProfileId(id);
+    rememberConnection(id);
     setSelectedModels([]);
     setProfileMessage('');
     setProfileDirty(false);
@@ -1831,6 +1840,8 @@ export function TokenCheckApp({
           )}
         </header>
 
+        <nav className="mb-5 flex justify-end"><a href="/connections" className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-semibold text-primary hover:bg-muted">Manage connections</a></nav>
+
         <section
           className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3"
           aria-label="Choose a test"
@@ -1956,319 +1967,38 @@ export function TokenCheckApp({
             signInPath={signInPath}
             profiles={profiles}
             active={testMode === 'availability'}
-            onConnections={() => showCurrent('normal')}
+            onConnections={() => { window.location.href = '/connections'; }}
           />
         </div>
 
         <section
           style={testMode === 'availability' ? { display: 'none' } : undefined}
-          className="grid gap-5 xl:grid-cols-[390px_minmax(0,1fr)]"
+          className="space-y-5"
         >
-          <aside className="self-start rounded-2xl border border-border bg-card p-5 shadow-[0_18px_50px_rgb(15_23_42/0.06)] xl:sticky xl:top-6">
-            <div className="mb-5 flex items-start justify-between gap-4">
-              <div>
-                <p className="text-sm font-semibold">Connection</p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  Base URL and model are remembered on this device.
-                </p>
-              </div>
-              <ShieldCheck className="size-5 text-emerald-600" />
+          <form onSubmit={testMode === 'normal' ? runTests : event => event.preventDefault()} className="space-y-4 rounded-2xl border border-border bg-card p-4 shadow-sm">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="min-w-48 flex-1 text-sm font-medium">Connection
+                <select value={selectedProfileId} onChange={event => selectProfile(event.target.value)} disabled={controlsLocked || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
+                  <option value="">One-time connection</option>
+                  {profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                </select>
+              </label>
+              <label className="min-w-44 text-sm font-medium">API format
+                <select value={apiType} onChange={event => chooseType(event.target.value as ApiType)} disabled={controlsLocked || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
+              </label>
+              <label className="min-w-48 flex-1 text-sm font-medium">Model
+                {selectedProfileId ? <select value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">{activeProfileModels.map(item => <option key={item} value={item}>{item}</option>)}</select> : <Input className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} placeholder="Model name" />}
+              </label>
+              <a href="/connections" className="inline-flex h-10 items-center rounded-lg border border-border px-4 text-sm font-semibold text-primary hover:bg-muted">Manage connections</a>
+              {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
+              {testMode === 'normal' && ['running', 'queued', 'stopping'].includes(liveNormalPhase) && <Button key="normal-stop" type="button" variant="outline" className="h-10" onClick={stopNormalTest} disabled={liveNormalPhase === 'stopping'}>{liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop selected model'}</Button>}
             </div>
-
-            {user ? (
-              <div className="mb-4 space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/55 p-3">
-                <label className="block space-y-1.5 text-xs font-medium text-emerald-950">
-                  Saved connection
-                  <select
-                    value={selectedProfileId}
-                    onChange={(event) => selectProfile(event.target.value)}
-                    disabled={controlsLocked || profileBusy}
-                    className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-xs outline-none focus:ring-2 focus:ring-emerald-500/30"
-                  >
-                    <option value="">New / one-time connection</option>
-                    {profiles.map((profile) => (
-                      <option key={profile.id} value={profile.id}>
-                        {profile.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label
-                  htmlFor="profile-name"
-                  className="block space-y-1.5 text-xs font-medium text-emerald-950"
-                >
-                  {testMode === 'normal'
-                    ? 'Connection / history name'
-                    : 'Save as name'}
-                  <Input
-                    id="profile-name"
-                    maxLength={80}
-                    value={profileName}
-                    onChange={(event) => {
-                      setProfileName(event.target.value);
-                      if (selectedProfileId) setProfileDirty(true);
-                    }}
-                    disabled={controlsLocked || profileBusy}
-                    placeholder="e.g. WorldRouter"
-                    className="h-9 bg-white text-xs"
-                  />
-                </label>
-                <p className="text-[10px] leading-4 text-emerald-900/75">
-                  {testMode === 'normal'
-                    ? 'This name labels your test history. Save profile separately to remember the connection and encrypted key.'
-                    : 'One saved connection stores both API types.'}
-                </p>
-              </div>
-            ) : (
-              <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-xs leading-5 text-blue-950">
-                <a
-                  href={signInPath}
-                  target="_top"
-                  className="font-semibold underline underline-offset-2"
-                >
-                  Sign in with ChatGPT
-                </a>{' '}
-                to save encrypted connection profiles and test history.
-                Anonymous testing still works.
-              </div>
-            )}
-
-            <form
-              onSubmit={
-                testMode === 'normal'
-                  ? runTests
-                  : (event) => event.preventDefault()
-              }
-              className="space-y-4"
-            >
-              <fieldset
-                disabled={controlsLocked || profileBusy}
-                className="space-y-1.5"
-              >
-                <legend className="text-xs font-medium text-muted-foreground">
-                  {testMode === 'endpoints'
-                    ? 'Connection configuration'
-                    : 'API type'}
-                </legend>
-                <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted/70 p-1">
-                  {(['anthropic', 'openai'] as const).map((item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      onClick={() => chooseType(item)}
-                      aria-pressed={apiType === item}
-                      className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-2 text-xs font-semibold transition-colors ${apiType === item ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-                    >
-                      {item === 'anthropic' ? (
-                        <Bot className="size-3.5" />
-                      ) : (
-                        <Code2 className="size-3.5" />
-                      )}
-                      {item === 'anthropic' ? 'Anthropic' : 'OpenAI'}
-                    </button>
-                  ))}
-                </div>
-                <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
-                  {testMode === 'endpoints'
-                    ? 'Select the connection configuration to use. All tested endpoints use this same base URL, model and key.'
-                    : 'Switching keeps your connection details. Each API type can be edited and saved separately.'}
-                </span>
-              </fieldset>
-
-              <label
-                htmlFor="base-url"
-                className="block space-y-1.5 text-xs font-medium text-muted-foreground"
-              >
-                Base URL
-                <Input
-                  id="base-url"
-                  name="base_url"
-                  type="url"
-                  autoComplete="url"
-                  value={baseUrl}
-                  onChange={(event) => {
-                    updateConnection({ baseUrl: event.target.value });
-                    markDraftTouched(['baseUrl']);
-                    if (selectedProfileId) setProfileDirty(true);
-                  }}
-                  disabled={controlsLocked || profileBusy}
-                  placeholder={
-                    apiType === 'anthropic'
-                      ? 'https://api.anthropic.com'
-                      : 'https://api.openai.com/v1'
-                  }
-                  className="h-10 bg-background font-mono text-xs"
-                />
-                <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
-                  {testMode === 'endpoints'
-                    ? 'Use the provider root, /v1, or a full Messages, Chat Completions or Responses URL. The comparison uses the correct path for each endpoint.'
-                    : 'Use the provider root. The tester adds the correct Messages or Chat Completions path.'}{' '}
-                  Public HTTP/HTTPS URLs and custom ports are supported; HTTPS
-                  is recommended.
-                </span>
-                <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                  Signed-in users can paste a public HTTP IPv4 address directly.
-                  The tester prepares a DNS-only hostname before measuring;
-                  first use may take a few seconds. The actual URL appears in
-                  request details and exports. HTTPS IPs need the provider’s
-                  certificate-matching hostname.
-                </span>
-              </label>
-
-              {isInsecureHttp(baseUrl) && (
-                <Alert className="border-amber-300 bg-amber-50">
-                  <AlertTriangle className="size-4" />
-                  <AlertTitle>Unencrypted HTTP connection</AlertTitle>
-                  <AlertDescription>
-                    Your API key, prompts, and responses will travel unencrypted
-                    from the relay to this provider. Use HTTPS if available. You
-                    must confirm this risk before saving or starting a test.
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              <label
-                htmlFor="model-name"
-                className="block space-y-1.5 text-xs font-medium text-muted-foreground"
-              >
-                Model
-                {selectedProfileId && activeProfileModels.length ? (
-                  <select
-                    id="model-name"
-                    value={model}
-                    onChange={(event) => {
-                      updateConnection({ model: event.target.value });
-                      markDraftTouched(['model']);
-                      setProfileDirty(true);
-                    }}
-                    disabled={
-                      isRpmRunning ||
-                      isBoundaryRunning ||
-                      isEndpointRunning ||
-                      profileBusy
-                    }
-                    className="h-10 w-full rounded-lg border border-input bg-background px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring/30"
-                  >
-                    {activeProfileModels.map((item) => (
-                      <option key={item} value={item}>
-                        {item}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <Input
-                    id="model-name"
-                    name="model"
-                    value={model}
-                    onChange={(event) => {
-                      updateConnection({ model: event.target.value });
-                      markDraftTouched(['model']);
-                      if (selectedProfileId) setProfileDirty(true);
-                    }}
-                    disabled={
-                      isRpmRunning ||
-                      isBoundaryRunning ||
-                      isEndpointRunning ||
-                      profileBusy
-                    }
-                    placeholder={
-                      apiType === 'anthropic'
-                        ? 'e.g. claude-sonnet-4-6'
-                        : 'Enter the provider model name'
-                    }
-                    className="h-10 bg-background font-mono text-xs"
-                  />
-                )}
-              </label>
-
-              {user ? (
-                <div className="space-y-2 rounded-xl border border-border/70 bg-muted/35 p-3">
-                  <p className="text-xs font-medium">
-                    Models saved for{' '}
-                    {apiType === 'anthropic' ? 'Anthropic' : 'OpenAI'}
-                  </p>
-                  {activeProfileModels.length ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {activeProfileModels.map((item) => (
-                        <span
-                          key={item}
-                          className="inline-flex items-center gap-1 rounded-md border border-border bg-white px-2 py-1 font-mono text-[10px]"
-                        >
-                          {item}
-                          <button
-                            type="button"
-                            onClick={() => removeModel(item)}
-                            disabled={controlsLocked || profileBusy}
-                            aria-label={`Remove ${item}`}
-                            className="text-muted-foreground hover:text-rose-700"
-                          >
-                            <X className="size-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-muted-foreground">
-                      The current model is included when you save.
-                    </p>
-                  )}
-                  <div className="flex gap-2">
-                    <Input
-                      value={newModel}
-                      onChange={(event) => setNewModel(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          addModel();
-                        }
-                      }}
-                      disabled={
-                        isRpmRunning ||
-                        isBoundaryRunning ||
-                        isEndpointRunning ||
-                        profileBusy
-                      }
-                      placeholder="Add another model"
-                      className="h-8 bg-white font-mono text-[11px]"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={addModel}
-                      disabled={
-                        !newModel.trim() ||
-                        isRpmRunning ||
-                        isBoundaryRunning ||
-                        isEndpointRunning ||
-                        profileBusy
-                      }
-                      className="h-8 gap-1"
-                    >
-                      <Plus className="size-3" /> Add
-                    </Button>
-                  </div>
-                  {selectedProfileId && testMode === 'normal' ? (
-                    <div className="space-y-2">
-                      <p className="text-sm text-muted-foreground">
-                        Batch models are saved automatically for this connection
-                        and API type before testing.
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={controlsLocked || profileBusy}
-                        onClick={() => void restoreHistoryModels()}
-                      >
-                        Restore models from history
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {testMode === 'normal' ? (
+            {!selectedProfileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><div className="mt-3 grid gap-4 md:grid-cols-3">
+              <label className="text-sm font-medium">Base URL<Input className="mt-2 h-10" value={baseUrl} onChange={event => updateConnection({ baseUrl: event.target.value })} disabled={controlsLocked} placeholder="https://your-provider.com/v1" /></label>
+              <label className="text-sm font-medium">API key<Input className="mt-2 h-10" type="password" autoComplete="off" value={apiKey} onChange={event => updateApiKey(event.target.value)} disabled={controlsLocked} placeholder="Enter your key for this test" /></label>
+              <label className="text-sm font-medium">History name (optional)<Input className="mt-2 h-10" value={profileName} onChange={event => setProfileName(event.target.value)} disabled={controlsLocked} /></label>
+            </div><p className="mt-3 text-sm text-muted-foreground">One-time keys are not saved. Use Connections to save an encrypted key for every test.</p></details>}
+            {testMode === 'normal' && <details><summary className="cursor-pointer text-sm font-medium">Multiple models and parallel requests</summary><div className="mt-3">              {testMode === 'normal' ? (
                 <fieldset
                   disabled={
                     isRpmRunning ||
@@ -2297,7 +2027,7 @@ export function TokenCheckApp({
                       Clear selection
                     </button>
                   </div>
-                  <div className="max-h-56 space-y-2 overflow-y-auto">
+                  <div className="flex max-h-56 flex-wrap gap-4 overflow-y-auto">
                     {modelChoices.map((name) => (
                       <label
                         key={name}
@@ -2353,175 +2083,10 @@ export function TokenCheckApp({
                   ) : null}
                 </fieldset>
               ) : null}
-
-              <label
-                htmlFor="api-key"
-                className="block space-y-1.5 text-xs font-medium text-muted-foreground"
-              >
-                API key
-                <div className="relative">
-                  <KeyRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    id="api-key"
-                    name="api_key"
-                    type={showKey ? 'text' : 'password'}
-                    autoComplete="off"
-                    value={apiKey}
-                    onChange={(event) => {
-                      updateApiKey(event.target.value);
-                      if (selectedProfileId) setProfileDirty(true);
-                    }}
-                    disabled={controlsLocked || profileBusy}
-                    placeholder={
-                      selectedProfileConfig?.hasSavedKey
-                        ? 'Saved securely — enter only to replace'
-                        : 'Paste your own key'
-                    }
-                    className="h-10 bg-background pl-9 pr-10 font-mono text-xs"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey((current) => !current)}
-                    className="absolute right-2 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                    aria-label={showKey ? 'Hide API key' : 'Show API key'}
-                  >
-                    {showKey ? (
-                      <EyeOff className="size-4" />
-                    ) : (
-                      <Eye className="size-4" />
-                    )}
-                  </button>
-                </div>
-              </label>
-
-              {user ? (
-                <div className="grid grid-cols-[1fr_auto] gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={saveProfile}
-                    disabled={
-                      profileBusy ||
-                      controlsLocked ||
-                      !profileName.trim() ||
-                      !baseUrl.trim() ||
-                      !model.trim() ||
-                      (!selectedProfileId && !apiKey.trim()) ||
-                      (Boolean(selectedProfileId) && !profileDirty)
-                    }
-                    className="h-9 gap-2"
-                  >
-                    <Save className="size-3.5" />
-                    {selectedProfileId
-                      ? profileDirty
-                        ? 'Save changes'
-                        : 'Profile saved'
-                      : 'Save profile'}
-                  </Button>
-                  {selectedProfileId ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={deleteProfile}
-                      disabled={profileBusy || controlsLocked}
-                      className="h-9 px-3 text-rose-700 hover:text-rose-800"
-                      aria-label="Delete profile"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {profileMessage ? (
-                <p className="text-[11px] leading-4 text-muted-foreground">
-                  {profileMessage}
-                </p>
-              ) : null}
-              {formError ? (
-                <Alert variant="destructive" className="px-3 py-2.5">
-                  <AlertTriangle />
-                  <AlertTitle>Check your settings</AlertTitle>
-                  <AlertDescription>{formError}</AlertDescription>
-                </Alert>
-              ) : null}
-              {testMode !== 'normal' ? (
-                <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-xs leading-5 text-blue-950">
-                  {testMode === 'endpoints'
-                    ? 'Choose endpoints and start the comparison on the right. Results stay in this tab and can be downloaded as raw JSON.'
-                    : testMode === 'boundary'
-                      ? 'Tool-boundary settings and the start control are shown with the results. These probes stay in this tab and can be downloaded as raw JSON.'
-                      : 'RPM ramp settings and the start control are shown with the live results on the right.'}
-                </div>
-              ) : (
-                <>
-                  <p
-                    className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-sm text-blue-950"
-                    aria-live="polite"
-                  >
-                    {user ? (
-                      <>
-                        Results will be saved under:{' '}
-                        <strong>
-                          {selectedProfile?.name ||
-                            profileName.trim() ||
-                            'One-time connection'}
-                        </strong>
-                        .
-                        {!selectedProfileId && !profileName.trim()
-                          ? ' Enter a name above to make them easy to find.'
-                          : ''}
-                      </>
-                    ) : (
-                      'Sign in to save results to history; otherwise they remain in this tab.'
-                    )}
-                  </p>
-                  <Button
-                    key="normal-run"
-                    type="submit"
-                    disabled={
-                      isRpmRunning ||
-                      isBoundaryRunning ||
-                      isEndpointRunning ||
-                      profileBusy ||
-                      !modelsToEnqueue.length
-                    }
-                    className="h-11 w-full gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
-                  >
-                    <Play className="size-4 fill-current" />{' '}
-                    {isRunning
-                      ? `Add to queue (${modelsToEnqueue.length})`
-                      : selectedModels.length
-                        ? `Test selected models (${selectedModels.length})`
-                        : 'Run 12-question check'}
-                  </Button>
-                  {liveNormalPhase === 'running' ||
-                  liveNormalPhase === 'queued' ||
-                  liveNormalPhase === 'stopping' ? (
-                    <Button
-                      key="normal-stop"
-                      type="button"
-                      variant="outline"
-                      className="h-11 w-full gap-2"
-                      onClick={stopNormalTest}
-                      disabled={liveNormalPhase === 'stopping'}
-                    >
-                      <Square className="size-3.5 fill-current" />{' '}
-                      {liveNormalPhase === 'stopping'
-                        ? 'Stopping…'
-                        : 'Stop selected model'}
-                    </Button>
-                  ) : null}
-                </>
-              )}
-            </form>
-
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/75 p-3 text-xs leading-5 text-amber-950">
-              <strong>Key handling:</strong> one-time keys only pass through the
-              relay while testing. Saved keys are encrypted on the server and
-              never shown again. Use a temporary, low-limit key.
-            </div>
-          </aside>
+</div></details>}
+            {profileMessage && <p role="status" className="text-sm text-muted-foreground">{profileMessage}</p>}
+            {formError && <p role="alert" className="text-sm text-destructive">{formError}</p>}
+          </form>
 
           <div className="min-w-0 space-y-5">
             {controlsLocked ||
