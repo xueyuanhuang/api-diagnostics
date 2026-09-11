@@ -27,7 +27,7 @@ TABLES = ['test_runs', 'test_results', 'rpm_runs', 'rpm_stages',
 
 
 def request(url, method='GET', data=None, headers=None):
-    for attempt in range(3):
+    for attempt in range(8):
         try:
             if url == SOURCE or url == 'https://api-diagnostics.xue-yuanhuang.workers.dev/api/migration/evidence':
                 script="let input='';for await(const c of process.stdin)input+=c;const a=JSON.parse(input);const r=await fetch(a.url,{method:a.method,headers:a.headers,body:Buffer.from(a.data,'base64'),redirect:'manual'});if(!r.ok){process.stderr.write('HTTP '+r.status);process.exit(1)}process.stdout.write(Buffer.from(await r.arrayBuffer()));"
@@ -40,13 +40,13 @@ def request(url, method='GET', data=None, headers=None):
             with urlopen(Request(url, data=data, headers=headers or {}, method=method), timeout=90) as response:
                 return response.read()
         except HTTPError as error:
-            if error.code not in (429,500,502,503,504) or attempt==2:
+            if error.code not in (429,500,502,503,504) or attempt==7:
                 raise RuntimeError('Migration endpoint returned HTTP '+str(error.code)) from None
-            time.sleep(2 ** attempt)
+            time.sleep(min(30, 2 ** attempt))
         except Exception:
-            if attempt == 2:
+            if attempt == 7:
                 raise RuntimeError('Migration request failed; no credentials or records were logged.') from None
-            time.sleep(2 ** attempt)
+            time.sleep(min(30, 2 ** attempt))
 
 
 def main():
@@ -178,13 +178,20 @@ def main():
         response=json.loads(request('https://api-diagnostics.xue-yuanhuang.workers.dev/api/migration/evidence','POST',payload,{'Content-Type':'application/json'}))
         if response.get('verified')!=len(objects): raise RuntimeError('Evidence batch verification failed.')
         return len(batch)
-    batches=[sorted(keys)[i:i+10] for i in range(0,len(keys),10)]
-    verified=0
-    pool=ThreadPoolExecutor(max_workers=12)
-    futures=[pool.submit(copy_batch,batch) for batch in batches]
+    checkpoint = Path('/tmp/api-diagnostics-migration-verified.json')
+    completed = set(json.loads(checkpoint.read_text())) & keys if checkpoint.exists() else set()
+    remaining = sorted(keys - completed)
+    batches=[remaining[i:i+10] for i in range(0,len(remaining),10)]
+    verified=len(completed)
+    pool=ThreadPoolExecutor(max_workers=6)
+    futures={pool.submit(copy_batch,batch): batch for batch in batches}
     try:
         for future in as_completed(futures):
             verified+=future.result()
+            completed.update(futures[future])
+            temporary = checkpoint.with_suffix(".pending")
+            temporary.write_text(json.dumps(sorted(completed)))
+            temporary.replace(checkpoint)
             if verified%100==0 or verified==len(keys):
                 print('Verified evidence',verified,'of',len(keys),flush=True)
     except BaseException:
