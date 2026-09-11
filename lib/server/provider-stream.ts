@@ -9,6 +9,7 @@ export type ProviderStreamResult = {
   answer: string;
   usage: JsonRecord;
   returnedModel: string | null;
+  finishReason: string | null;
   ttftMs: number | null;
   generationMs: number | null;
   totalTimeMs: number;
@@ -75,6 +76,7 @@ export async function readProviderStream(
   let answer = '';
   let usage: JsonRecord = {};
   let returnedModel: string | null = null;
+  let finishReason: string | null = null;
   let firstVisibleAt: number | null = null;
   let sawSseData = false;
 
@@ -96,6 +98,7 @@ export async function readProviderStream(
       const choices = Array.isArray(event.choices) ? event.choices : [];
       for (const choice of choices) {
         const choiceRecord = asRecord(choice);
+        if (typeof choiceRecord?.finish_reason === 'string') finishReason = choiceRecord.finish_reason;
         const delta = asRecord(choiceRecord?.delta);
         recordVisibleText(textFromOpenAiContent(delta?.content));
         if (!delta && typeof choiceRecord?.text === 'string')
@@ -117,6 +120,8 @@ export async function readProviderStream(
       recordVisibleText(contentBlock.text);
     }
     const delta = asRecord(event.delta);
+    if (typeof delta?.stop_reason === 'string') finishReason = delta.stop_reason;
+    else if (typeof message?.stop_reason === 'string') finishReason = message.stop_reason;
     if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
       recordVisibleText(delta.text);
     }
@@ -157,10 +162,12 @@ export async function readProviderStream(
       usage = mergeUsage(usage, parsed.usage);
       if (apiType === 'anthropic') {
         answer = textFromAnthropicContent(parsed.content);
+        if (typeof parsed.stop_reason === 'string') finishReason = parsed.stop_reason;
       } else {
         const firstChoice = Array.isArray(parsed.choices)
           ? asRecord(parsed.choices[0])
           : null;
+        if (typeof firstChoice?.finish_reason === 'string') finishReason = firstChoice.finish_reason;
         const message = asRecord(firstChoice?.message);
         answer = textFromOpenAiContent(message?.content);
       }
@@ -181,6 +188,7 @@ export async function readProviderStream(
     answer: redactSecret(answer, apiKey),
     usage,
     returnedModel,
+    finishReason,
     ttftMs,
     generationMs,
     totalTimeMs,

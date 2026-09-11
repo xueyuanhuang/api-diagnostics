@@ -3,6 +3,8 @@ export type AnimationResult = {
   error?: string;
   returnedModel?: string | null;
   outputTokens?: number | null;
+  maxOutputTokens?: number | null;
+  finishReason?: string | null;
   totalInputTokens?: number | null;
   totalTimeMs?: number | null;
 };
@@ -23,6 +25,8 @@ export function parseAnimation(value: unknown): SavedAnimation | null {
     result: {
       answer: result.answer,
       returnedModel: typeof result.returnedModel === 'string' ? result.returnedModel.slice(0, 200) : null,
+      finishReason: typeof result.finishReason === 'string' ? result.finishReason.slice(0, 80) : null,
+      maxOutputTokens: metric('maxOutputTokens'),
       outputTokens: metric('outputTokens'), totalInputTokens: metric('totalInputTokens'), totalTimeMs: metric('totalTimeMs'),
     },
   };

@@ -56,3 +56,15 @@ test('pagination retains results sharing the same timestamp', async () => {
     assert.equal(new Set([...first, ...second].map(item => item.id)).size, 105);
   } finally { sqlite.close(); }
 });
+
+test('saved completion metadata survives reload without rewriting a clipped answer', async () => {
+  const { storage, sqlite } = fixture();
+  try {
+    const value = parseAnimation({ ...animation(), result: { answer: '<svg><defs>', outputTokens: 16384, maxOutputTokens: 16384, finishReason: 'max_tokens' } });
+    await saveAnimation(storage, 'owner', value);
+    const restored = await readAnimation(storage, 'owner', value.id);
+    assert.equal(restored.result.answer, '<svg><defs>');
+    assert.equal(restored.result.finishReason, 'max_tokens');
+    assert.equal(restored.result.maxOutputTokens, 16384);
+  } finally { sqlite.close(); }
+});

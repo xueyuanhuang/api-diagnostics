@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { chatGPTSignInPath } from '@/lib/auth-paths';
 import { type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
-import { PELICAN_PROMPT, extractAnimationHtml, animationPreviewDocument } from '@/lib/pelican-test';
+import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_LIMITS, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import { activeConnectionId, rememberConnection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
@@ -20,6 +20,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
+  const [maxOutputTokens, setMaxOutputTokens] = useState<number>(PELICAN_MAX_TOKENS);
   const [running, setRunning] = useState(false);
   useEffect(() => { onRunningChange?.(running); }, [running, onRunningChange]);
   const [error, setError] = useState('');
@@ -92,6 +93,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
     return () => window.removeEventListener('connections-refresh', refresh);
   }, [profileId]);
   const html = extractAnimationHtml(result?.answer ?? '');
+  const warning = result ? animationWarning(html, result) : null;
 
   async function start(event: React.FormEvent) {
     event.preventDefault();
@@ -112,7 +114,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testKind: 'pelican', animationId: resultId.current, apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
+        body: JSON.stringify({ testKind: 'pelican', maxOutputTokens, animationId: resultId.current, apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
         signal: abort.signal,
       });
       const data = await response.json() as Result;
@@ -216,7 +218,10 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
               </label>
             </fieldset></details>}
             <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <Link href="/connections" className="font-semibold text-primary underline">Connections page</Link>.</p>
-            <p className="text-sm leading-6 text-muted-foreground">One request · up to 8,192 output tokens · 3-minute limit. Your provider may charge for usage.</p>
+            <label className="block text-sm font-medium">Output limit
+              <select disabled={running} value={maxOutputTokens} onChange={event => setMaxOutputTokens(Number(event.target.value))} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm sm:max-w-xs">{PELICAN_OUTPUT_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}</select>
+            </label>
+            <p className="text-sm leading-6 text-muted-foreground">One request · up to {maxOutputTokens.toLocaleString('en-US')} output tokens · 5-minute limit. A higher limit gives the model more room to finish and may cost more. Your provider must support the selected limit.</p>
             <div className="flex gap-2">
               <Button type="submit" disabled={running} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
               {running && <Button type="button" variant="outline" className="h-11" onClick={() => controller.current?.abort()}>Stop</Button>}
@@ -252,13 +257,14 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
                   {html && <Button variant="outline" onClick={download}>Download HTML</Button>}
                 </div>
               </div>
+              {warning && <div role="alert" className="border-b border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-6 text-amber-950"><strong className="block">Incomplete animation response</strong>{warning}</div>}
               {html ? <iframe title="Generated pelican animation" sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={animationPreviewDocument(html)} className="h-[540px] w-full border-0 bg-white" /> : <div className="flex min-h-72 items-center justify-center p-8 text-center text-base text-muted-foreground" role="status">{running ? 'The model is drawing. Its animation will appear when the response finishes.' : result?.answer ? 'No HTML or SVG was found. Read the model response below.' : 'Enter your connection and run the test to see what your model creates.'}</div>}
               {html && <p className="border-t border-border px-5 py-3 text-sm text-muted-foreground">Preview is isolated; external resources are blocked. If incomplete, inspect the response below.</p>}
             </section>
             {saveMessage && <p role="status" className="text-sm">{saveMessage}</p>}
             {result && <section className="space-y-4 rounded-2xl border border-border bg-card p-5">
               <p className="break-words text-sm text-muted-foreground">Model: {result.returnedModel || resultModel} · Input: {result.totalInputTokens ?? '—'} tokens · Output: {result.outputTokens ?? '—'} tokens · {result.totalTimeMs == null ? '—' : (result.totalTimeMs / 1000).toFixed(1)} seconds</p>
-              {result.outputTokens != null && result.outputTokens >= 8192 && <p role="status" className="text-sm">The output limit was reached; the animation may be incomplete.</p>}
+
               <details><summary className="cursor-pointer text-base font-semibold">Model response / HTML source</summary><pre className="mt-4 max-h-[500px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm">{result.answer || 'No visible answer returned.'}</pre></details>
             </section>}
           </div>

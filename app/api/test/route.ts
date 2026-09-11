@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { NextRequest } from 'next/server';
 import { saveAnimation } from '@/lib/server/animation-store';
-import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_TIMEOUT_MS } from '@/lib/pelican-test';
+import { PELICAN_PROMPT, pelicanOutputLimit, PELICAN_TIMEOUT_MS } from '@/lib/pelican-test';
 
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import {
@@ -18,6 +18,7 @@ import { resolveHostedConnection } from '@/lib/server/hosted-ip-mapping';
 type RequestPayload = {
   testKind?: unknown;
   animationId?: unknown;
+  maxOutputTokens?: unknown;
   allowInsecureHttp?: unknown;
   profileId?: unknown;
   apiType?: unknown;
@@ -99,6 +100,8 @@ export async function POST(request: NextRequest) {
     return noStore({ error: 'Invalid request body.' }, { status: 400 });
   }
   const isPelican = payload.testKind === 'pelican';
+  const maxOutputTokens = isPelican ? pelicanOutputLimit(payload.maxOutputTokens) : 96;
+  if (maxOutputTokens === null) return noStore({ error: 'Choose an output limit of 8,192, 16,384, or 32,768 tokens.' }, { status: 400 });
   const timeoutMs = isPelican ? PELICAN_TIMEOUT_MS : 45_000;
   const prompt = isPelican ? PELICAN_PROMPT : typeof payload.prompt === 'string' ? payload.prompt : '';
   if (!prompt || prompt.length > 1_000) {
@@ -157,7 +160,7 @@ export async function POST(request: NextRequest) {
   const requestUrl = endpointFromBaseUrl(resolved.actualBaseUrl, apiType);
   const requestBody = JSON.stringify({
     model,
-    max_tokens: isPelican ? PELICAN_MAX_TOKENS : 96,
+    max_tokens: maxOutputTokens,
     messages: [{ role: 'user', content: prompt }],
     stream: true,
     ...(apiType === 'openai'
@@ -246,7 +249,7 @@ export async function POST(request: NextRequest) {
           savedAnimation = await saveAnimation(env, user.userId, {
             id: typeof payload.animationId === 'string' && /^[0-9a-f-]{36}$/i.test(payload.animationId) ? payload.animationId : crypto.randomUUID(),
             model, prompt, savedAt: new Date().toISOString(),
-            result: { answer: streamed.answer, returnedModel: streamed.returnedModel, totalInputTokens, outputTokens, totalTimeMs: streamed.totalTimeMs },
+            result: { answer: streamed.answer, finishReason: streamed.finishReason, maxOutputTokens, returnedModel: streamed.returnedModel, totalInputTokens, outputTokens, totalTimeMs: streamed.totalTimeMs },
           });
         } catch {
           saveError = 'The animation completed, but saving to your account failed. Retry saving below.';
@@ -256,6 +259,7 @@ export async function POST(request: NextRequest) {
 
     return noStore({
       savedAnimation,
+      ...(isPelican ? { maxOutputTokens, finishReason: streamed.finishReason } : {}),
       saveError,
       httpStatus: upstream.status,
       returnedModel: streamed.returnedModel,
