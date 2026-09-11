@@ -23,6 +23,9 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const [model, setModel] = useState('');
   const [maxOutputTokens, setMaxOutputTokens] = useState<number>(PELICAN_MAX_TOKENS);
   const outputLimitChanged = useRef(false);
+  const [outputLimitSaving, setOutputLimitSaving] = useState(false);
+  const [outputLimitMessage, setOutputLimitMessage] = useState('');
+  const [preferencesReady, setPreferencesReady] = useState(false);
   useEffect(() => {
     try {
       const saved = localStorage.getItem('pelican-animation:output-limit:v1');
@@ -83,7 +86,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
       setProfiles(data.profiles);
       const id = activeConnectionId();
       if (data.profiles.some(item => item.id === id)) chooseConnection(id, data.profiles);
-    }).catch(() => { if (alive) setError('Could not load saved connections. Use a one-time connection or reload.'); });
+    }).catch(() => { if (alive) setError('Could not load saved connections. Use a one-time connection or reload.'); }).finally(() => { if (alive) setPreferencesReady(true); });
     return () => { alive = false; };
   }, []);
   useEffect(() => () => controller.current?.abort(), []);
@@ -108,9 +111,26 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const html = extractAnimationHtml(result?.answer ?? '');
   const warning = result ? animationWarning(html, result) : null;
 
+  async function changeOutputLimit(limit: number) {
+    outputLimitChanged.current = true;
+    setMaxOutputTokens(limit);
+    setOutputLimitSaving(true);
+    setOutputLimitMessage('Saving output limit…');
+    try {
+      if (signedIn) await connectionRequest('/api/animation-preferences', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxOutputTokens: limit }),
+      });
+      try { localStorage.setItem('pelican-animation:output-limit:v1', String(limit)); }
+      catch { if (!signedIn) throw new Error('Could not remember this setting on this device.'); }
+      setOutputLimitMessage(`Saved. Future tests will use ${limit.toLocaleString('en-US')} tokens until you change it.`);
+    } catch (cause) {
+      setOutputLimitMessage(cause instanceof Error ? cause.message : 'Could not save the output limit. Please try again.');
+    } finally { setOutputLimitSaving(false); }
+  }
+
   async function start(event: React.FormEvent) {
     event.preventDefault();
-    if (controller.current) return;
+    if (controller.current || outputLimitSaving || !preferencesReady) return;
     setError('');
     const checked = validateBaseUrl(baseUrl.trim());
     if ('error' in checked) { setError(checked.error); return; }
@@ -252,11 +272,12 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
             </fieldset></details>}
             <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <Link href="/connections" className="font-semibold text-primary underline">Connections page</Link>.</p>
             <label className="block text-sm font-medium">Output limit
-              <select disabled={running} value={maxOutputTokens} onChange={event => { outputLimitChanged.current = true; setMaxOutputTokens(Number(event.target.value)); }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm sm:max-w-xs">{PELICAN_OUTPUT_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}</select>
+              <select disabled={running || outputLimitSaving || !preferencesReady} value={maxOutputTokens} onChange={event => void changeOutputLimit(Number(event.target.value))} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm sm:max-w-xs">{PELICAN_OUTPUT_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}</select>
             </label>
-            <p className="text-sm leading-6 text-muted-foreground">Your last used limit is remembered {signedIn ? 'in your account' : 'on this device'} for the next test. One request · up to {maxOutputTokens.toLocaleString('en-US')} output tokens · 5-minute limit.</p>
+            <p className="text-sm leading-6 text-muted-foreground">Changes save automatically {signedIn ? 'to your account' : 'on this device'} and apply to future tests until you change them. One request · up to {maxOutputTokens.toLocaleString('en-US')} output tokens · 5-minute limit.</p>
+            {outputLimitMessage && <p role="status" className="text-sm text-muted-foreground">{outputLimitMessage}</p>}
             <div className="flex gap-2">
-              <Button type="submit" disabled={running} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
+              <Button type="submit" disabled={running || outputLimitSaving || !preferencesReady} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
               {running && <Button type="button" variant="outline" className="h-11" onClick={() => controller.current?.abort()}>Stop</Button>}
             </div>
             {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}
