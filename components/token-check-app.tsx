@@ -1,4 +1,5 @@
 'use client';
+import { ModelPicker } from '@/components/model-picker';
 import { WorkspaceLink as Link } from '@/components/workspace-navigation';
 import { useWorkspaceNavigation } from '@/components/workspace-navigation';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
@@ -2008,9 +2009,9 @@ export function TokenCheckApp({
               <label className="min-w-44 text-sm font-medium">API format
                 <select value={apiType} onChange={event => chooseType(event.target.value as ApiType)} disabled={controlsLocked || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
               </label>
-              <label className="min-w-48 flex-1 text-sm font-medium">Model
-                {selectedProfileId ? <select value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">{activeProfileModels.map(item => <option key={item} value={item}>{item}</option>)}</select> : <Input className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} placeholder="Model name" />}
-              </label>
+              <div className="min-w-48 flex-1 text-sm font-medium">Model
+                {selectedProfileId ? <ModelPicker key={`${selectedProfileId}:${apiType}`} value={model} onChange={model => updateConnection({ model })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} models={activeProfileModels} /> : <Input aria-label="Model name" className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} placeholder="Model name" />}
+              </div>
               <Link href="/connections" className="inline-flex h-10 items-center rounded-lg border border-border px-4 text-sm font-semibold text-primary hover:bg-muted">Manage connections</Link>
               {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
               {testMode === 'normal' && ['running', 'queued', 'stopping'].includes(liveNormalPhase) && <Button key="normal-stop" type="button" variant="outline" className="h-10" onClick={stopNormalTest} disabled={liveNormalPhase === 'stopping'}>{liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop selected model'}</Button>}

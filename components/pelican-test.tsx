@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { chatGPTSignInPath } from '@/lib/auth-paths';
 import { animationConnectionLabel, type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
+import { ModelPicker } from '@/components/model-picker';
 import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_LIMITS, pelicanOutputLimit, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
@@ -238,9 +239,9 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
                   <option value="anthropic">Anthropic-compatible</option>
                 </select>
               </label>
-              <label className="block text-sm font-medium">Model name
-                {profileId ? <select value={model} onChange={event => setModel(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">{profiles.find(item => item.id === profileId)?.configs[apiType as ConnectionApiType].models.map(name => <option key={name} value={name}>{name}</option>)}</select> : <Input className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />}
-              </label>
+              <div className="block text-sm font-medium">Model name
+                {profileId ? <ModelPicker key={`${profileId}:${apiType}`} value={model} onChange={setModel} disabled={running} models={profiles.find(item => item.id === profileId)?.configs[apiType as ConnectionApiType].models ?? []} /> : <Input aria-label="Model name" className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />}
+              </div>
             </fieldset>
             {!profileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><fieldset disabled={running} className="mt-4 grid gap-4 md:grid-cols-2"><label className="block text-sm font-medium">Base URL
                 <Input className="mt-2 h-10" type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://your-provider.com/v1" />
