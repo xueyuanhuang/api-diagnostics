@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://normal-token-check.yh-xue-2023.chatgpt.site'),
+  metadataBase: new URL('https://api-diagnostics.xue-yuanhuang.workers.dev'),
   title: 'API Diagnostics',
   description:
     'Check API token usage and measure staged request-rate capacity with saved evidence.',

@@ -38,3 +38,15 @@ export async function DELETE(
     );
   }
 }
+
+export async function PATCH(request: NextRequest, {params}: {params: Promise<{id:string}>}) {
+  const user=await getChatGPTUser();
+  if(!user)return noStore({error:'Sign in to update a target.'},{status:401});
+  if(request.headers.get('origin')!==new URL(request.url).origin)return noStore({error:'Cross-origin changes are not allowed.'},{status:403});
+  try {
+    const body=await request.json() as {paused?: unknown};
+    if(typeof body.paused!=='boolean')return noStore({error:'Choose pause or resume.'},{status:400});
+    await availabilityStore().pause(user.userId,(await params).id,body.paused);
+    return noStore({updated:true});
+  }catch(error){return noStore({error:error instanceof AvailabilityError?error.message:'Target could not be updated.'},{status:error instanceof AvailabilityError?error.status:503});}
+}

@@ -20,6 +20,38 @@ const publicKey = await jose.exportJWK(keys.publicKey);
 const helpers = load('../lib/server/google-auth.ts', { jose: { ...jose, createRemoteJWKSet: () => jose.createLocalJWKSet({keys:[publicKey]}) } });
 const sign = (claims = {}) => new jose.SignJWT({nonce:'nonce', email:'user@example.com', email_verified:true, ...claims}).setProtectedHeader({alg:'RS256'}).setSubject('subject').setIssuer('https://accounts.google.com').setAudience('client').setIssuedAt().setExpirationTime('5m').sign(keys.privateKey);
 
+test('legacy migration binds to the initiating Google session and never reassigns another account link', async()=>{
+  const sqlite=new DatabaseSync(':memory:');
+  sqlite.exec(readFileSync(new URL('../drizzle/0008_powerful_vulture.sql',import.meta.url),'utf8'));
+  sqlite.exec(readFileSync(new URL('../drizzle/0010_special_sleeper.sql',import.meta.url),'utf8'));
+  const DB={prepare(sql){return {bind(...args){return {first:async()=>sqlite.prepare(sql).get(...args)??null,run:async()=>sqlite.prepare(sql).run(...args)};}};}};
+  let imports=0,exchanges=0,stagedObject=null;
+  const env={DB,APP_ORIGIN:'https://app.example',EVIDENCE:{get:async()=>stagedObject,put:async()=>{},delete:async()=>{stagedObject=null;}}};
+  const callback=load('../app/auth/chatgpt/callback/route.ts',{'cloudflare:workers':{env},'@/lib/server/google-auth':helpers,'@/lib/server/encryption':{encryptApiKey:async()=>({})},'@/lib/server/import-chatgpt':{importChatGPTConnections:async(_db,user)=>{assert.equal(user,'google:owner');imports++;}}},async()=>{exchanges++;return Response.json({user:{userId:'old-owner',email:'owner@example.com'},profiles:[]});});
+  const flow='f'.repeat(43),session='s'.repeat(43);
+  const request=new Request('https://app.example/migration/complete?import_code=code&import_state=state',{headers:{cookie:`${helpers.FLOW_COOKIE}=${flow}; ${helpers.SESSION_COOKIE}=${session}`}});
+  const addFlow=async()=>sqlite.prepare('INSERT OR REPLACE INTO auth_flows VALUES (?,?,?,?,?,?)').run(await helpers.tokenHash(flow),'state','verifier','import:google:owner','/',Date.now()+60000);
+  try{
+    sqlite.prepare('INSERT INTO auth_sessions VALUES (?,?,?,?,?)').run(await helpers.tokenHash(session),'google:other','other@example.com',null,Date.now()+60000);
+    await addFlow();assert.equal((await callback.GET(request)).status,400);assert.equal(exchanges,0);
+    sqlite.prepare('UPDATE auth_sessions SET user_id=?').run('google:owner');
+    await addFlow();assert.equal((await callback.GET(request)).status,303);assert.equal(imports,1);
+    assert.equal((await callback.GET(request)).status,400);
+    sqlite.prepare('UPDATE legacy_account_links SET target_user=?').run('google:other');
+    await addFlow();assert.equal((await callback.GET(request)).status,400);assert.equal(imports,1);
+    sqlite.prepare('UPDATE legacy_account_links SET target_user=?').run('google:owner');
+    const stage=async(targetUser)=>{
+      const iv=crypto.getRandomValues(new Uint8Array(12));
+      const key=await crypto.subtle.importKey('raw',await crypto.subtle.digest('SHA-256',new TextEncoder().encode('verifier')),{name:'AES-GCM'},false,['encrypt']);
+      const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(JSON.stringify({targetUser,data:{user:{userId:'old-owner',email:'owner@example.com'},profiles:[]}})));
+      stagedObject={json:async()=>({iv:Buffer.from(iv).toString('base64'),ciphertext:Buffer.from(cipher).toString('base64')})};
+    };
+    await stage('google:other');await addFlow();assert.equal((await callback.GET(request)).status,400);assert.equal(imports,1);
+    await stage('google:owner');await addFlow();assert.equal((await callback.GET(request)).status,303);assert.equal(imports,2);assert.equal(stagedObject,null);
+
+  }finally{sqlite.close();}
+});
+
 test('Google identity verifies signature, audience, issuer, nonce, expiry and verified email', async () => {
   assert.equal((await helpers.verifyGoogleIdentity(await sign(), 'client', 'nonce')).userId, 'google:subject');
   for (const claims of [{nonce:'other'}, {email_verified:false}, {aud:'other'}, {iss:'https://attacker.example'}, {exp:1}]) {

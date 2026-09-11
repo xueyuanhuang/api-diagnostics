@@ -24,10 +24,11 @@ export type StoredProbe = {
   baseUrl: string;
   allowInsecureHttp: number;
   createdAt: number;
+  paused?: number;
 };
 const targetColumns = `t.id, t.user_id AS userId, t.profile_id AS profileId, p.name AS profileName,
   t.api_type AS apiType, t.model_name AS modelName, t.base_url AS baseUrl,
-  t.allow_insecure_http AS allowInsecureHttp, t.created_at AS createdAt`;
+  t.allow_insecure_http AS allowInsecureHttp, t.created_at AS createdAt, t.paused`;
 
 export class AvailabilityStore {
   constructor(private db: D1Database) {}
@@ -74,6 +75,11 @@ export class AvailabilityStore {
       .first<{ id: string }>();
   }
 
+  async pause(userId: string, id: string, paused: boolean) {
+    const result=await this.db.prepare('UPDATE availability_targets SET paused=? WHERE id=? AND user_id=? AND deleted_at IS NULL').bind(paused?1:0,id,userId).run();
+    if (!result.meta.changes) throw new AvailabilityError('Target not found.',404);
+  }
+
   async remove(userId: string, id: string, now: number) {
     const result = await this.db
       .prepare(
@@ -89,7 +95,7 @@ export class AvailabilityStore {
     return this.db
       .prepare(`SELECT ${targetColumns} FROM availability_targets t
       JOIN connection_profiles p ON p.id=t.profile_id AND p.user_id=t.user_id
-      WHERE t.id=? AND t.deleted_at IS NULL${userId ? ' AND t.user_id=?' : ''}`)
+      WHERE t.id=? AND t.deleted_at IS NULL AND t.paused=0${userId ? ' AND t.user_id=?' : ''}`)
       .bind(...(userId ? [id, userId] : [id]))
       .first<StoredProbe>();
   }
@@ -99,7 +105,7 @@ export class AvailabilityStore {
       .prepare(`INSERT OR IGNORE INTO availability_samples
       (id,target_id,slot_start,started_at,status)
       SELECT ?,?,?,?,'checking' FROM availability_targets
-      WHERE id=? AND user_id=? AND deleted_at IS NULL AND created_at=?`)
+      WHERE id=? AND user_id=? AND deleted_at IS NULL AND paused=0 AND created_at=?`)
       .bind(
         `${target.id}:${slot}`,
         target.id,
@@ -155,7 +161,7 @@ export class AvailabilityStore {
     const rows = await this.db
       .prepare(`SELECT t.id FROM availability_targets t
       JOIN connection_profiles p ON p.id=t.profile_id AND p.user_id=t.user_id
-      WHERE t.deleted_at IS NULL AND t.created_at<? AND NOT EXISTS
+      WHERE t.deleted_at IS NULL AND t.paused=0 AND t.created_at<? AND NOT EXISTS
       (SELECT 1 FROM availability_samples s WHERE s.target_id=t.id AND s.slot_start=?)
       ORDER BY COALESCE((SELECT MAX(started_at) FROM availability_samples WHERE target_id=t.id),0),t.created_at,t.id LIMIT 200`)
       .bind(slot + PROBE_INTERVAL_MS, slot)

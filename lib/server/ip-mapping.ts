@@ -14,6 +14,7 @@ export type IpMappingConfig = {
   token?: string;
   zoneId?: string;
   suffix?: string;
+  existingOnly?: boolean;
 };
 
 export type ResolvedConnection = {
@@ -107,7 +108,7 @@ export async function resolveIpConnection(
       401,
     );
   const target = mappingTarget(checked.baseUrl, config.suffix || '');
-  if (!target || !config.token || !/^[a-f0-9]{32}$/.test(config.zoneId || ''))
+  if (!target || (!config.existingOnly && (!config.token || !/^[a-f0-9]{32}$/.test(config.zoneId || ''))))
     throw new IpMappingError(
       'Automatic IP mapping is not available. Contact the site owner.',
     );
@@ -174,6 +175,7 @@ export async function resolveIpConnection(
       );
   }
 
+  if (!config.existingOnly) {
   const existing = await records();
   if (existing.length) verifyRecords(existing);
   else {
@@ -193,6 +195,8 @@ export async function resolveIpConnection(
       if (!raced.length) throw creationError;
       verifyRecords(raced);
     }
+  }
+
   }
 
   let resolved = false;

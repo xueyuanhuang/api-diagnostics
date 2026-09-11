@@ -179,6 +179,17 @@ export function AvailabilityMonitor({
       setBusy('');
     }
   }
+  async function togglePause(id: string, paused: boolean) {
+    if (busy) return;
+    setBusy(id);
+    try {
+      const response=await fetch(`/api/availability/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused})});
+      const result=await response.json() as {error?: string};
+      if(!response.ok)throw new Error(result.error||'Could not update target.');
+      await refresh();
+    }catch(cause){setError(cause instanceof Error?cause.message:'Could not update target.');}
+    finally{setBusy('');}
+  }
   async function remove() {
     if (busy || !pendingRemoval) return;
     const { id } = pendingRemoval;
@@ -459,7 +470,8 @@ export function AvailabilityMonitor({
                       </p>
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                      Every 10 min
+                      {target.paused ? 'Paused' : 'Every 10 min'}
+                      <button className="mt-2 block underline" disabled={Boolean(busy)} onClick={()=>togglePause(target.id,!target.paused)}>{target.paused?'Resume':'Pause'}</button>
                     </TableCell>
                     <TableCell className="max-w-80">
                       <Badge

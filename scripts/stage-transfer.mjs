@@ -1,0 +1,31 @@
+// Authenticated administrator relay for source hosts that reject Worker fetches.
+// The temporary export is encrypted before private R2 storage. No keys are logged.
+import {readFileSync} from 'node:fs';
+import {homedir} from 'node:os';
+import {createHash,randomBytes,createCipheriv} from 'node:crypto';
+const input=process.argv[2];
+const raw=input.startsWith('https://')?input:readFileSync(input,'utf8').match(/https:\/\/api-diagnostics\.xue-yuanhuang\.workers\.dev\/migration\/complete[^\s)"<]+/)[0].replaceAll('&amp;','&');
+const url=new URL(raw);
+if(url.origin!=='https://api-diagnostics.xue-yuanhuang.workers.dev'||url.pathname!=='/migration/complete')throw Error('Invalid destination');
+const state=url.searchParams.get('import_state'),code=url.searchParams.get('import_code');
+if(!/^[\w-]{43}$/.test(state)||!/^[\w-]{43}$/.test(code))throw Error('Invalid transfer');
+const config=readFileSync(homedir()+'/Library/Preferences/.wrangler/config/default.toml','utf8');
+const token=JSON.parse(config.match(/^oauth_token\s*=\s*(".*")$/m)[1]);
+const base='https://api.cloudflare.com/client/v4/accounts/13aee27300575d6bfbc1362397eb3a9b';
+const auth={Authorization:`Bearer ${token}`};
+const result=await fetch(base+'/d1/database/cfbf8d54-da94-43c7-8d0c-e2f7613bfa8b/query',{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({sql:"SELECT verifier,nonce FROM auth_flows WHERE state=? AND nonce LIKE 'import:google:%' AND expires_at>?",params:[state,Date.now()]})}).then(r=>r.json());
+const rows=result.result?.[0]?.results;
+if(rows?.length!==1)throw Error('Approved Google import session unavailable');
+const flow=rows[0];
+const response=await fetch('https://normal-token-check.yh-xue-2023.chatgpt.site/api/cloudflare-transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,verifier:flow.verifier}),redirect:'manual'});
+if(!response.ok)throw Error(`Original transfer returned HTTP ${response.status}`);
+const data=await response.json();
+if(!data.user?.userId||!Array.isArray(data.profiles)||!data.ticket)throw Error('Incomplete source export');
+const iv=randomBytes(12),key=createHash('sha256').update(flow.verifier).digest();
+const cipher=createCipheriv('aes-256-gcm',key,iv);
+const ciphertext=Buffer.concat([cipher.update(JSON.stringify({targetUser:flow.nonce.slice(7),data}),'utf8'),cipher.final(),cipher.getAuthTag()]);
+const stateHash=createHash('sha256').update(state).digest('base64url');
+const object=JSON.stringify({iv:iv.toString('base64'),ciphertext:ciphertext.toString('base64')});
+const uploaded=await fetch(base+'/r2/buckets/api-diagnostics-evidence/objects/migrations/staged/'+stateHash+'.json',{method:'PUT',headers:{...auth,'Content-Type':'application/json'},body:object});
+if(!uploaded.ok)throw Error(`Encrypted staging returned HTTP ${uploaded.status}`);
+console.log(JSON.stringify({encryptedProfilesStaged:data.profiles.length}));

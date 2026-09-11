@@ -23,6 +23,19 @@ const ok = (result) =>
 const dns = () =>
   Response.json({ Status: 0, Answer: [{ type: 1, data: record.content }] });
 
+test('migration reuses only an exact public DNS mapping without a management credential', async()=>{
+  const settings={suffix:config.suffix,existingOnly:true};
+  const resolved=await resolveIpConnection(base,true,settings,async(url,init)=>{
+    assert.ok(String(url).startsWith('https://cloudflare-dns.com/dns-query?'));
+    assert.equal(init.headers.authorization,undefined);
+    return dns();
+  });
+  assert.equal(resolved.actualBaseUrl,'http://45-58-184-227.ip-api.example.com:3000');
+  for(const Answer of [[{type:1,data:'1.2.3.4'}],[{type:5,data:'elsewhere.example'},{type:1,data:record.content}]]){
+    await assert.rejects(resolveIpConnection(base,true,settings,async()=>Response.json({Status:0,Answer}),async()=>{}));
+  }
+});
+
 test('mapping preserves port/path and both API endpoint conventions', () => {
   assert.equal(
     mappingTarget(`${base}/v1/`, config.suffix).actualBaseUrl,

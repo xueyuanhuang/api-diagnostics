@@ -301,6 +301,7 @@ export const availabilityTargets = sqliteTable(
       .default(false),
     createdAt: integer('created_at').notNull(),
     deletedAt: integer('deleted_at'),
+    paused: integer('paused', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     uniqueIndex('availability_target_unique').on(
@@ -370,3 +371,9 @@ export const chatgptImports = sqliteTable('chatgpt_imports', {
   targetId: text('target_id').notNull(),
   importedAt: integer('imported_at').notNull(),
 }, table => [primaryKey({columns:[table.userId,table.sourceId]})]);
+
+export const legacyAccountLinks = sqliteTable('legacy_account_links', {
+  sourceUser: text('source_user').primaryKey(),
+  targetUser: text('target_user').notNull(),
+  linkedAt: integer('linked_at').notNull(),
+});

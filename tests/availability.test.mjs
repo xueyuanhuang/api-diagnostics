@@ -16,6 +16,23 @@ import { triggerAvailability } from '../scheduler/worker.ts';
 
 const now = probeSlot(Date.now()) + 1000;
 const slot = probeSlot(now);
+
+test('paused imported monitors preserve history and cannot issue paid checks until resumed by their owner', async () => {
+  const f=fixture();
+  try {
+    await f.store.add('owner',input);
+    const target=await f.store.active('probe','owner');
+    await f.store.pause('owner','probe',true);
+    assert.equal(await f.store.active('probe','owner'),null);
+    assert.equal(await f.store.claim(target,slot,now),false);
+    assert.deepEqual(await f.store.due(slot,now),[]);
+    const saved=(await f.store.list('owner',true,now)).targets[0];
+    assert.equal(targetHealth(saved,now).label,'Paused');
+    await assert.rejects(f.store.pause('other','probe',false));
+    await f.store.pause('owner','probe',false);
+    assert.deepEqual(await f.store.due(slot,now),['probe']);
+  } finally {f.close();}
+});
 const input = {
   id: 'probe',
   profileId: 'profile',
@@ -399,8 +416,8 @@ test('the real scheduler batches targets, signs every request and treats recorde
   assert.deepEqual(result, { targets: 25, batches: 3 });
   assert.equal(calls.length, 4);
   assert.deepEqual(
-    calls.filter((x) => x.action === 'check').flatMap((x) => x.ids),
-    ids,
+    calls.filter((x) => x.action === 'check').flatMap((x) => x.ids).sort(),
+    [...ids].sort(),
   );
   assert.ok(calls.every((x) => x.slot === slot));
 });

@@ -17,6 +17,7 @@ function config() {
     token: values.CF_DNS_API_TOKEN,
     zoneId: values.CF_DNS_ZONE_ID,
     suffix: values.IP_MAPPING_SUFFIX,
+    existingOnly: values.IP_MAPPING_MODE === 'existing',
   };
 }
 

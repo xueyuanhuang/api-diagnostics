@@ -16,7 +16,7 @@ Use Node 24 and pnpm 11.19.0. Run `pnpm install`, `pnpm exec wrangler d1 migrati
 
 Authenticate using `wrangler login`, then run `pnpm deploy`. The build produces the worker configuration used automatically by Wrangler. Database migrations run before publication. GitHub Actions checks types, tests and the production build on each push; deployment currently runs from the authenticated local CLI.
 
-Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `API_KEY_ENCRYPTION_SECRET` using `wrangler secret put`. The encryption secret must be a base64-encoded random 32-byte value; preserve it across deployments or existing saved keys become unreadable. Never commit secret values.
+The public `GOOGLE_CLIENT_ID` is configured in `wrangler.jsonc`. Set `GOOGLE_CLIENT_SECRET` and `API_KEY_ENCRYPTION_SECRET` using `wrangler secret put`. The encryption secret must be a base64-encoded random 32-byte value; preserve it across deployments or existing saved keys become unreadable. Never commit secret values.
 
 Register a Google Web application client with this authorized redirect URI:
 
@@ -24,7 +24,7 @@ Register a Google Web application client with this authorized redirect URI:
 https://api-diagnostics.xue-yuanhuang.workers.dev/auth/google/callback
 ```
 
-Set the Google audience to production when ready for all users. Only `openid email profile` are requested. The server verifies Google's signed ID token, issuer, audience, nonce, expiry and verified email. A one-use, browser-bound OAuth flow uses PKCE; account sessions are random, hashed in D1, expire in 14 days, and are revoked on sign-out. Cookies are HttpOnly, Secure and SameSite=Lax. Hosting-provider identity headers are never trusted.
+The Google audience is in production for all users. Only `openid email profile` are requested. The server verifies Google's signed ID token, issuer, audience, nonce, expiry and verified email. A one-use, browser-bound OAuth flow uses PKCE; account sessions are random, hashed in D1, expire in 14 days, and are revoked on sign-out. Cookies are HttpOnly, Secure and SameSite=Lax. Hosting-provider identity headers are never trusted.
 
 For availability monitoring, deploy `scheduler/wrangler.jsonc` and set the same `AVAILABILITY_TRIGGER_SECRET` on both workers. It only checks targets users have explicitly added.
 
@@ -32,12 +32,16 @@ For availability monitoring, deploy `scheduler/wrangler.jsonc` and set the same 
 
 Signed-in users' connections and completed animation results are stored in D1/R2, scoped to their Google account. Connection API keys are encrypted. Guests can run one-time tests and download outputs. Navigating between test pages keeps active tests mounted; closing or reloading the browser is not a background-job guarantee.
 
-This is a new deployment with new account identities and storage. Data and secrets from the old ChatGPT-hosted site have not been imported. Earlier browser-only animation saves can be imported by the app when available on the same origin; browser storage on the old domain cannot be read by this domain.
+This deployment uses Google account identities. The original account is linked only after an authenticated transfer; imported connections are re-encrypted for the new server. Earlier browser-only animation saves can be imported by the app when available on the same origin; browser storage on the old domain cannot be read by this domain.
 
-Raw IPv4 URL mapping requires the optional `CF_DNS_API_TOKEN`, `CF_DNS_ZONE_ID`, and `IP_MAPPING_SUFFIX=ip-api.xyhmail.xyz` configuration and is not enabled here yet. Standard public hostname URLs work without it.
+The existing `ip-api.xyhmail.xyz` mappings are supported in read-only mode: a public DNS lookup must exactly match the supplied public IPv4 address before a test can proceed. No DNS management credential is needed to reuse an existing mapping. New DNS mappings require separate DNS provisioning configuration; standard public hostnames work without it.
 
-## Pending ChatGPT transfer rollout
+## Original account transfer
 
-The `/auth/chatgpt` bridge and connection importer are implemented but are not the default sign-in until the source site deploys its `/cloudflare-signin` and `/api/cloudflare-transfer` routes. The source deployment is currently blocked by the Sites upload service returning 503 concurrency errors. Do not enable the link before verifying the source routes are live.
+Google is the default sign-in. `/auth/chatgpt` starts a one-time import from the original website after Google login. The original account must authorize the transfer. The callback binds the source account to the initiating Google account and never silently reassigns a prior account link. API keys travel only over the server-to-server HTTPS exchange and are encrypted with this worker's key. Original profiles remain unchanged. Each profile imports transactionally once; retries preserve new-site edits and deletions.
 
-After source publication, change the default sign-in path to `/auth/chatgpt` and button labels to ChatGPT, apply migration 0009, and deploy Cloudflare. Start in the new site, authenticate on the original site, and approve copying connections. API keys travel only over the server-to-server HTTPS exchange, are re-encrypted with the new worker secret, and never enter browser storage. The two-minute transfer code requires a matching PKCE verifier and can only be redeemed once. Each original profile imports transactionally once; subsequent sign-ins preserve new-site edits and deletions. Original profiles remain unchanged. Saved test history is not part of the connection transfer.
+The original site returns a short-lived migration link. `/migration` offers a same-site form if an embedded browser cannot open it. The form accepts only this deployment's migration callback URL and validates the same browser session and one-time code.
+
+After connection import, `scripts/migrate-history.py` uses the approved private transfer capability to archive and copy original saved test records and R2 evidence. It verifies stored evidence checksums, preserves run IDs, maps connection IDs, and rejects ownership collisions. Evidence moves in bounded batches through an expiring account capability; each stored file is read back and checked before the batch is acknowledged. Use `--resume --indexed` to reuse an already saved private source snapshot and evidence index. Copied monitors start paused so the original and new schedulers cannot accidentally issue duplicate paid requests. They can be resumed in Availability Monitor after retiring their originals. Source snapshots and completion counts remain private in R2.
+
+Some source hosts reject requests originating directly from Workers. The authenticated administrator relay `scripts/stage-transfer.mjs` exchanges the approved one-time source code locally and encrypts the export with a key derived from the secret PKCE verifier before placing it in private R2. The callback still requires the initiating Google session, decrypts and validates the envelope, and removes the staging object after successful import. It never exposes provider keys to the browser.

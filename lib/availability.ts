@@ -28,6 +28,7 @@ export type AvailabilityTarget = {
   baseUrl: string;
   createdAt: number;
   samples: AvailabilitySample[];
+  paused?: boolean;
 };
 export type AvailabilityData = {
   targets: AvailabilityTarget[];
@@ -36,6 +37,7 @@ export type AvailabilityData = {
 };
 
 export function targetHealth(target: AvailabilityTarget, now: number) {
+  if (target.paused) return { status: 'unknown', label: 'Paused' };
   const latest = target.samples.at(-1);
   if (!latest) return { status: 'unknown', label: 'Awaiting first check' };
   if (now - latest.startedAt > PROBE_INTERVAL_MS * 2)

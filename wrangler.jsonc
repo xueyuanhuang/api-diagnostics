@@ -23,6 +23,9 @@
   ],
   "account_id": "13aee27300575d6bfbc1362397eb3a9b",
   "vars": {
-    "APP_ORIGIN": "https://api-diagnostics.xue-yuanhuang.workers.dev"
+    "IP_MAPPING_SUFFIX": "ip-api.xyhmail.xyz",
+    "IP_MAPPING_MODE": "existing",
+    "APP_ORIGIN": "https://api-diagnostics.xue-yuanhuang.workers.dev",
+    "GOOGLE_CLIENT_ID": "480059441202-o9rbsujuf6b1n51v71u012km8rnbb1lf.apps.googleusercontent.com"
   }
 }

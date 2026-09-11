@@ -1,0 +1,1 @@
+ALTER TABLE `availability_targets` ADD `paused` integer DEFAULT false NOT NULL;
