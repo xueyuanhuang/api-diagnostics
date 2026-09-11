@@ -1,6 +1,6 @@
 export const PELICAN_PROMPT = '创建一个HTML，内容是SVG绘制的一个鹈鹕骑自行车的2D动画，你不需要任何测试';
 export const PELICAN_OUTPUT_LIMITS = [8192, 16384, 32768] as const;
-export const PELICAN_MAX_TOKENS = 16384;
+export const PELICAN_MAX_TOKENS = 32768;
 
 export function pelicanOutputLimit(value: unknown) {
   if (value === undefined) return PELICAN_MAX_TOKENS;

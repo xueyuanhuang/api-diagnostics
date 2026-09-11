@@ -44,7 +44,7 @@ test('the original clipped SVG is flagged when reopening an old saved result', (
 });
 
 test('output budgets are bounded and invalid values cannot silently change the request', () => {
-  assert.equal(pelicanOutputLimit(undefined), 16384);
+  assert.equal(pelicanOutputLimit(undefined), 32768);
   for (const limit of [8192, 16384, 32768]) assert.equal(pelicanOutputLimit(limit), limit);
   for (const limit of [null, '32768', -1, 0, 1000000, NaN]) assert.equal(pelicanOutputLimit(limit), null);
 });
