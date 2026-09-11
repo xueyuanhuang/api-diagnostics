@@ -35,3 +35,9 @@ Signed-in users' connections and completed animation results are stored in D1/R2
 This is a new deployment with new account identities and storage. Data and secrets from the old ChatGPT-hosted site have not been imported. Earlier browser-only animation saves can be imported by the app when available on the same origin; browser storage on the old domain cannot be read by this domain.
 
 Raw IPv4 URL mapping requires the optional `CF_DNS_API_TOKEN`, `CF_DNS_ZONE_ID`, and `IP_MAPPING_SUFFIX=ip-api.xyhmail.xyz` configuration and is not enabled here yet. Standard public hostname URLs work without it.
+
+## Pending ChatGPT transfer rollout
+
+The `/auth/chatgpt` bridge and connection importer are implemented but are not the default sign-in until the source site deploys its `/cloudflare-signin` and `/api/cloudflare-transfer` routes. The source deployment is currently blocked by the Sites upload service returning 503 concurrency errors. Do not enable the link before verifying the source routes are live.
+
+After source publication, change the default sign-in path to `/auth/chatgpt` and button labels to ChatGPT, apply migration 0009, and deploy Cloudflare. Start in the new site, authenticate on the original site, and approve copying connections. API keys travel only over the server-to-server HTTPS exchange, are re-encrypted with the new worker secret, and never enter browser storage. The two-minute transfer code requires a matching PKCE verifier and can only be redeemed once. Each original profile imports transactionally once; subsequent sign-ins preserve new-site edits and deletions. Original profiles remain unchanged. Saved test history is not part of the connection transfer.

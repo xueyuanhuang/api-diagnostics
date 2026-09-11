@@ -363,3 +363,10 @@ export const authFlows = sqliteTable('auth_flows', {
   returnTo: text('return_to').notNull(),
   expiresAt: integer('expires_at').notNull(),
 }, table => [index('auth_flows_expiry_idx').on(table.expiresAt)]);
+
+export const chatgptImports = sqliteTable('chatgpt_imports', {
+  userId: text('user_id').notNull(),
+  sourceId: text('source_id').notNull(),
+  targetId: text('target_id').notNull(),
+  importedAt: integer('imported_at').notNull(),
+}, table => [primaryKey({columns:[table.userId,table.sourceId]})]);
