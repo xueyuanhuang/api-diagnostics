@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_TIMEOUT_MS } from '@/lib/pelican-test';
 
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import {
@@ -13,6 +14,7 @@ import { IpMappingError, isRawIpv4 } from '@/lib/server/ip-mapping';
 import { resolveHostedConnection } from '@/lib/server/hosted-ip-mapping';
 
 type RequestPayload = {
+  testKind?: unknown;
   allowInsecureHttp?: unknown;
   profileId?: unknown;
   apiType?: unknown;
@@ -93,7 +95,9 @@ export async function POST(request: NextRequest) {
   } catch {
     return noStore({ error: 'Invalid request body.' }, { status: 400 });
   }
-  const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+  const isPelican = payload.testKind === 'pelican';
+  const timeoutMs = isPelican ? PELICAN_TIMEOUT_MS : 45_000;
+  const prompt = isPelican ? PELICAN_PROMPT : typeof payload.prompt === 'string' ? payload.prompt : '';
   if (!prompt || prompt.length > 1_000) {
     return noStore({ error: 'Enter a valid test question.' }, { status: 400 });
   }
@@ -150,7 +154,7 @@ export async function POST(request: NextRequest) {
   const requestUrl = endpointFromBaseUrl(resolved.actualBaseUrl, apiType);
   const requestBody = JSON.stringify({
     model,
-    max_tokens: 96,
+    max_tokens: isPelican ? PELICAN_MAX_TOKENS : 96,
     messages: [{ role: 'user', content: prompt }],
     stream: true,
     ...(apiType === 'openai'
@@ -167,7 +171,7 @@ export async function POST(request: NextRequest) {
       body: requestBody,
       cache: 'no-store',
       redirect: 'manual',
-      signal: combinedRequestSignal(request.signal, 45_000),
+      signal: combinedRequestSignal(request.signal, timeoutMs),
     });
 
     const streamed = await readProviderStream(
@@ -266,7 +270,7 @@ export async function POST(request: NextRequest) {
         error: responseTooLarge
           ? 'The provider returned a response larger than this tester allows.'
           : isTimeout
-            ? 'The provider did not complete the response within the 45-second test limit.'
+            ? `The provider did not complete the response within the ${timeoutMs / 1_000}-second test limit.`
             : 'The tester relay could not complete the connection to the provider.',
         totalTimeMs: Math.max(0, Math.round(performance.now() - startedAt)),
         requestMethod: 'POST',

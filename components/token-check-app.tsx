@@ -1832,9 +1832,13 @@ export function TokenCheckApp({
         </header>
 
         <section
-          className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5"
+          className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3"
           aria-label="Choose a test"
         >
+          <a href="/pelican" className="flex items-start gap-4 rounded-2xl border border-border bg-card p-4 text-left shadow-sm transition-colors hover:border-primary/40">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-muted"><Code2 className="size-5" /></span>
+            <span><span className="block text-sm font-semibold">Pelican Animation Test</span><span className="mt-1 block text-sm leading-5 text-muted-foreground">One prompt · generate and preview an SVG animation</span></span>
+          </a>
           <button
             type="button"
             aria-pressed={testMode === 'normal'}
