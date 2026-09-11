@@ -135,6 +135,23 @@ def main():
                 for parent in ('run_id', 'target_id'):
                     if parent in row and old.get(parent) != row[parent]:
                         raise RuntimeError('Existing child record has a different parent.')
+    # R2 single-part object ETags are content MD5s. Compare with the source
+    # bytes before skipping already stored objects after an interrupted copy.
+    stored_etags = {}
+    cursor = None
+    while True:
+        listing_url = BASE + '/r2/buckets/' + BUCKET + '/objects?per_page=1000'
+        if cursor: listing_url += '&cursor=' + quote(cursor, safe='')
+        listing = json.loads(request(listing_url, headers=headers))
+        if not listing.get('success'): raise RuntimeError('Evidence inventory failed.')
+        for item in listing['result']:
+            if item['key'] in keys:
+                stored_etags[item['key']] = item['etag'].strip('"')
+        info = listing.get('result_info', {})
+        if not info.get('is_truncated'): break
+        cursor = info['cursor']
+    print('Existing evidence to compare', len(stored_etags), flush=True)
+
     def copy_batch(batch):
         objects=[]
         try:
@@ -149,14 +166,17 @@ def main():
         if {item['key'] for item in source_objects}!=set(batch): raise RuntimeError('Source batch keys do not match.')
         for item in source_objects:
             data=base64.b64decode(item['data'],validate=True)
+            if stored_etags.get(item['key']) == hashlib.md5(data).hexdigest():
+                continue
             objects.append({'key':item['key'],'data':item['data'],'sha256':hashlib.sha256(data).hexdigest()})
+        if not objects: return len(batch)
         payload=json.dumps({'owner':owner,'ticket':capability['ticket'],'verifier':capability['verifier'],'objects':objects}).encode()
         if len(payload)>5_000_000:
             if len(batch)==1: raise RuntimeError('Evidence object exceeds batch endpoint size limit.')
             middle=len(batch)//2
             return copy_batch(batch[:middle])+copy_batch(batch[middle:])
         response=json.loads(request('https://api-diagnostics.xue-yuanhuang.workers.dev/api/migration/evidence','POST',payload,{'Content-Type':'application/json'}))
-        if response.get('verified')!=len(batch): raise RuntimeError('Evidence batch verification failed.')
+        if response.get('verified')!=len(objects): raise RuntimeError('Evidence batch verification failed.')
         return len(batch)
     batches=[sorted(keys)[i:i+10] for i in range(0,len(keys),10)]
     verified=0
