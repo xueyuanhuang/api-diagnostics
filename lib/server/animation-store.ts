@@ -10,11 +10,12 @@ export async function listAnimations(env: Storage, userId: string, cursor?: stri
 }
 
 export async function readAnimation(env: Storage, userId: string, id: string): Promise<SavedAnimation | null> {
-  const row = await env.DB.prepare('SELECT evidence_key FROM animation_results WHERE user_id = ? AND id = ?').bind(userId, id).first<{ evidence_key: string }>();
+  const row = await env.DB.prepare('SELECT evidence_key, connection_name, key_hint FROM animation_results WHERE user_id = ? AND id = ?').bind(userId, id).first<{ evidence_key: string; connection_name: string | null; key_hint: string | null }>();
   if (!row) return null;
   const object = await env.EVIDENCE.get(row.evidence_key);
   if (!object) throw new Error('Saved animation content is unavailable');
-  return await object.json<SavedAnimation>();
+  const saved = await object.json<SavedAnimation>();
+  return { ...saved, result: { ...saved.result, connectionName: row.connection_name, keyHint: row.key_hint } };
 }
 
 export async function saveAnimation(env: Storage, userId: string, animation: SavedAnimation) {
@@ -26,4 +27,11 @@ export async function saveAnimation(env: Storage, userId: string, animation: Sav
   await env.EVIDENCE.put(key, JSON.stringify(saved), { httpMetadata: { contentType: 'application/json' } });
   await env.DB.prepare('INSERT INTO animation_results (user_id, id, model, evidence_key, created_at, connection_name, key_hint) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, id) DO NOTHING').bind(userId, animation.id, animation.model, key, createdAt, animation.result.connectionName ?? null, animation.result.keyHint ?? null).run();
   return { id: saved.id, model: saved.model, savedAt: saved.savedAt, connectionName: saved.result.connectionName ?? null, keyHint: saved.result.keyHint ?? null };
+}
+
+// Only legacy records without a captured key can be assigned by their owner.
+// Keep the original model response and its timestamp unchanged.
+export async function assignLegacyAnimationConnection(env: Storage, userId: string, id: string, connectionName: string) {
+  const row = await env.DB.prepare('UPDATE animation_results SET connection_name = ? WHERE user_id = ? AND id = ? AND key_hint IS NULL RETURNING id').bind(connectionName, userId, id).first<{ id: string }>();
+  return row ? readAnimation(env, userId, id) : null;
 }

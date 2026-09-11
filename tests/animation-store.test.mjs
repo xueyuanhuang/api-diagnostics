@@ -99,3 +99,26 @@ test('legacy animation history is not attributed to the current connection', asy
     assert.equal(invalidHint.result.keyHint, null);
   } finally { sqlite.close(); }
 });
+
+test('owners can label and correct legacy results without modifying evidence or dates', async () => {
+  const { assignLegacyAnimationConnection } = await import('../lib/server/animation-store.ts');
+  const { storage, sqlite, objects } = fixture();
+  try {
+    const value = animation();
+    await saveAnimation(storage, 'owner', value);
+    const originalEvidence = [...objects.values()][0];
+    const before = (await listAnimations(storage, 'owner'))[0];
+    assert.equal(await assignLegacyAnimationConnection(storage, 'other-user', value.id, 'Wrong'), null);
+    const assigned = await assignLegacyAnimationConnection(storage, 'owner', value.id, 'User-confirmed provider');
+    assert.equal(assigned.result.connectionName, 'User-confirmed provider');
+    assert.equal(assigned.result.keyHint, null);
+    await assignLegacyAnimationConnection(storage, 'owner', value.id, 'Corrected provider');
+    const after = (await listAnimations(storage, 'owner'))[0];
+    assert.equal(after.connectionName, 'Corrected provider');
+    assert.equal(after.savedAt, before.savedAt);
+    assert.equal([...objects.values()][0], originalEvidence);
+    const tracked = parseAnimation({ ...animation(), result: { answer: '<svg></svg>', connectionName: 'Captured provider', keyHint: 'abcd' } });
+    await saveAnimation(storage, 'owner', tracked);
+    assert.equal(await assignLegacyAnimationConnection(storage, 'owner', tracked.id, 'Wrong'), null);
+  } finally { sqlite.close(); }
+});

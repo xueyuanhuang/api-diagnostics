@@ -29,6 +29,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const [savedResults, setSavedResults] = useState<AnimationSummary[]>([]);
   const [saveMessage, setSaveMessage] = useState('');
   const [resultSaved, setResultSaved] = useState(false);
+  const [legacyProfileId, setLegacyProfileId] = useState('');
   const [signedIn, setSignedIn] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
@@ -163,11 +164,26 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
     setHistoryBusy(true);
     try {
       const { saved } = await connectionRequest<{ saved: SavedAnimation }>(`/api/animations/${encodeURIComponent(id)}`);
+      setLegacyProfileId('');
       setResult(saved.result); setResultModel(saved.model); resultId.current = saved.id;
       setResultSaved(true); setError(''); setSaveMessage(`Opened result saved ${new Date(saved.savedAt).toLocaleString()}.`);
     } catch (cause) { setSaveMessage(cause instanceof Error ? cause.message : 'Could not open result.'); }
     finally { setHistoryBusy(false); }
   }
+  async function assignLegacyConnection() {
+    if (!legacyProfileId || !resultId.current || historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      const { saved } = await connectionRequest<{ saved: SavedAnimation }>(`/api/animations/${encodeURIComponent(resultId.current)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: legacyProfileId }),
+      });
+      setResult(saved.result);
+      setSavedResults(current => current.map(item => item.id === saved.id ? { ...item, connectionName: saved.result.connectionName, keyHint: saved.result.keyHint } : item));
+      setSaveMessage('Connection label saved. The original animation and date are unchanged.');
+    } catch (cause) { setSaveMessage(cause instanceof Error ? cause.message : 'Could not save the connection label.'); }
+    finally { setHistoryBusy(false); }
+  }
+
   async function importLegacy() {
     setHistoryBusy(true);
     try {
@@ -264,6 +280,16 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
             {saveMessage && <p role="status" className="text-sm">{saveMessage}</p>}
             {result && <section className="space-y-4 rounded-2xl border border-border bg-card p-5">
               <p className="break-words text-sm font-medium">Connection: {animationConnectionLabel(result)}</p>
+              {signedIn && resultSaved && !result.keyHint && <div className="space-y-3 rounded-lg border border-border p-4">
+                <p className="text-sm text-muted-foreground">This older result did not record its key. Choose the connection you used to label it. The original key ending cannot be recovered.</p>
+                <label className="block text-sm font-medium">Connection used for this saved result
+                  <select disabled={historyBusy || running} value={legacyProfileId} onChange={event => setLegacyProfileId(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
+                    <option value="">Choose the connection used</option>
+                    {profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                  </select>
+                </label>
+                <Button disabled={!legacyProfileId || historyBusy || running} onClick={() => void assignLegacyConnection()}>Save connection label</Button>
+              </div>}
               <p className="break-words text-sm text-muted-foreground">Model: {result.returnedModel || resultModel} · Input: {result.totalInputTokens ?? '—'} tokens · Output: {result.outputTokens ?? '—'} tokens · {result.totalTimeMs == null ? '—' : (result.totalTimeMs / 1000).toFixed(1)} seconds</p>
 
               <details><summary className="cursor-pointer text-base font-semibold">Model response / HTML source</summary><pre className="mt-4 max-h-[500px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm">{result.answer || 'No visible answer returned.'}</pre></details>
