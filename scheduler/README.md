@@ -1,8 +1,8 @@
 # Availability scheduling
 
-The existing API Diagnostics Site owns saved targets, encrypted connection profiles and D1 history. This small ordinary Cloudflare Worker is only a clock: every ten minutes it calls the Site's signed scheduler endpoint. It never receives provider API keys. No second website or public Worker route is created.
+The API Diagnostics Worker owns saved targets, encrypted connection profiles and D1 history. This small ordinary Cloudflare Worker is only a clock: every ten minutes it calls the Site's signed scheduler endpoint. It never receives provider API keys. No second website or public Worker route is created.
 
-`wrangler.jsonc` defines the schedule and existing Site URL. Deploy this Worker in the configured Cloudflare account and set `AVAILABILITY_TRIGGER_SECRET` as a Worker secret. Set the same secret through Sites runtime settings and publish the validated Site version. Keep secret values out of configuration files, source control and logs.
+`wrangler.jsonc` defines the schedule and Cloudflare app URL. Deploy this Worker in the configured Cloudflare account and set `AVAILABILITY_TRIGGER_SECRET` as a Worker secret. Set the same secret on the api-diagnostics Worker. Keep secret values out of configuration files, source control and logs.
 
 The worker signs the method, path, timestamp and request-body digest with HMAC-SHA256. The Site rejects modified payloads and timestamps outside a two-minute window. The logical interval comes from the scheduled event time. A D1 conditional insert permits one attempt per target and interval, including concurrent/retried deliveries. A claimed but interrupted attempt remains unknown; it is not sent again within the same interval.
 

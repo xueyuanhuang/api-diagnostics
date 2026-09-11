@@ -267,7 +267,7 @@ export function AvailabilityMonitor({
               href={signInPath}
               target="_top"
             >
-              Sign in with ChatGPT
+              Sign in with Google
             </a>{' '}
             to use saved connections and keep your probe targets and history
             private.

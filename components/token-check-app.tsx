@@ -1857,7 +1857,7 @@ export function TokenCheckApp({
               target="_top"
               className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-semibold shadow-sm hover:bg-muted"
             >
-              <LogIn className="size-4" /> Sign in with ChatGPT
+              <LogIn className="size-4" /> Sign in with Google
             </a>
           )}
         </header>
@@ -2366,7 +2366,7 @@ export function TokenCheckApp({
                         target="_top"
                         className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground"
                       >
-                        <LogIn className="size-4" /> Sign in with ChatGPT
+                        <LogIn className="size-4" /> Sign in with Google
                       </a>
                     </div>
                   </div>

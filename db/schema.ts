@@ -346,3 +346,20 @@ export const availabilityScheduler = sqliteTable('availability_scheduler', {
   id: text('id').primaryKey(),
   lastTickAt: integer('last_tick_at').notNull(),
 });
+
+export const authSessions = sqliteTable('auth_sessions', {
+  tokenHash: text('token_hash').primaryKey(),
+  userId: text('user_id').notNull(),
+  email: text('email').notNull(),
+  fullName: text('full_name'),
+  expiresAt: integer('expires_at').notNull(),
+}, table => [index('auth_sessions_expiry_idx').on(table.expiresAt)]);
+
+export const authFlows = sqliteTable('auth_flows', {
+  tokenHash: text('token_hash').primaryKey(),
+  state: text('state').notNull(),
+  verifier: text('verifier').notNull(),
+  nonce: text('nonce').notNull(),
+  returnTo: text('return_to').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+}, table => [index('auth_flows_expiry_idx').on(table.expiresAt)]);

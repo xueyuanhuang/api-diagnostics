@@ -1,5 +1,5 @@
-const SIGN_IN_PATH = '/signin-with-chatgpt';
-const SIGN_OUT_PATH = '/signout-with-chatgpt';
+const SIGN_IN_PATH = '/auth/google';
+const SIGN_OUT_PATH = '/auth/signout';
 
 export function chatGPTSignInPath(returnTo = '/') {
   return `${SIGN_IN_PATH}?return_to=${encodeURIComponent(safeRelativeReturnPath(returnTo))}`;
@@ -9,7 +9,7 @@ export function chatGPTSignOutPath(returnTo = '/') {
   return `${SIGN_OUT_PATH}?return_to=${encodeURIComponent(safeRelativeReturnPath(returnTo))}`;
 }
 
-function safeRelativeReturnPath(value: string) {
+export function safeRelativeReturnPath(value: string) {
   if (!value.startsWith('/') || value.startsWith('//')) return '/';
   try {
     const url = new URL(value, 'https://app.local');

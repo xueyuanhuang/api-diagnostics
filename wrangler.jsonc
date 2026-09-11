@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "api-diagnostics",
+  "main": "vinext/server/fetch-handler",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_request_signal"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "api-diagnostics",
+      "database_id": "cfbf8d54-da94-43c7-8d0c-e2f7613bfa8b",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "EVIDENCE",
+      "bucket_name": "api-diagnostics-evidence"
+    }
+  ],
+  "account_id": "13aee27300575d6bfbc1362397eb3a9b",
+  "vars": {
+    "APP_ORIGIN": "https://api-diagnostics.xue-yuanhuang.workers.dev"
+  }
+}

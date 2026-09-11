@@ -1105,7 +1105,7 @@ export function RpmRampTest({
                   target="_top"
                   className="font-semibold underline"
                 >
-                  <LogIn className="mr-1 inline size-4" /> Sign in with ChatGPT
+                  <LogIn className="mr-1 inline size-4" /> Sign in with Google
                 </a>
               </div>
             ) : (

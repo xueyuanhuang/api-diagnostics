@@ -1,5 +1,5 @@
 {
-  "name": "normal-token-check-availability",
+  "name": "api-diagnostics-availability",
   "main": "worker.ts",
   "compatibility_date": "2026-09-08",
   "compatibility_flags": ["global_fetch_strictly_public"],
@@ -7,6 +7,6 @@
   "preview_urls": false,
   "triggers": { "crons": ["*/10 * * * *"] },
   "vars": {
-    "SITE_ORIGIN": "https://normal-token-check.yh-xue-2023.chatgpt.site",
+    "SITE_ORIGIN": "https://api-diagnostics.xue-yuanhuang.workers.dev",
   },
 }
