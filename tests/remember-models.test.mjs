@@ -222,3 +222,20 @@ test('metadata endpoint authenticates and never touches provider requests or cre
     assert.deepEqual(f.models(), models);
   } finally { f.sqlite.close(); }
 });
+
+test('profile create and edit insert large catalogs within the D1 parameter limit', () => {
+  for (const route of ['../app/api/profiles/route.ts', '../app/api/profiles/[id]/route.ts']) {
+    const source = readFileSync(new URL(route, import.meta.url), 'utf8');
+    const sqlite = new DatabaseSync(':memory:');
+    try {
+      sqlite.exec('CREATE TABLE profile_models(id,profile_id,model_name,created_at); CREATE TABLE profile_api_models(id,config_id,model_name,position,created_at);');
+      for (const [table, width] of [['profile_models',4], ['profile_api_models',5]]) {
+        const sql = source.match(new RegExp('`(INSERT INTO '+table+' [^`]+)`'))[1];
+        assert.equal((sql.match(/\?/g) || []).length, 1);
+        const rows = Array.from({length:200}, (_, i) => Array.from({length:width}, (_, j) => `${i}-${j}`));
+        sqlite.prepare(sql).run(JSON.stringify(rows));
+        assert.equal(sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 200);
+      }
+    } finally { sqlite.close(); }
+  }
+});

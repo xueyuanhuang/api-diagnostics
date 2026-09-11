@@ -258,7 +258,7 @@ export async function POST(request: NextRequest) {
     };
     const defaultConfig = configs[parsed.defaultApiType];
     const defaultEncrypted = encrypted[parsed.defaultApiType];
-    const legacyModelValues = defaultConfig.models.flatMap((model) => [
+    const legacyModelValues = defaultConfig.models.map((model) => [
       crypto.randomUUID(),
       id,
       model,
@@ -276,7 +276,7 @@ export async function POST(request: NextRequest) {
       now,
     ]);
     const apiModelStatements = API_TYPES.map((type) => {
-      const values = configs[type].models.flatMap((model, position) => [
+      const values = configs[type].models.map((model, position) => [
         crypto.randomUUID(),
         configIds[type],
         model,
@@ -284,8 +284,8 @@ export async function POST(request: NextRequest) {
         now,
       ]);
       return env.DB.prepare(
-        `INSERT INTO profile_api_models (id, config_id, model_name, position, created_at) VALUES ${valueRows(configs[type].models.length, 5)}`,
-      ).bind(...values);
+        `INSERT INTO profile_api_models (id, config_id, model_name, position, created_at) SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]'), json_extract(value, '$[4]') FROM json_each(?)`,
+      ).bind(JSON.stringify(values));
     });
 
     await env.DB.batch([
@@ -303,8 +303,8 @@ export async function POST(request: NextRequest) {
         now,
       ),
       env.DB.prepare(
-        `INSERT INTO profile_models (id, profile_id, model_name, created_at) VALUES ${valueRows(defaultConfig.models.length, 4)}`,
-      ).bind(...legacyModelValues),
+        `INSERT INTO profile_models (id, profile_id, model_name, created_at) SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]') FROM json_each(?)`,
+      ).bind(JSON.stringify(legacyModelValues)),
       env.DB.prepare(
         `INSERT INTO profile_api_configs (id, profile_id, api_type, base_url, model_name, encrypted_api_key, key_iv, created_at, updated_at) VALUES ${valueRows(API_TYPES.length, 9)}`,
       ).bind(...configValues),
