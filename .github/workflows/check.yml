@@ -1,7 +1,10 @@
-name: Check
+name: Check and deploy
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: api-diagnostics-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -15,3 +18,21 @@ jobs:
       - run: pnpm exec tsc --noEmit
       - run: pnpm test
       - run: pnpm build
+      - name: Check whether this is still the latest main commit
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: production
+        run: |
+          latest_commit=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$latest_commit" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Apply database migrations and deploy to Cloudflare
+        if: steps.production.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 13aee27300575d6bfbc1362397eb3a9b
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Cloudflare deployment credential is missing.'; exit 1; }
+          node scripts/check-deployment.mjs
+          pnpm exec wrangler d1 migrations apply api-diagnostics --remote
+          pnpm exec wrangler deploy
