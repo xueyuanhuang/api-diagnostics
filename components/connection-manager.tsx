@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -22,6 +23,16 @@ export function ConnectionManager() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const profile = profiles.find(item => item.id === editing);
+  useEffect(() => {
+    const refresh = () => {
+      if (!signedIn || busy) return;
+      void connectionRequest<{ profiles: SavedConnection[] }>('/api/profiles').then(data => {
+        setProfiles(data.profiles); setActiveId(activeConnectionId());
+      }).catch(cause => setError(cause.message));
+    };
+    window.addEventListener('connections-refresh', refresh);
+    return () => window.removeEventListener('connections-refresh', refresh);
+  }, [signedIn, busy]);
 
   useEffect(() => {
     let alive = true;
@@ -75,7 +86,7 @@ export function ConnectionManager() {
   }
 
   return <main className="min-h-screen bg-background text-foreground"><div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
-    <nav className="flex flex-wrap gap-5 text-sm font-semibold text-primary"><a href="/" className="hover:underline">← All tests</a><a href="/pelican" className="hover:underline">Pelican Animation Test</a></nav>
+    <nav className="flex flex-wrap gap-5 text-sm font-semibold text-primary"><Link href="/" className="hover:underline">← All tests</Link><Link href="/pelican" className="hover:underline">Pelican Animation Test</Link></nav>
     <header className="my-6 border-b border-border pb-6"><h1 className="text-3xl font-semibold">Connections</h1><p className="mt-3 text-base text-muted-foreground">Manage base URLs, API keys, and models in one place. Saved connections are available in every test.</p></header>
     {loading ? <p role="status">Loading your connections…</p> : !signedIn ? <section className="rounded-2xl border border-border bg-card p-6"><h2 className="text-xl font-semibold">Keep your connections in your account</h2><p className="my-4 text-base leading-7">Sign in to save encrypted API keys and reuse connections across tests and devices. Your connections are private to your account. You can still run one-time tests without signing in.</p><a className="inline-flex rounded-lg bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground" href={chatGPTSignInPath('/connections')} target="_top">Sign in with ChatGPT</a></section> : <div className="grid items-start gap-6 lg:grid-cols-2">
       <section className="space-y-4"><div className="flex items-center justify-between"><h2 className="text-xl font-semibold">Saved connections</h2><Button disabled={busy} variant="outline" onClick={() => edit()}>New connection</Button></div>

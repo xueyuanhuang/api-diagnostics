@@ -1,25 +1,19 @@
 'use client';
+import Link from 'next/link';
 
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { chatGPTSignInPath } from '@/lib/auth-paths';
+import { type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
 import { PELICAN_PROMPT, extractAnimationHtml, animationPreviewDocument } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import { activeConnectionId, rememberConnection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
 
-type Result = {
-  answer?: string;
-  error?: string;
-  returnedModel?: string;
-  outputTokens?: number;
-  totalInputTokens?: number;
-  totalTimeMs?: number;
-};
-type SavedResult = { id: string; savedAt: string; model: string; prompt: string; result: Result };
-const SAVED_RESULTS_KEY = 'pelican-animation:saved-results:v1';
+type Result = AnimationResult & { savedAnimation?: AnimationSummary | null; saveError?: string | null };
 
-export function PelicanTest() {
+export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: boolean) => void } = {}) {
   const [apiType, setApiType] = useState('openai');
   const [profiles, setProfiles] = useState<SavedConnection[]>([]);
   const [profileId, setProfileId] = useState('');
@@ -27,11 +21,29 @@ export function PelicanTest() {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
   const [running, setRunning] = useState(false);
+  useEffect(() => { onRunningChange?.(running); }, [running, onRunningChange]);
   const [error, setError] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [copied, setCopied] = useState(false);
-  const [savedResults, setSavedResults] = useState<SavedResult[]>([]);
+  const [savedResults, setSavedResults] = useState<AnimationSummary[]>([]);
   const [saveMessage, setSaveMessage] = useState('');
+  const [resultSaved, setResultSaved] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [nextBefore, setNextBefore] = useState<string | null>(null);
+  const [legacyResults, setLegacyResults] = useState<SavedAnimation[]>([]);
+  const resultId = useRef('');
+  async function loadHistory(before?: string) {
+    const data = await connectionRequest<{ results: AnimationSummary[]; nextBefore: string | null }>(`/api/animations${before ? `?before=${encodeURIComponent(before)}` : ''}`);
+    setSavedResults(current => before ? [...current, ...data.results.filter(item => !current.some(existing => existing.id === item.id))] : data.results);
+    setNextBefore(data.nextBefore);
+  }
+  useEffect(() => {
+    try {
+      const old: unknown = JSON.parse(localStorage.getItem('pelican-animation:saved-results:v1') || '[]');
+      if (Array.isArray(old)) setLegacyResults(old.filter(item => item?.id && item?.result?.answer).slice(0, 10));
+    } catch { /* Legacy device-only results are optional. */ }
+  }, []);
   const [resultModel, setResultModel] = useState('');
   const controller = useRef<AbortController | null>(null);
   function chooseConnection(id: string, list = profiles) {
@@ -48,7 +60,10 @@ export function PelicanTest() {
   useEffect(() => {
     let alive = true;
     void connectionRequest<{ user: unknown }>('/api/session').then(async session => {
+      if (!alive) return;
+      setSignedIn(Boolean(session.user));
       if (!session.user) return;
+      await loadHistory().catch(() => setSaveMessage('Could not load saved animations. Reload to try again.'));
       const data = await connectionRequest<{ profiles: SavedConnection[] }>('/api/profiles');
       if (!alive) return;
       setProfiles(data.profiles);
@@ -59,11 +74,23 @@ export function PelicanTest() {
   }, []);
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
-    try {
-      const stored: unknown = JSON.parse(localStorage.getItem(SAVED_RESULTS_KEY) || '[]');
-      if (Array.isArray(stored)) setSavedResults(stored.filter((item): item is SavedResult => Boolean(item && typeof item.id === 'string' && typeof item.model === 'string' && typeof item.savedAt === 'string' && item.result && typeof item.result.answer === 'string')).slice(0, 10));
-    } catch { setSaveMessage('Saved results could not be read in this browser.'); }
-  }, []);
+    const refresh = () => {
+      if (controller.current) return;
+      void connectionRequest<{ user: unknown }>('/api/session').then(async session => {
+        if (!session.user) return;
+        void loadHistory().catch(() => setSaveMessage('Could not refresh saved animations. Try again later.'));
+        const data = await connectionRequest<{ profiles: SavedConnection[] }>('/api/profiles');
+        // Navigation refresh must never alter a request that started meanwhile.
+        if (controller.current) return;
+        setProfiles(data.profiles);
+        const id = activeConnectionId();
+        if (data.profiles.some(item => item.id === id)) chooseConnection(id, data.profiles);
+        else if (profileId && !data.profiles.some(item => item.id === profileId)) chooseConnection('');
+      }).catch(() => {});
+    };
+    window.addEventListener('connections-refresh', refresh);
+    return () => window.removeEventListener('connections-refresh', refresh);
+  }, [profileId]);
   const html = extractAnimationHtml(result?.answer ?? '');
 
   async function start(event: React.FormEvent) {
@@ -77,18 +104,26 @@ export function PelicanTest() {
     controller.current = abort;
     setRunning(true);
     setResult(null);
+    setResultSaved(false);
+    resultId.current = crypto.randomUUID();
     setSaveMessage('');
     setResultModel(model.trim());
     try {
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testKind: 'pelican', apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
+        body: JSON.stringify({ testKind: 'pelican', animationId: resultId.current, apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
         signal: abort.signal,
       });
       const data = await response.json() as Result;
       if (!response.ok || data.error) throw new Error(data.error || 'The test could not be completed.');
       setResult(data);
+      if (data.savedAnimation) {
+        setSignedIn(true); setResultSaved(true);
+        setSavedResults(current => [data.savedAnimation!, ...current.filter(item => item.id !== data.savedAnimation!.id)]);
+        setSaveMessage('Saved to your account. Available across devices in Saved results.');
+      } else if (data.saveError) setSaveMessage(data.saveError);
+      else if (data.answer) setSaveMessage('Sign in before running a test to save results to your account. You can download this HTML now.');
       if (!data.answer) setError('The provider returned no visible answer. Try another model.');
     } catch (caught) {
       setError(abort.signal.aborted ? 'Test stopped.' : caught instanceof Error ? caught.message : 'Could not reach the tester. Please try again.');
@@ -107,25 +142,44 @@ export function PelicanTest() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  function saveResult() {
-    if (!result?.answer) return;
-    // Keep an explicit allowlist: never persist connection keys or raw exchanges.
-    const saved: SavedResult = {
-      id: crypto.randomUUID(), savedAt: new Date().toISOString(), model: resultModel, prompt: PELICAN_PROMPT,
-      result: { answer: result.answer, returnedModel: result.returnedModel, outputTokens: result.outputTokens, totalInputTokens: result.totalInputTokens, totalTimeMs: result.totalTimeMs },
-    };
-    const next = [saved, ...savedResults].slice(0, 10);
+  async function saveResult() {
+    if (!result?.answer || historyBusy) return;
+    setHistoryBusy(true);
     try {
-      localStorage.setItem(SAVED_RESULTS_KEY, JSON.stringify(next));
-      setSavedResults(next);
-      setSaveMessage('Saved in this browser. Reopen it from Saved results below.');
-    } catch { setSaveMessage('Browser storage is unavailable or full. Download the HTML to keep this animation.'); }
+      const data = await connectionRequest<{ saved: AnimationSummary }>('/api/animations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: resultId.current || crypto.randomUUID(), model: resultModel, prompt: PELICAN_PROMPT, result }),
+      });
+      setResultSaved(true);
+      setSavedResults(current => [data.saved, ...current.filter(item => item.id !== data.saved.id)]);
+      setSaveMessage('Saved to your account. Available across devices in Saved results.');
+    } catch (cause) { setSaveMessage(cause instanceof Error ? cause.message : 'Saving failed. Retry or download the HTML.'); }
+    finally { setHistoryBusy(false); }
+  }
+  async function openSaved(id: string) {
+    if (!id || running || historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      const { saved } = await connectionRequest<{ saved: SavedAnimation }>(`/api/animations/${encodeURIComponent(id)}`);
+      setResult(saved.result); setResultModel(saved.model); resultId.current = saved.id;
+      setResultSaved(true); setError(''); setSaveMessage(`Opened result saved ${new Date(saved.savedAt).toLocaleString()}.`);
+    } catch (cause) { setSaveMessage(cause instanceof Error ? cause.message : 'Could not open result.'); }
+    finally { setHistoryBusy(false); }
+  }
+  async function importLegacy() {
+    setHistoryBusy(true);
+    try {
+      for (const saved of legacyResults) await connectionRequest('/api/animations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(saved) });
+      await loadHistory(); setLegacyResults([]);
+      setSaveMessage('Previous browser results copied to your account.');
+    } catch { setSaveMessage('Some results could not be imported. Retry to finish; saved results will not be duplicated.'); }
+    finally { setHistoryBusy(false); }
   }
 
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-[1480px] px-4 py-6 sm:px-6 lg:px-10">
-        <nav className="flex justify-between gap-4"><a href="/" className="text-sm font-semibold text-primary hover:underline">← API Diagnostics</a><a href="/connections" className="text-sm font-semibold text-primary hover:underline">Manage connections</a></nav>
+        <nav className="flex justify-between gap-4"><Link href="/" className="text-sm font-semibold text-primary hover:underline">← API Diagnostics</Link><Link href="/connections" className="text-sm font-semibold text-primary hover:underline">Manage connections</Link></nav>
         <header className="my-6 border-b border-border pb-6">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Pelican Animation Test</h1>
           <p className="mt-2 text-base text-muted-foreground">Give a model the same drawing challenge, then see its animation. No sign-in required.</p>
@@ -161,7 +215,7 @@ export function PelicanTest() {
                 <Input className="mt-2 h-10" type="password" autoComplete="off" minLength={8} maxLength={512} value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder="Enter your API key" />
               </label>
             </fieldset></details>}
-            <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <a href="/connections" className="font-semibold text-primary underline">Connections page</a>.</p>
+            <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <Link href="/connections" className="font-semibold text-primary underline">Connections page</Link>.</p>
             <p className="text-sm leading-6 text-muted-foreground">One request · up to 8,192 output tokens · 3-minute limit. Your provider may charge for usage.</p>
             <div className="flex gap-2">
               <Button type="submit" disabled={running} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
@@ -170,15 +224,15 @@ export function PelicanTest() {
             {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}
             <div className="border-t border-border pt-4">
               <label className="block text-sm font-medium">Saved results
-                <select disabled={running || savedResults.length === 0} value="" onChange={event => {
-                  const saved = savedResults.find(item => item.id === event.target.value);
-                  if (saved) { setResult(saved.result); setResultModel(saved.model); setError(''); setSaveMessage(`Opened result saved ${new Date(saved.savedAt).toLocaleString()}.`); }
-                }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
+                <select disabled={running || historyBusy || savedResults.length === 0} value="" onChange={event => void openSaved(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
                   <option value="">{savedResults.length ? 'Choose a saved result' : 'No saved results yet'}</option>
                   {savedResults.map(saved => <option key={saved.id} value={saved.id}>{saved.model} · {new Date(saved.savedAt).toLocaleString()}</option>)}
                 </select>
               </label>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">Keeps the latest 10 results on this device. Clearing browser data removes them; download HTML for a permanent copy.</p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">When signed in, successful results save automatically to your account on the server, including while you browse another section. Reopen them on any device.</p>
+              {!signedIn && <a href={chatGPTSignInPath('/pelican')} target="_top" className="mt-2 inline-block text-sm font-semibold text-primary underline">Sign in to save results to your account</a>}
+              {nextBefore && <Button type="button" variant="outline" disabled={historyBusy} onClick={() => { setHistoryBusy(true); void loadHistory(nextBefore).catch(() => setSaveMessage('Could not load older results.')).finally(() => setHistoryBusy(false)); }}>Load older results</Button>}
+              {signedIn && legacyResults.length > 0 && <Button type="button" variant="outline" disabled={historyBusy} onClick={() => void importLegacy()}>Import {legacyResults.length} previous browser results</Button>}
             </div>
           </form>
           <div className="min-w-0 space-y-5">
@@ -194,7 +248,7 @@ export function PelicanTest() {
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-5">
                 <h2 className="text-lg font-semibold">Animation preview</h2>
                 <div className="flex flex-wrap gap-2">
-                  {result?.answer && <Button onClick={saveResult}>Save result</Button>}
+                  {result?.answer && signedIn && <Button disabled={resultSaved || historyBusy} onClick={() => void saveResult()}>{resultSaved ? 'Saved to your account' : historyBusy ? 'Saving…' : 'Retry saving'}</Button>}
                   {html && <Button variant="outline" onClick={download}>Download HTML</Button>}
                 </div>
               </div>

@@ -8,6 +8,17 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
+export const animationResults = sqliteTable('animation_results', {
+  userId: text('user_id').notNull(),
+  id: text('id').notNull(),
+  model: text('model').notNull(),
+  evidenceKey: text('evidence_key').notNull(),
+  createdAt: integer('created_at').notNull(),
+}, table => [
+  primaryKey({ columns: [table.userId, table.id] }),
+  index('animation_results_user_created_idx').on(table.userId, table.createdAt),
+]);
+
 export const diagnosticRuns = sqliteTable(
   'diagnostic_runs',
   {

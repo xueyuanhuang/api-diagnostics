@@ -1,4 +1,6 @@
 'use client';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import { activeConnectionId, rememberConnection } from '@/lib/saved-connections';
 import { validateBaseUrl } from '@/lib/server/connection';
@@ -638,10 +640,13 @@ function evidenceRun(context: RunContext, results: TestResult[]): EvidenceRun {
 export function TokenCheckApp({
   signInPath,
   signOutPath,
+  onRunningChange,
 }: {
   signInPath: string;
   signOutPath: string;
+  onRunningChange?: (running: boolean) => void;
 }) {
+  const router = useRouter();
   const [user, setUser] = useState<User>(null);
   const [apiType, setApiType] = useState<ApiType>('anthropic');
   const [liveShownApiType, setShownApiType] = useState<ApiType>('anthropic');
@@ -716,6 +721,23 @@ export function TokenCheckApp({
   const queueStartingRef = useRef(false);
   const controlsLocked =
     isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning;
+  const connectionRefreshLocked = useRef(false);
+  connectionRefreshLocked.current = controlsLocked || profileBusy;
+  useEffect(() => { onRunningChange?.(controlsLocked); }, [controlsLocked, onRunningChange]);
+  useEffect(() => {
+    const refresh = () => {
+      if (controlsLocked || profileBusy || !user) return;
+      void jsonFetch<{ profiles: Profile[] }>('/api/profiles').then(data => {
+        if (connectionRefreshLocked.current) return;
+        setProfiles(data.profiles);
+        const id = activeConnectionId();
+        if (data.profiles.some(item => item.id === id)) selectProfile(id, data.profiles);
+        else if (selectedProfileId && !data.profiles.some(item => item.id === selectedProfileId)) selectProfile('');
+      }).catch(() => setProfileMessage('Could not refresh connections. Try again from Connections.'));
+    };
+    window.addEventListener('connections-refresh', refresh);
+    return () => window.removeEventListener('connections-refresh', refresh);
+  }, [controlsLocked, profileBusy, user, selectedProfileId]);
   // History is a read-only snapshot; it must never replace live runner state.
   const normalPreview =
     viewMode === 'detail' && savedPreview?.run.testKind === 'normal'
@@ -1226,7 +1248,7 @@ export function TokenCheckApp({
     setFormError('');
   }
 
-  function selectProfile(id: string) {
+  function selectProfile(id: string, availableProfiles = profiles) {
     if (controlsLocked || profileBusy) return;
     setSelectedProfileId(id);
     rememberConnection(id);
@@ -1241,7 +1263,7 @@ export function TokenCheckApp({
       setDraftTouched(EMPTY_DRAFT_TOUCHED);
       return;
     }
-    const profile = profiles.find((item) => item.id === id);
+    const profile = availableProfiles.find((item) => item.id === id);
     if (!profile) return;
     setProfileName(profile.name);
     setProfileModels({
@@ -1840,16 +1862,16 @@ export function TokenCheckApp({
           )}
         </header>
 
-        <nav className="mb-5 flex justify-end"><a href="/connections" className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-semibold text-primary hover:bg-muted">Manage connections</a></nav>
+        <nav className="mb-5 flex justify-end"><Link href="/connections" className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-semibold text-primary hover:bg-muted">Manage connections</Link></nav>
 
         <section
           className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3"
           aria-label="Choose a test"
         >
-          <a href="/pelican" className="flex items-start gap-4 rounded-2xl border border-border bg-card p-4 text-left shadow-sm transition-colors hover:border-primary/40">
+          <Link href="/pelican" className="flex items-start gap-4 rounded-2xl border border-border bg-card p-4 text-left shadow-sm transition-colors hover:border-primary/40">
             <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-muted"><Code2 className="size-5" /></span>
             <span><span className="block text-sm font-semibold">Pelican Animation Test</span><span className="mt-1 block text-sm leading-5 text-muted-foreground">One prompt · generate and preview an SVG animation</span></span>
-          </a>
+          </Link>
           <button
             type="button"
             aria-pressed={testMode === 'normal'}
@@ -1967,7 +1989,7 @@ export function TokenCheckApp({
             signInPath={signInPath}
             profiles={profiles}
             active={testMode === 'availability'}
-            onConnections={() => { window.location.href = '/connections'; }}
+            onConnections={() => { router.push('/connections'); }}
           />
         </div>
 
@@ -1989,7 +2011,7 @@ export function TokenCheckApp({
               <label className="min-w-48 flex-1 text-sm font-medium">Model
                 {selectedProfileId ? <select value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">{activeProfileModels.map(item => <option key={item} value={item}>{item}</option>)}</select> : <Input className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} placeholder="Model name" />}
               </label>
-              <a href="/connections" className="inline-flex h-10 items-center rounded-lg border border-border px-4 text-sm font-semibold text-primary hover:bg-muted">Manage connections</a>
+              <Link href="/connections" className="inline-flex h-10 items-center rounded-lg border border-border px-4 text-sm font-semibold text-primary hover:bg-muted">Manage connections</Link>
               {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
               {testMode === 'normal' && ['running', 'queued', 'stopping'].includes(liveNormalPhase) && <Button key="normal-stop" type="button" variant="outline" className="h-10" onClick={stopNormalTest} disabled={liveNormalPhase === 'stopping'}>{liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop selected model'}</Button>}
             </div>
