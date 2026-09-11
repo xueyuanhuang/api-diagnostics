@@ -47,6 +47,7 @@ export async function resolveTestConnection(payload: RequestPayload) {
         status: 404,
       } as const;
     return {
+      profileName: config.profileName,
       apiType: config.apiType,
       baseUrl: config.baseUrl,
       apiKey: await decryptApiKey(config.encryptedApiKey, config.keyIv),
@@ -65,5 +66,5 @@ export async function resolveTestConnection(payload: RequestPayload) {
   if ('error' in validated) return validated;
   if (apiKey.length < 8 || apiKey.length > 512)
     return { error: 'Enter a valid API key.' } as const;
-  return { apiType, baseUrl: validated.baseUrl, apiKey, model } as const;
+  return { apiType, baseUrl: validated.baseUrl, apiKey, model, profileName: null } as const;
 }

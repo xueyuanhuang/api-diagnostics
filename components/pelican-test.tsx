@@ -4,7 +4,7 @@ import { WorkspaceLink as Link } from '@/components/workspace-navigation';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { chatGPTSignInPath } from '@/lib/auth-paths';
-import { type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
+import { animationConnectionLabel, type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
 import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_LIMITS, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
@@ -231,7 +231,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
               <label className="block text-sm font-medium">Saved results
                 <select disabled={running || historyBusy || savedResults.length === 0} value="" onChange={event => void openSaved(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
                   <option value="">{savedResults.length ? 'Choose a saved result' : 'No saved results yet'}</option>
-                  {savedResults.map(saved => <option key={saved.id} value={saved.id}>{saved.model} · {new Date(saved.savedAt).toLocaleString()}</option>)}
+                  {savedResults.map(saved => <option key={saved.id} value={saved.id}>{animationConnectionLabel(saved)} · {saved.model} · {new Date(saved.savedAt).toLocaleString()}</option>)}
                 </select>
               </label>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">When signed in, successful results save automatically to your account on the server, including while you browse another section. Reopen them on any device.</p>
@@ -263,6 +263,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
             </section>
             {saveMessage && <p role="status" className="text-sm">{saveMessage}</p>}
             {result && <section className="space-y-4 rounded-2xl border border-border bg-card p-5">
+              <p className="break-words text-sm font-medium">Connection: {animationConnectionLabel(result)}</p>
               <p className="break-words text-sm text-muted-foreground">Model: {result.returnedModel || resultModel} · Input: {result.totalInputTokens ?? '—'} tokens · Output: {result.outputTokens ?? '—'} tokens · {result.totalTimeMs == null ? '—' : (result.totalTimeMs / 1000).toFixed(1)} seconds</p>
 
               <details><summary className="cursor-pointer text-base font-semibold">Model response / HTML source</summary><pre className="mt-4 max-h-[500px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm">{result.answer || 'No visible answer returned.'}</pre></details>

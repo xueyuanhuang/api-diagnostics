@@ -126,6 +126,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { apiType, baseUrl, apiKey, model } = connection;
+  const animationSource = { connectionName: connection.profileName || 'One-time connection', keyHint: apiKey.slice(-4) };
   const outbound = validateOutboundUrl(baseUrl, payload.allowInsecureHttp);
   if ('error' in outbound)
     return noStore({ error: outbound.error }, { status: 400 });
@@ -249,7 +250,7 @@ export async function POST(request: NextRequest) {
           savedAnimation = await saveAnimation(env, user.userId, {
             id: typeof payload.animationId === 'string' && /^[0-9a-f-]{36}$/i.test(payload.animationId) ? payload.animationId : crypto.randomUUID(),
             model, prompt, savedAt: new Date().toISOString(),
-            result: { answer: streamed.answer, finishReason: streamed.finishReason, maxOutputTokens, returnedModel: streamed.returnedModel, totalInputTokens, outputTokens, totalTimeMs: streamed.totalTimeMs },
+            result: { ...animationSource, answer: streamed.answer, finishReason: streamed.finishReason, maxOutputTokens, returnedModel: streamed.returnedModel, totalInputTokens, outputTokens, totalTimeMs: streamed.totalTimeMs },
           });
         } catch {
           saveError = 'The animation completed, but saving to your account failed. Retry saving below.';
@@ -259,7 +260,7 @@ export async function POST(request: NextRequest) {
 
     return noStore({
       savedAnimation,
-      ...(isPelican ? { maxOutputTokens, finishReason: streamed.finishReason } : {}),
+      ...(isPelican ? { ...animationSource, maxOutputTokens, finishReason: streamed.finishReason } : {}),
       saveError,
       httpStatus: upstream.status,
       returnedModel: streamed.returnedModel,

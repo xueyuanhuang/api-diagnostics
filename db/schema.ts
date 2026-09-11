@@ -12,6 +12,8 @@ export const animationResults = sqliteTable('animation_results', {
   userId: text('user_id').notNull(),
   id: text('id').notNull(),
   model: text('model').notNull(),
+  connectionName: text('connection_name'),
+  keyHint: text('key_hint'),
   evidenceKey: text('evidence_key').notNull(),
   createdAt: integer('created_at').notNull(),
 }, table => [

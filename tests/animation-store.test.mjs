@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import { parseAnimation } from '../lib/animation-results.ts';
+import { animationConnectionLabel, parseAnimation } from '../lib/animation-results.ts';
 import { listAnimations, readAnimation, saveAnimation } from '../lib/server/animation-store.ts';
 
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../drizzle/0007_stormy_prodigy.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../drizzle/0012_exotic_emma_frost.sql', import.meta.url), 'utf8'));
   const objects = new Map();
   const storage = {
     DB: { prepare: sql => ({ bind: (...args) => ({
@@ -66,5 +67,35 @@ test('saved completion metadata survives reload without rewriting a clipped answ
     assert.equal(restored.result.answer, '<svg><defs>');
     assert.equal(restored.result.finishReason, 'max_tokens');
     assert.equal(restored.result.maxOutputTokens, 16384);
+  } finally { sqlite.close(); }
+});
+
+
+test('connection and masked key are immutable run snapshots in lists, details and retries', async () => {
+  const { storage, sqlite, objects } = fixture();
+  try {
+    const value = parseAnimation({ ...animation(), result: { answer: '<svg></svg>', connectionName: 'Original provider', keyHint: 'uhvt', apiKey: 'secret-that-must-not-be-saved' } });
+    const saved = await saveAnimation(storage, 'owner', value);
+    assert.equal(animationConnectionLabel(saved), 'Original provider · ••••uhvt');
+    const listed = (await listAnimations(storage, 'owner'))[0];
+    assert.equal(listed.connectionName, 'Original provider');
+    assert.equal(listed.keyHint, 'uhvt');
+    const retry = await saveAnimation(storage, 'owner', { ...value, result: { ...value.result, connectionName: 'Renamed provider', keyHint: 'new1' } });
+    assert.equal(retry.connectionName, 'Original provider');
+    assert.equal(retry.keyHint, 'uhvt');
+    assert.equal((await readAnimation(storage, 'owner', value.id)).result.keyHint, 'uhvt');
+    assert.ok(![...objects.values()][0].includes('secret-that-must-not-be-saved'));
+  } finally { sqlite.close(); }
+});
+
+test('legacy animation history is not attributed to the current connection', async () => {
+  const { storage, sqlite } = fixture();
+  try {
+    await saveAnimation(storage, 'owner', animation());
+    const saved = (await listAnimations(storage, 'owner'))[0];
+    assert.equal(animationConnectionLabel(saved), 'Connection not recorded');
+    assert.equal(saved.keyHint, null);
+    const invalidHint = parseAnimation({ ...animation(), result: { answer: '<svg></svg>', keyHint: 'sk-a-complete-secret' } });
+    assert.equal(invalidHint.result.keyHint, null);
   } finally { sqlite.close(); }
 });
