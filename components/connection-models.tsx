@@ -40,7 +40,7 @@ export function ConnectionModels({ profile, disabled, onBusyChange, onSaved }: {
         <label className="block text-sm font-medium">API format for {profile.name}<select value={type} onChange={event => { setType(event.target.value as ConnectionApiType); setMessage(''); setError(''); }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3"><option value="openai">OpenAI-compatible</option><option value="anthropic">Anthropic-compatible</option></select></label>
         <div className="flex flex-wrap gap-2" aria-label="Saved models">{config.models.map(model => <span key={model} className="max-w-full break-all rounded-md bg-muted px-2 py-1 text-sm">{model}{model === config.model ? ' (default)' : ''}</span>)}</div>
         <label className="block text-sm font-medium">New models<textarea value={draft} onChange={event => setDraft(event.target.value)} placeholder="One model per line, or separated by commas" className="mt-2 min-h-24 w-full rounded-lg border border-input bg-background p-3 text-sm" /></label>
-        <p className="text-sm text-muted-foreground">Up to 20 models per API format. Uses the existing saved URL and key.</p>
+        <p className="text-sm text-muted-foreground">Up to 200 models per API format. Uses the existing saved URL and key.</p>
         <Button type="submit" disabled={!draft.trim() || disabled || saving}>{saving ? 'Adding models…' : 'Add models to connection'}</Button>
       </fieldset>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

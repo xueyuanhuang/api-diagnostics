@@ -113,5 +113,5 @@ export function normalizeModels(value: unknown) {
         .map((item) => item.trim())
         .filter(Boolean),
     ),
-  ].slice(0, 20);
+  ];
 }

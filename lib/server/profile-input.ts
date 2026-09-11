@@ -43,7 +43,8 @@ function configInput(value: unknown): ProfileConfigInput | { error: string } {
     ...new Set(
       [requestedModel, ...normalizeModels(input.models)].filter(Boolean),
     ),
-  ].slice(0, 20);
+  ];
+  if (models.length > 200) return { error: 'Use at most 200 models per API format. No changes were saved.' };
   const model = requestedModel || models[0] || '';
   if (
     !model ||

@@ -140,7 +140,7 @@ test('ownership, URL mismatch, invalid model, legacy config, and over-limit requ
       ['u', 'p', { ...input(['x']), baseUrl: 'https://other.com' }],
       ['u', 'p', input([''])],
       ['u', 'p', input(['x'.repeat(121)])],
-      ['u', 'p', input(Array.from({ length: 20 }, (_, i) => 'm' + i))],
+      ['u', 'p', input(Array.from({ length: 200 }, (_, i) => 'm' + i))],
     ])
       await assert.rejects(rememberModels(f.db, user, id, payload));
     assert.deepEqual(f.models(), ['old']);
@@ -153,7 +153,7 @@ test('atomic capacity guard adds nothing when another batch fills the list first
   const f = fixture();
   try {
     f.race(() => {
-      for (let i = 0; i < 18; i++)
+      for (let i = 0; i < 198; i++)
         f.sqlite
           .prepare('INSERT INTO profile_api_models VALUES (?,?,?,?,?)')
           .run('r' + i, 'a', 'r' + i, i + 1, 2);
@@ -162,7 +162,7 @@ test('atomic capacity guard adds nothing when another batch fills the list first
       rememberModels(f.db, 'u', 'p', input(['new-a', 'new-b'])),
       (e) => e.status === 409,
     );
-    assert.equal(f.models().length, 19);
+    assert.equal(f.models().length, 199);
     assert.equal(f.models().includes('new-a'), false);
     assert.equal(f.models().includes('new-b'), false);
   } finally {
@@ -205,4 +205,20 @@ test('metadata endpoint authenticates and never touches provider requests or cre
     component,
     /startBlocked=\{\s*isRunning\s*\|\|\s*isBoundaryRunning\s*\|\|\s*isEndpointRunning\s*\|\|\s*profileBusy\s*\}/,
   );
+});
+
+ test('large provider catalogs retain every model through normalization, parsing, and saving', async () => {
+  const { normalizeModels } = await import('../lib/server/connection.ts');
+  const { parseProfileInput } = await import('../lib/server/profile-input.ts');
+  const models = ['old', ...Array.from({length: 76}, (_, i) => `catalog-${i}`)];
+  assert.deepEqual(normalizeModels(models), models);
+  const parsed = parseProfileInput({name: 'wr', apiType: 'anthropic', baseUrl: 'https://example.com', models});
+  assert.deepEqual(parsed.configs.anthropic.models, models);
+  assert.ok('error' in parseProfileInput({name: 'wr', apiType: 'anthropic', baseUrl: 'https://example.com', models: Array.from({length:201}, (_,i)=>`m${i}`)}));
+  const f = fixture();
+  try {
+    const saved = await rememberModels(f.db, 'u', 'p', input(models));
+    assert.deepEqual(saved.models, models);
+    assert.deepEqual(f.models(), models);
+  } finally { f.sqlite.close(); }
 });

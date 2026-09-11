@@ -74,14 +74,14 @@ export async function rememberModels(
   const models = [
     ...new Set([config.model, ...rawModels.map((m: string) => m.trim())]),
   ];
-  if (models.length > 20)
+  if (models.length > 200)
     throw new ModelListError(
-      'This API configuration supports 20 saved models. No models were added.',
+      'This API configuration supports 200 saved models. No models were added.',
       409,
     );
 
   // One atomic, append-only statement: concurrent batches cannot overwrite each other,
-  // exceed the existing 20-model limit, or partially add an over-limit list.
+  // exceed the existing 200-model limit, or partially add an over-limit list.
   const inserted = await db
     .prepare(`WITH requested AS (
       SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.model') AS model, key AS position
@@ -97,7 +97,7 @@ export async function rememberModels(
         SELECT model_name FROM profile_api_models WHERE config_id = c.id
         UNION SELECT model FROM requested
         UNION SELECT c.model_name
-      )) <= 20
+      )) <= 200
     ON CONFLICT(config_id, model_name) DO NOTHING`)
     .bind(
       JSON.stringify(
@@ -135,7 +135,7 @@ export async function rememberModels(
   ];
   if (models.some((model) => !savedModels.includes(model)))
     throw new ModelListError(
-      'The saved list would exceed 20 models. No models from this request were added; remove unused models first.',
+      'The saved list would exceed 200 models. No models from this request were added; remove unused models first.',
       409,
     );
   return {
