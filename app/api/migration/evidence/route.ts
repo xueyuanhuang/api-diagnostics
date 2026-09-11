@@ -35,11 +35,11 @@ export async function POST(request:Request){
       prepared.push({key:item.key,bytes,sha256:item.sha256});
     }
     await Promise.all(prepared.map(item=>env.EVIDENCE.put(item.key,item.bytes)));
-    for(const item of prepared){
-      const stored=await env.EVIDENCE.get(item.key);if(!stored)return fail(503);
+    await Promise.all(prepared.map(async item=>{
+      const stored=await env.EVIDENCE.get(item.key);if(!stored)throw new Error('Stored evidence missing');
       const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await stored.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');
-      if(digest!==item.sha256)return fail(503);
-    }
+      if(digest!==item.sha256)throw new Error('Stored evidence mismatch');
+    }));
     return Response.json({verified:prepared.length},{headers});
   }catch{return fail(503);}
 }
