@@ -1,5 +1,5 @@
 'use client';
-import Link from 'next/link';
+import { WorkspaceLink as Link } from '@/components/workspace-navigation';
 import { ConnectionModels } from '@/components/connection-models';
 
 import { useEffect, useState } from 'react';

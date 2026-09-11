@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
+import { WorkspaceLink as Link } from '@/components/workspace-navigation';
 import { usePathname } from 'next/navigation';
+import { WorkspaceNavigation, useWorkspaceNavigation } from '@/components/workspace-navigation';
 import { TokenCheckApp } from '@/components/token-check-app';
 import { PelicanTest } from '@/components/pelican-test';
 import { ConnectionManager } from '@/components/connection-manager';
@@ -10,7 +11,11 @@ import { chatGPTSignInPath, chatGPTSignOutPath } from '@/lib/auth-paths';
 
 export function SiteWorkspace({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const path = pathname?.replace(/\/$/, '') || '/';
+  return <WorkspaceNavigation initialPath={pathname || '/'}><WorkspaceViews>{children}</WorkspaceViews></WorkspaceNavigation>;
+}
+
+function WorkspaceViews({ children }: { children: React.ReactNode }) {
+  const { path } = useWorkspaceNavigation();
   const [visited, setVisited] = useState<string[]>([path]);
   const [diagnosticsRunning, setDiagnosticsRunning] = useState(false);
   const [pelicanRunning, setPelicanRunning] = useState(false);

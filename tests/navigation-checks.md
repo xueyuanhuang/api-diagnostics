@@ -26,3 +26,21 @@ Run `pnpm exec vite --config tests/navigation.vite.config.ts` and open
 The fixture also counts unmocked requests; this stayed at zero throughout.
 These checks verify navigation, state ownership, and cancellation only, not
 provider capacity or a real 1,000-RPM load.
+
+## Shared website navigation (2026-09-11)
+
+The fixture now renders SiteWorkspace and simulates animation responses too.
+The production build previously threw from the framework Link navigation helper;
+workspace links now update browser history and the persistent workspace directly.
+
+Verified in the in-app browser:
+
+- Click the Pelican card: the URL and visible section change to `/pelican`.
+- Choose Fixture connection and start an animation. Open All tests, then
+  Connections: one mock request, zero aborts, zero unmocked requests.
+- Finish the pending response while on Connections and return to Pelican:
+  the completed HTML preview and account-save confirmation are preserved.
+- The Browser Back and Browser Forward fixture buttons restore the matching
+  Pelican and Connections sections using real browser history events.
+- On the deployed build, the Pelican card opens the animation form and loads all
+  nine saved connections, with no new navigation errors and no paid requests.

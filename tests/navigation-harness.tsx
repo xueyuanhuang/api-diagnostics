@@ -5,7 +5,7 @@
 // while browsing, without duplicate starts or cancellation until Stop.
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { TokenCheckApp } from '../components/token-check-app';
+import { SiteWorkspace } from '../components/site-workspace';
 import { NORMAL_QUESTIONS } from '../lib/questions';
 import '../app/globals.css';
 
@@ -142,6 +142,8 @@ window.fetch = async (input, init = {}) => {
     return response({
       user: { displayName: 'Fixture user', email: 'fixture@example.invalid' },
     });
+  if (path === '/api/animations') return response({ results: [], nextBefore: null });
+  if (path === '/api/diagnostic-runs') return response({ runs: [] });
   if (path === '/api/profiles') return response({ profiles: [profile] });
   if (path === '/api/runs' && method === 'GET')
     return response({ runs: [mixed, normal] });
@@ -172,7 +174,7 @@ window.fetch = async (input, init = {}) => {
         if (!finishNormal) return;
         clearInterval(timer);
         init.signal?.removeEventListener('abort', abort);
-        resolve(response({ ...result, returnedModel: payload.model }));
+        resolve(response({ ...result, returnedModel: payload.model, ...(payload.testKind === 'pelican' ? { answer: '<html><body>Fixture animation completed</body></html>', savedAnimation: { id: payload.animationId, model: payload.model, createdAt: Date.now() } } : {}) }));
       }, 100);
       function abort() {
         clearInterval(timer);
@@ -294,6 +296,8 @@ function Fixture() {
     <>
       <div style={{ padding: 10, background: '#fff3cd' }}>
         <strong>LOCAL MOCK — zero provider traffic</strong>
+        <button onClick={() => window.history.back()}>Browser Back</button>
+        <button onClick={() => window.history.forward()}>Browser Forward</button>
         <button
           style={{ margin: 12, border: '1px solid', padding: 5 }}
           onClick={() => {
@@ -304,7 +308,7 @@ function Fixture() {
         </button>
         <output style={{ display: 'block' }}>{JSON.stringify(counters)}</output>
       </div>
-      <TokenCheckApp signInPath="#" signOutPath="#" />
+      <SiteWorkspace>{null}</SiteWorkspace>
     </>
   );
 }

@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { WorkspaceLink as Link } from '@/components/workspace-navigation';
 
 export default function PrivacyPage() {
   return <main className="mx-auto max-w-3xl space-y-6 px-6 py-12">

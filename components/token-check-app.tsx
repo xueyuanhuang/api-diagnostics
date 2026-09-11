@@ -1,6 +1,6 @@
 'use client';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { WorkspaceLink as Link } from '@/components/workspace-navigation';
+import { useWorkspaceNavigation } from '@/components/workspace-navigation';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import { activeConnectionId, rememberConnection } from '@/lib/saved-connections';
 import { validateBaseUrl } from '@/lib/server/connection';
@@ -646,7 +646,7 @@ export function TokenCheckApp({
   signOutPath: string;
   onRunningChange?: (running: boolean) => void;
 }) {
-  const router = useRouter();
+  const { navigate } = useWorkspaceNavigation();
   const [user, setUser] = useState<User>(null);
   const [apiType, setApiType] = useState<ApiType>('anthropic');
   const [liveShownApiType, setShownApiType] = useState<ApiType>('anthropic');
@@ -1989,7 +1989,7 @@ export function TokenCheckApp({
             signInPath={signInPath}
             profiles={profiles}
             active={testMode === 'availability'}
-            onConnections={() => { router.push('/connections'); }}
+            onConnections={() => { if (!navigate('/connections')) window.location.assign('/connections'); }}
           />
         </div>
 
