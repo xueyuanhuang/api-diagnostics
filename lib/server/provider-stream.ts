@@ -1,6 +1,13 @@
 import type { ApiType } from './connection';
 
 const MAX_RESPONSE_BYTES = 1_000_000;
+export const ANIMATION_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+export class ProviderResponseSizeError extends Error {
+  constructor(public limitBytes: number) {
+    super(`Website response-size limit reached (${limitBytes === ANIMATION_MAX_RESPONSE_BYTES ? '32 MiB' : `${limitBytes.toLocaleString('en-US')} bytes`} of provider data, including streaming metadata). This is separate from the output-token limit; increasing tokens will not fix this error.`);
+    this.name = 'ProviderResponseSizeError';
+  }
+}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -66,9 +73,13 @@ export async function readProviderStream(
   apiType: ApiType,
   apiKey: string,
   startedAt: number,
+  maxResponseBytes = MAX_RESPONSE_BYTES,
 ): Promise<ProviderStreamResult> {
   const contentLength = Number(response.headers.get('content-length') ?? 0);
-  if (contentLength > MAX_RESPONSE_BYTES) throw new Error('Response too large');
+  if (contentLength > maxResponseBytes) {
+    await response.body?.cancel();
+    throw new ProviderResponseSizeError(maxResponseBytes);
+  }
 
   let totalBytes = 0;
   let rawResponse = '';
@@ -134,9 +145,9 @@ export async function readProviderStream(
       const { done, value } = await reader.read();
       if (done) break;
       totalBytes += value.byteLength;
-      if (totalBytes > MAX_RESPONSE_BYTES) {
+      if (totalBytes > maxResponseBytes) {
         await reader.cancel();
-        throw new Error('Response too large');
+        throw new ProviderResponseSizeError(maxResponseBytes);
       }
       const text = decoder.decode(value, { stream: true });
       rawResponse += text;

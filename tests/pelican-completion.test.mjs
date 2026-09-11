@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readProviderStream } from '../lib/server/provider-stream.ts';
+import { readProviderStream, ANIMATION_MAX_RESPONSE_BYTES, ProviderResponseSizeError } from '../lib/server/provider-stream.ts';
 import { animationWarning, extractAnimationHtml, pelicanOutputLimit, adjustPelicanOutputLimit } from '../lib/pelican-test.ts';
 
 const event = data => `data: ${JSON.stringify(data)}\n\n`;
@@ -54,4 +54,22 @@ test('percentage adjustments use the current value and round to whole tokens', (
   assert.equal(adjustPelicanOutputLimit(40960, -25), 30720);
   assert.equal(adjustPelicanOutputLimit(12001, 10), 13201);
   assert.equal(adjustPelicanOutputLimit(1, -50), 1);
+});
+
+test('animation streams over the former 1 MB cap complete with usage and token finish reason intact', async () => {
+  const text = '<svg>' + 'x'.repeat(1_100_000) + '</svg>';
+  const body = event({choices:[{delta:{content:text},finish_reason:'stop'}]}) + event({choices:[],usage:{completion_tokens:1234}});
+  const result = await readProviderStream(new Response(body), 'openai', '', performance.now(), ANIMATION_MAX_RESPONSE_BYTES);
+  assert.equal(result.answer, text);
+  assert.equal(result.usage.completion_tokens, 1234);
+  assert.equal(result.finishReason, 'stop');
+});
+
+test('response-size errors cancel streams and distinguish byte limits from tokens', async () => {
+  let cancelled = false;
+  const body = new ReadableStream({start(c) {c.enqueue(new Uint8Array(101));}, cancel() {cancelled = true;}});
+  await assert.rejects(readProviderStream(new Response(body), 'openai', '', performance.now(), 100), e => e instanceof ProviderResponseSizeError && /separate from the output-token limit/.test(e.message));
+  assert.equal(cancelled, true);
+  assert.match(new ProviderResponseSizeError(ANIMATION_MAX_RESPONSE_BYTES).message, /32 MiB/);
+  await assert.rejects(readProviderStream(new Response('x', {headers:{'content-length':'101'}}), 'openai', '', performance.now(), 100), ProviderResponseSizeError);
 });

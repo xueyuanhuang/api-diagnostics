@@ -1,3 +1,5 @@
+export const MAX_ANIMATION_CHARACTERS = 32 * 1024 * 1024;
+
 export type AnimationResult = {
   connectionName?: string | null;
   keyHint?: string | null;
@@ -19,7 +21,7 @@ export function parseAnimation(value: unknown): SavedAnimation | null {
   const result = input.result as Record<string, unknown> | undefined;
   if (typeof input.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(input.id) ||
       typeof input.model !== 'string' || !input.model.trim() || input.model.length > 120 ||
-      !result || typeof result.answer !== 'string' || !result.answer || result.answer.length > 1_000_000) return null;
+      !result || typeof result.answer !== 'string' || !result.answer || result.answer.length > MAX_ANIMATION_CHARACTERS) return null;
   const metric = (name: string) => typeof result[name] === 'number' && Number.isFinite(result[name]) && Number(result[name]) >= 0 ? Number(result[name]) : null;
   return {
     id: input.id, model: input.model.trim(), savedAt: new Date().toISOString(),

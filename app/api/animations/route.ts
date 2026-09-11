@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { noStore, serverError } from '@/lib/server/http';
 import { listAnimations, saveAnimation } from '@/lib/server/animation-store';
-import { parseAnimation } from '@/lib/animation-results';
+import { parseAnimation, MAX_ANIMATION_CHARACTERS } from '@/lib/animation-results';
 
 export async function GET(request: NextRequest) {
   const user = await getChatGPTUser();
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
   let animation;
   try {
     const raw = await request.text();
-    if (raw.length > 2_000_000) return noStore({ error: 'Animation is too large to save.' }, { status: 413 });
+    if (raw.length > MAX_ANIMATION_CHARACTERS * 2) return noStore({ error: 'Animation is too large to save.' }, { status: 413 });
     animation = parseAnimation(JSON.parse(raw));
   } catch { return noStore({ error: 'Invalid animation.' }, { status: 400 }); }
   if (!animation) return noStore({ error: 'Invalid animation.' }, { status: 400 });

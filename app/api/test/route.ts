@@ -10,7 +10,7 @@ import {
 } from '@/lib/server/connection';
 import { noStore } from '@/lib/server/http';
 import { resolveTestConnection } from '@/lib/server/test-connection';
-import { readProviderStream } from '@/lib/server/provider-stream';
+import { readProviderStream, ANIMATION_MAX_RESPONSE_BYTES, ProviderResponseSizeError } from '@/lib/server/provider-stream';
 import { combinedRequestSignal } from '@/lib/server/abort-signals';
 import { IpMappingError, isRawIpv4 } from '@/lib/server/ip-mapping';
 import { resolveHostedConnection } from '@/lib/server/hosted-ip-mapping';
@@ -186,6 +186,7 @@ export async function POST(request: NextRequest) {
       apiType,
       apiKey,
       startedAt,
+      isPelican ? ANIMATION_MAX_RESPONSE_BYTES : undefined,
     );
     const usage = streamed.usage;
     let inputTokens: number | null;
@@ -291,11 +292,11 @@ export async function POST(request: NextRequest) {
       error instanceof Error &&
       (error.name === 'TimeoutError' || error.name === 'AbortError');
     const responseTooLarge =
-      error instanceof Error && error.message === 'Response too large';
+      error instanceof ProviderResponseSizeError;
     return noStore(
       {
         error: responseTooLarge
-          ? 'The provider returned a response larger than this tester allows.'
+          ? error.message
           : isTimeout
             ? `The provider did not complete the response within the ${timeoutMs / 1_000}-second test limit.`
             : 'The tester relay could not complete the connection to the provider.',
