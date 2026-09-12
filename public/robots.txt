@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /auth/
+Disallow: /migration/
+Disallow: /connections
+Disallow: /showcase/
+Sitemap: https://api-diagnostics.xue-yuanhuang.workers.dev/sitemap.xml

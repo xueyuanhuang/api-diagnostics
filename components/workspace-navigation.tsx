@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type AnchorHTMLAttributes, type ReactNode } from 'react';
 
-const workspacePages = new Set(['/', '/pelican', '/connections']);
+const workspacePages = new Set(['/', '/tests', '/pelican', '/connections']);
 const normalizePath = (path: string) => path.replace(/\/$/, '') || '/';
 const NavigationContext = createContext<{ path: string; navigate: (href: string) => boolean } | null>(null);
 

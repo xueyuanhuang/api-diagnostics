@@ -14,6 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  verification: { google: 'LtgWPV5nWrsP5DXwYBAXaxtc-F3SMVrAsghJHwLUxWQ' },
   metadataBase: new URL('https://api-diagnostics.xue-yuanhuang.workers.dev'),
   title: 'API Diagnostics',
   description:

@@ -242,7 +242,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-[1480px] px-4 py-6 sm:px-6 lg:px-10">
-        <nav className="flex justify-between gap-4"><Link href="/" className="text-sm font-semibold text-primary hover:underline">← API Diagnostics</Link><Link href="/connections" className="text-sm font-semibold text-primary hover:underline">Manage connections</Link></nav>
+        <nav className="flex justify-between gap-4"><Link href="/" className="text-sm font-semibold text-primary hover:underline">← Model gallery</Link><Link href="/connections" className="text-sm font-semibold text-primary hover:underline">Manage connections</Link></nav>
         <header className="my-6 border-b border-border pb-6">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Pelican Animation Test</h1>
           <p className="mt-2 text-base text-muted-foreground">Give a model the same drawing challenge, then see its animation. No sign-in required.</p>
