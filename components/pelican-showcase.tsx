@@ -5,26 +5,23 @@ import { AnimationPreview } from '@/components/animation-preview';
 import { WorkspaceLink } from '@/components/workspace-navigation';
 import { PELICAN_PROMPT } from '@/lib/pelican-test';
 
-const examples = [
-  { id: 'gpt-6-astra', name: 'gpt-6-astra', description: 'A coastal ride, with a helmet and scarf.', seconds: '178.6', tokens: '6,478' },
-  { id: 'gpt-5.6-sol', name: 'gpt-5.6-sol', description: 'A bright sky and a bold red bicycle.', seconds: '55.6', tokens: '5,406' },
-  { id: 'claude-opus-5', name: 'claude-opus-5', description: 'Another take on the same cycling challenge.', seconds: '142.2', tokens: '12,013' },
-];
+import { gallerySeeds, type GalleryExample } from '@/lib/gallery';
+import { GalleryManager } from '@/components/gallery-manager';
 
-function Example({ id }: { id: string }) {
-  const example = examples.find(item => item.id === id)!;
+function Example({ example }: { example: GalleryExample }) {
+  const id = example.id;
   const [html, setHtml] = useState('');
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     setHtml(''); setError(false);
-    fetch(`/showcase/${id}.txt`, { signal: controller.signal }).then(response => {
+    fetch(example.url ?? `/showcase/${id}.txt`, { signal: controller.signal }).then(response => {
       if (!response.ok) throw new Error('Unavailable');
       return response.text();
     }).then(setHtml).catch(() => { if (!controller.signal.aborted) setError(true); });
     return () => controller.abort();
-  }, [id, attempt]);
+  }, [id, example.url, attempt]);
   return <section className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card shadow-sm" aria-label={`${example.name} animation`}>
     <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-4">
       <h2 className="font-semibold">{example.name}</h2>
@@ -35,6 +32,8 @@ function Example({ id }: { id: string }) {
 }
 
 export function PelicanShowcase() {
+  const [examples, setExamples] = useState(gallerySeeds);
+  useEffect(() => { fetch('/api/gallery').then(r => r.ok ? r.json() as Promise<{examples: GalleryExample[]}> : null).then(data => { if (data?.examples?.length) setExamples(data.examples); }).catch(() => {}); }, []);
   const [selected, setSelected] = useState(examples[0].id);
   const [compare, setCompare] = useState(false);
   const [second, setSecond] = useState(examples[1].id);
@@ -53,6 +52,7 @@ export function PelicanShowcase() {
       </div>
       <WorkspaceLink href="/pelican" className="rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground">Test your own model →</WorkspaceLink>
     </header>
+    <GalleryManager examples={examples} onPublished={setExamples} />
     <div className="mb-6 grid gap-3 sm:grid-cols-3" aria-label="Choose a model">
       {examples.map(example => <button key={example.id} aria-pressed={selected === example.id} onClick={() => select(example.id)} className={`rounded-xl border p-4 text-left transition-colors ${selected === example.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:bg-muted'}`}>
         <span className="block font-semibold">{example.name}</span>
@@ -64,8 +64,8 @@ export function PelicanShowcase() {
       {compare && <label className="flex items-center gap-2 text-sm">Compare with <select className="rounded-lg border border-border bg-card px-3 py-2" value={second} onChange={event => setSecond(event.target.value)}>{examples.filter(item => item.id !== selected).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
     </div>
     <div className={`grid items-start gap-5 ${compare ? 'lg:grid-cols-2' : ''}`}>
-      <Example key={selected} id={selected} />
-      {compare && <Example key={`compare-${second}`} id={second} />}
+      <Example key={selected} example={examples.find(item => item.id === selected) ?? examples[0]} />
+      {compare && <Example key={`compare-${second}`} example={examples.find(item => item.id === second) ?? examples[1]} />}
     </div>
     <div className="mt-6 grid gap-5 md:grid-cols-2">
       <details className="rounded-xl border border-border bg-card p-5"><summary className="cursor-pointer font-semibold">The same prompt for every example</summary><p className="mt-4 text-sm leading-relaxed">{PELICAN_PROMPT}</p><p className="mt-3 text-sm text-muted-foreground">Create an HTML page containing a 2D SVG animation of a pelican riding a bicycle. No tests are needed.</p></details>

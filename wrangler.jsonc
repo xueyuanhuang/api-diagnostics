@@ -23,6 +23,7 @@
   ],
   "account_id": "13aee27300575d6bfbc1362397eb3a9b",
   "vars": {
+    "GALLERY_OWNER_EMAIL_SHA256": "746892501cbb29c198a31e404a89f7c54355626c04879408b7da38e4698dcdf3",
     "IP_MAPPING_SUFFIX": "ip-api.xyhmail.xyz",
     "IP_MAPPING_MODE": "existing",
     "APP_ORIGIN": "https://api-diagnostics.xue-yuanhuang.workers.dev",
