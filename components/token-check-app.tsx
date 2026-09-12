@@ -39,7 +39,6 @@ import {
   ShieldCheck,
   Square,
   Trash2,
-  UserRound,
   X,
   XCircle,
 } from 'lucide-react';
@@ -640,11 +639,9 @@ function evidenceRun(context: RunContext, results: TestResult[]): EvidenceRun {
 
 export function TokenCheckApp({
   signInPath,
-  signOutPath,
   onRunningChange,
 }: {
   signInPath: string;
-  signOutPath: string;
   onRunningChange?: (running: boolean) => void;
 }) {
   const { navigate } = useWorkspaceNavigation();
@@ -1840,27 +1837,7 @@ export function TokenCheckApp({
               self-description and measure request-rate capacity.
             </p>
           </div>
-          {user ? (
-            <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
-              <UserRound className="size-4" />
-              <span className="max-w-48 truncate">{user.displayName}</span>
-              <a
-                href={signOutPath}
-                target="_top"
-                className="font-semibold hover:underline"
-              >
-                Sign out
-              </a>
-            </div>
-          ) : (
-            <a
-              href={signInPath}
-              target="_top"
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-semibold shadow-sm hover:bg-muted"
-            >
-              <LogIn className="size-4" /> Sign in with Google
-            </a>
-          )}
+
         </header>
 
         <nav className="mb-5 flex justify-end"><Link href="/connections" className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-semibold text-primary hover:bg-muted">Manage connections</Link></nav>
