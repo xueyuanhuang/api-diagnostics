@@ -58,7 +58,7 @@ export function animationPreviewDocument(html: string, autoFit = false) {
     style.textContent = 'html{overflow:hidden!important}';
     document.head.appendChild(style);
     new ResizeObserver(schedule).observe(document.body);
-    window.addEventListener('resize', schedule);
+    window.addEventListener('resize', () => { last = 0; schedule(); });
     schedule();
     setTimeout(schedule, 300);
   };
