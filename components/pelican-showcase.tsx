@@ -5,7 +5,7 @@ import { AnimationPreview } from '@/components/animation-preview';
 import { WorkspaceLink } from '@/components/workspace-navigation';
 import { PELICAN_PROMPT } from '@/lib/pelican-test';
 
-import { gallerySeeds, type GalleryExample } from '@/lib/gallery';
+import { type GalleryExample } from '@/lib/gallery';
 import { GalleryManager } from '@/components/gallery-manager';
 
 function Example({ example }: { example: GalleryExample }) {
@@ -32,14 +32,33 @@ function Example({ example }: { example: GalleryExample }) {
 }
 
 export function PelicanShowcase() {
-  const [examples, setExamples] = useState(gallerySeeds);
-  useEffect(() => { fetch('/api/gallery').then(r => r.ok ? r.json() as Promise<{examples: GalleryExample[]}> : null).then(data => { if (data?.examples?.length) setExamples(data.examples); }).catch(() => {}); }, []);
-  const [selected, setSelected] = useState(examples[0].id);
+  const [examples, setExamples] = useState<GalleryExample[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true); setLoadError(false);
+    fetch('/api/gallery', {signal:controller.signal}).then(async response => {
+      if (!response.ok) throw new Error('Could not load gallery');
+      return response.json() as Promise<{examples: GalleryExample[]}>;
+    }).then(data => setExamples(data.examples)).catch(() => {
+      if (!controller.signal.aborted) setLoadError(true);
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [attempt]);
+  const [selected, setSelected] = useState('');
   const [compare, setCompare] = useState(false);
-  const [second, setSecond] = useState(examples[1].id);
+  const [second, setSecond] = useState('');
+  const active = examples.find(item => item.id === selected) ?? examples[0];
+  const comparison = examples.find(item => item.id === second && item.id !== active?.id) ?? examples.find(item => item.id !== active?.id);
+  const showComparison = compare && Boolean(comparison);
   function select(id: string) {
     setSelected(id);
-    if (second === id) setSecond(examples.find(item => item.id !== id)!.id);
+    if (second === id) setSecond(examples.find(item => item.id !== id)?.id ?? '');
+  }
+  function updateGallery(items: GalleryExample[]) {
+    setExamples(items); setLoading(false); setLoadError(false);
   }
   return <main className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6 sm:py-12">
     <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({ '@context': 'https://schema.org', '@type': 'WebApplication', name: 'Pelican Test', url: 'https://api-diagnostics.xue-yuanhuang.workers.dev/', applicationCategory: 'DeveloperApplication', operatingSystem: 'Any', browserRequirements: 'Requires JavaScript', description: 'Compare saved AI-generated SVG animations of a pelican riding a bicycle, or test your own model.' }) }} />
@@ -52,21 +71,21 @@ export function PelicanShowcase() {
       </div>
       <WorkspaceLink href="/pelican" className="rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground">Test your own model →</WorkspaceLink>
     </header>
-    <GalleryManager examples={examples} onPublished={setExamples} />
+    <GalleryManager examples={examples} onPublished={updateGallery} />
     <div className="mb-6 grid gap-3 sm:grid-cols-3" aria-label="Choose a model">
-      {examples.map(example => <button key={example.id} aria-pressed={selected === example.id} onClick={() => select(example.id)} className={`rounded-xl border p-4 text-left transition-colors ${selected === example.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:bg-muted'}`}>
+      {examples.map(example => <button key={example.id} aria-pressed={active?.id === example.id} onClick={() => select(example.id)} className={`rounded-xl border p-4 text-left transition-colors ${active?.id === example.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:bg-muted'}`}>
         <span className="block font-semibold">{example.name}</span>
-        <span className={`mt-1 block text-sm ${selected === example.id ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>{example.description}</span>
+        <span className={`mt-1 block text-sm ${active?.id === example.id ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>{example.description}</span>
       </button>)}
     </div>
-    <div className="mb-4 flex flex-wrap items-center gap-4">
-      <label className="flex cursor-pointer items-center gap-2 text-sm font-medium"><input type="checkbox" checked={compare} onChange={event => setCompare(event.target.checked)} className="size-4 accent-primary" />Compare side by side</label>
-      {compare && <label className="flex items-center gap-2 text-sm">Compare with <select className="rounded-lg border border-border bg-card px-3 py-2" value={second} onChange={event => setSecond(event.target.value)}>{examples.filter(item => item.id !== selected).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-    </div>
-    <div className={`grid items-start gap-5 ${compare ? 'lg:grid-cols-2' : ''}`}>
-      <Example key={selected} example={examples.find(item => item.id === selected) ?? examples[0]} />
-      {compare && <Example key={`compare-${second}`} example={examples.find(item => item.id === second) ?? examples[1]} />}
-    </div>
+    {examples.length > 1 && <div className="mb-4 flex flex-wrap items-center gap-4">
+      <label className="flex cursor-pointer items-center gap-2 text-sm font-medium"><input type="checkbox" checked={showComparison} onChange={event => setCompare(event.target.checked)} className="size-4 accent-primary" />Compare side by side</label>
+      {showComparison && <label className="flex items-center gap-2 text-sm">Compare with <select className="rounded-lg border border-border bg-card px-3 py-2" value={comparison?.id ?? ''} onChange={event => setSecond(event.target.value)}>{examples.filter(item => item.id !== active?.id).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+    </div>}
+    {loading ? <p className="rounded-xl border border-border bg-card p-8 text-center" role="status">Loading model gallery…</p> : loadError ? <div className="rounded-xl border border-border bg-card p-8 text-center" role="status">Could not load the gallery. <button className="underline" onClick={() => setAttempt(value => value + 1)}>Try again</button></div> : active ? <div className={`grid items-start gap-5 ${showComparison ? 'lg:grid-cols-2' : ''}`}>
+      <Example key={active.id} example={active} />
+      {showComparison && comparison && <Example key={`compare-${comparison.id}`} example={comparison} />}
+    </div> : <p className="rounded-xl border border-border bg-card p-8 text-center text-muted-foreground">No animations are published yet. You can still run your own pelican test.</p>}
     <div className="mt-6 grid gap-5 md:grid-cols-2">
       <details className="rounded-xl border border-border bg-card p-5"><summary className="cursor-pointer font-semibold">The same prompt for every example</summary><p className="mt-4 text-sm leading-relaxed">{PELICAN_PROMPT}</p><p className="mt-3 text-sm text-muted-foreground">Create an HTML page containing a 2D SVG animation of a pelican riding a bicycle. No tests are needed.</p></details>
       <div className="rounded-xl border border-border bg-card p-5"><h2 className="font-semibold">Look beyond a pretty picture</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Do the pedals, wheels and rider move together? Does the scene follow the prompt? These are individual saved outputs, not an intelligence ranking. Model names are those recorded by the API; settings and response times can differ.</p></div>
