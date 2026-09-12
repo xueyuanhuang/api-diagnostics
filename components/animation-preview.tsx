@@ -16,9 +16,10 @@ export function AnimationPreview({ html }: { html: string }) {
     const update = () => setViewportHeight(window.innerHeight);
     update();
     window.addEventListener('resize', update);
+    let lastWidth = 0;
     const observer = new ResizeObserver(entries => {
       const next = Math.round(entries[0].contentRect.width);
-      if (next > 0) { setWidth(next); setHeight(720); }
+      if (next > 0 && next !== lastWidth) { lastWidth = next; setWidth(next); setHeight(720); }
     });
     if (container.current) observer.observe(container.current);
     const message = (event: MessageEvent) => {
