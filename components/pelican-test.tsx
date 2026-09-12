@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button';
 import { chatGPTSignInPath } from '@/lib/auth-paths';
 import { animationConnectionLabel, type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
+import { AnimationPreview } from '@/components/animation-preview';
 import { ModelPicker } from '@/components/model-picker';
-import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_CEILING, adjustPelicanOutputLimit, pelicanOutputLimit, extractAnimationHtml, animationPreviewDocument, animationWarning } from '@/lib/pelican-test';
+import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_CEILING, adjustPelicanOutputLimit, pelicanOutputLimit, extractAnimationHtml, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 import { activeConnectionId, rememberConnection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
@@ -327,7 +328,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
                 </div>
               </div>
               {warning && <div role="alert" className="border-b border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-6 text-amber-950"><strong className="block">Incomplete animation response</strong>{warning}</div>}
-              {html ? <iframe title="Generated pelican animation" sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={animationPreviewDocument(html)} className="h-[540px] w-full border-0 bg-white" /> : <div className="flex min-h-72 items-center justify-center p-8 text-center text-base text-muted-foreground" role="status">{running ? 'The model is drawing. Its animation will appear when the response finishes.' : result?.answer ? 'No HTML or SVG was found. Read the model response below.' : 'Enter your connection and run the test to see what your model creates.'}</div>}
+              {html ? <AnimationPreview key={resultId.current} html={html} /> : <div className="flex min-h-72 items-center justify-center p-8 text-center text-base text-muted-foreground" role="status">{running ? 'The model is drawing. Its animation will appear when the response finishes.' : result?.answer ? 'No HTML or SVG was found. Read the model response below.' : 'Enter your connection and run the test to see what your model creates.'}</div>}
               {html && <p className="border-t border-border px-5 py-3 text-sm text-muted-foreground">Preview is isolated; external resources are blocked. If incomplete, inspect the response below.</p>}
             </section>
             {saveMessage && <p role="status" className="text-sm">{saveMessage}</p>}
