@@ -1,3 +1,4 @@
+import { readApiResponse } from './api-response';
 export type ConnectionApiType = 'openai' | 'anthropic';
 export type SavedConnection = {
   id: string;
@@ -19,7 +20,5 @@ export function rememberConnection(id: string) {
 
 export async function connectionRequest<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, cache: 'no-store' });
-  const data = await response.json() as { error?: string };
-  if (!response.ok) throw new Error(data.error || 'Could not load connections.');
-  return data as T;
+  return readApiResponse<T>(response);
 }

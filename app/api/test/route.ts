@@ -237,7 +237,10 @@ export async function POST(request: NextRequest) {
       streamed.generationMs > 0
         ? Number((outputTokens / (streamed.generationMs / 1_000)).toFixed(2))
         : null;
-    const providerError = upstream.ok
+    const providerHtml = /^\s*(?:<!doctype html|<html|<head|<body)/i.test(streamed.rawResponse);
+    const providerError = providerHtml
+      ? `The provider returned an HTML page instead of an API response (HTTP ${upstream.status}). Check the connection's Base URL and API format; the provider may also be showing an access-block or gateway error. This is not an output-token limit error.`
+      : upstream.ok
       ? null
       : (providerErrorMessage(streamed.rawResponse) ??
         `The provider returned HTTP ${upstream.status}.`);

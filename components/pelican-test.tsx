@@ -1,5 +1,6 @@
 'use client';
 import { WorkspaceLink as Link } from '@/components/workspace-navigation';
+import { readApiResponse } from '@/lib/api-response';
 
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -163,8 +164,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
         body: JSON.stringify({ testKind: 'pelican', maxOutputTokens, animationId: resultId.current, apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
         signal: abort.signal,
       });
-      const data = await response.json() as Result;
-      if (!response.ok || data.error) throw new Error(data.error || 'The test could not be completed.');
+      const data = await readApiResponse<Result>(response);
       setResult(data);
       if (data.savedAnimation) {
         setSignedIn(true); setResultSaved(true);
