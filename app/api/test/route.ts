@@ -1,3 +1,4 @@
+import { openRouterRoute } from '@/lib/openrouter';
 import { env } from 'cloudflare:workers';
 import { NextRequest } from 'next/server';
 import { saveAnimation } from '@/lib/server/animation-store';
@@ -16,6 +17,7 @@ import { IpMappingError, isRawIpv4 } from '@/lib/server/ip-mapping';
 import { resolveHostedConnection } from '@/lib/server/hosted-ip-mapping';
 
 type RequestPayload = {
+  openRouterTier?: unknown;
   testKind?: unknown;
   animationId?: unknown;
   maxOutputTokens?: unknown;
@@ -100,9 +102,9 @@ export async function POST(request: NextRequest) {
     return noStore({ error: 'Invalid request body.' }, { status: 400 });
   }
   const isPelican = payload.testKind === 'pelican';
-  const maxOutputTokens = isPelican ? pelicanOutputLimit(payload.maxOutputTokens) : 96;
+  let maxOutputTokens = isPelican ? pelicanOutputLimit(payload.maxOutputTokens) : 96;
   if (maxOutputTokens === null) return noStore({ error: 'Enter a positive whole-number output limit supported by your provider.' }, { status: 400 });
-  const timeoutMs = isPelican ? PELICAN_TIMEOUT_MS : 45_000;
+  let timeoutMs = isPelican ? PELICAN_TIMEOUT_MS : 45_000;
   const prompt = isPelican ? PELICAN_PROMPT : typeof payload.prompt === 'string' ? payload.prompt : '';
   if (!prompt || prompt.length > 1_000) {
     return noStore({ error: 'Enter a valid test question.' }, { status: 400 });
@@ -126,6 +128,10 @@ export async function POST(request: NextRequest) {
   }
 
   const { apiType, baseUrl, apiKey, model } = connection;
+  let routing;
+  try { routing = openRouterRoute(baseUrl, apiType, model, payload.openRouterTier); }
+  catch (error) { return noStore({ error: error instanceof Error ? error.message : 'Invalid route.' }, { status: 400 }); }
+  if (routing && !isPelican) { maxOutputTokens = 512; timeoutMs = 120_000; }
   const animationSource = { connectionName: connection.profileName || 'One-time connection', keyHint: apiKey.slice(-4) };
   const outbound = validateOutboundUrl(baseUrl, payload.allowInsecureHttp);
   if ('error' in outbound)
@@ -160,6 +166,7 @@ export async function POST(request: NextRequest) {
 
   const requestUrl = endpointFromBaseUrl(resolved.actualBaseUrl, apiType);
   const requestBody = JSON.stringify({
+    ...routing,
     model,
     max_tokens: maxOutputTokens,
     messages: [{ role: 'user', content: prompt }],

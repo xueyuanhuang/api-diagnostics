@@ -1,4 +1,5 @@
 'use client';
+import { isOpenRouter, routeEvidence, type OpenRouterTier } from '@/lib/openrouter';
 import { ModelPicker } from '@/components/model-picker';
 import { WorkspaceLink as Link } from '@/components/workspace-navigation';
 import { useWorkspaceNavigation } from '@/components/workspace-navigation';
@@ -531,6 +532,10 @@ function RequestResponseDetails({ result }: { result: TestResult }) {
           ) : null}
         </div>
 
+        {routeEvidence(result.requestBody).requested && (() => {
+          const route = routeEvidence(result.requestBody, result.rawResponse);
+          return <p className="rounded-md border border-border p-2">Requested tier: {route.requested} · Served tier: {route.served || 'Not reported (unverified)'} · Provider: {route.provider || 'Not reported'} · Reported cost: {route.cost === null ? 'Not reported' : `$${route.cost.toFixed(6)}`}{route.served && route.served !== route.requested ? ' · Tier mismatch: exclude this result from the requested-tier comparison.' : ''}</p>;
+        })()}
         {hasRequest ? (
           <details>
             <summary className="cursor-pointer font-semibold text-foreground">
@@ -666,6 +671,7 @@ export function TokenCheckApp({
   const [selectedJobId, setSelectedJobId] = useState('');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [concurrency, setConcurrency] = useState(3);
+  const [openRouterTier, setOpenRouterTier] = useState<OpenRouterTier>('default');
   const liveJob =
     queueJobs.find((job) => job.id === selectedJobId) ?? queueJobs.at(-1);
   const liveResults = (liveJob?.results ?? initialResults()) as TestResult[];
@@ -1645,7 +1651,9 @@ export function TokenCheckApp({
           baseUrl.trim(),
           modelsToEnqueue,
         );
+      const routingTier = apiType === 'openai' && isOpenRouter(baseUrl) && modelsToEnqueue.every(name => name.startsWith('openai/')) ? openRouterTier : undefined;
       const requestBase = {
+        openRouterTier: routingTier,
         allowInsecureHttp: isInsecureHttp(baseUrl),
         profileId: profileId || undefined,
         apiType,
@@ -1655,10 +1663,10 @@ export function TokenCheckApp({
       normalQueue.setConcurrency(concurrency);
       const ids = normalQueue.enqueue(
         modelsToEnqueue.map((modelName) => ({
-          key: JSON.stringify([profileId, apiType, baseUrl.trim(), modelName]),
+          key: JSON.stringify([profileId, apiType, baseUrl.trim(), modelName, routingTier]),
           context: {
             source: 'current' as const,
-            profileName: (selectedProfile?.name ?? profileName.trim()) || null,
+            profileName: ((routingTier ? (selectedProfile?.name ?? profileName.trim()).slice(0, 55) : (selectedProfile?.name ?? profileName.trim())) + (routingTier ? ` · ${routingTier === 'flex' ? 'Flex' : 'Standard'} requested` : '')) || null,
             apiType,
             baseUrl: baseUrl.trim(),
             modelName,
@@ -1993,6 +2001,10 @@ export function TokenCheckApp({
               {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
               {testMode === 'normal' && ['running', 'queued', 'stopping'].includes(liveNormalPhase) && <Button key="normal-stop" type="button" variant="outline" className="h-10" onClick={stopNormalTest} disabled={liveNormalPhase === 'stopping'}>{liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop selected model'}</Button>}
             </div>
+            {testMode === 'normal' && apiType === 'openai' && isOpenRouter(baseUrl) && model.startsWith('openai/') && <div className="space-y-2 rounded-xl border border-border p-3">
+              <label className="block text-sm font-medium">OpenRouter resource<select aria-label="OpenRouter resource" className="ml-3 rounded-lg border border-input bg-background p-2" value={openRouterTier} onChange={event => setOpenRouterTier(event.target.value as OpenRouterTier)}><option value="default">OpenAI · Standard</option><option value="flex">OpenAI · Flex (discounted)</option></select></label>
+              <p className="text-sm text-muted-foreground">Pins the selected resource with fallback disabled. Each route uses the same 12 questions, low reasoning, a 512-token cap and a 120-second timeout per question. Actual tier and reported cost appear in request details. Flex availability and pricing depend on the model.</p>
+            </div>}
             {!selectedProfileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><div className="mt-3 grid gap-4 md:grid-cols-3">
               <label className="text-sm font-medium">Base URL<Input className="mt-2 h-10" value={baseUrl} onChange={event => updateConnection({ baseUrl: event.target.value })} disabled={controlsLocked} placeholder="https://your-provider.com/v1" /></label>
               <label className="text-sm font-medium">API key<Input className="mt-2 h-10" type="password" autoComplete="off" value={apiKey} onChange={event => updateApiKey(event.target.value)} disabled={controlsLocked} placeholder="Enter your key for this test" /></label>
@@ -2679,7 +2691,7 @@ export function TokenCheckApp({
                     <p>
                       REQUEST · POST · model=
                       {runContext?.modelName || model.trim() || '—'} ·
-                      max_tokens=96 · stream=true
+                      max_tokens={(() => { try { return JSON.parse(results.find(result => result.requestBody)?.requestBody || '{}').max_tokens ?? 96; } catch { return 96; } })()} · stream=true
                       {shownApiType === 'openai'
                         ? ' · stream_options.include_usage=true'
                         : ''}

@@ -1,3 +1,4 @@
+import { isOpenRouter, routeEvidence } from '@/lib/openrouter';
 import { env } from 'cloudflare:workers';
 import { desc, eq } from 'drizzle-orm';
 import { NextRequest } from 'next/server';
@@ -178,6 +179,13 @@ export async function POST(request: NextRequest) {
       error: nullableText(record.error, 2_000),
     };
   });
+  if (apiType === 'openai' && isOpenRouter(validated.baseUrl)) {
+    const tiers = new Set(results.map(result => routeEvidence(result.requestBody).requested).filter(Boolean));
+    if (tiers.size === 1) {
+      const tier = [...tiers][0];
+      if (tier === 'default' || tier === 'flex') profileName = `${profileName || 'OpenRouter'} · ${tier === 'flex' ? 'Flex' : 'Standard'} requested`;
+    }
+  }
   const normalCount = results.filter(
     (result) => result.status === 'normal',
   ).length;
