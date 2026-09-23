@@ -1454,9 +1454,9 @@ export function RpmRampTest({
         <div className="border-b border-border px-5 py-4">
           <h2 className="text-sm font-semibold">Measurement windows</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Request payload: max_tokens=8 · stream=false · no temperature,
+            Request payload: max_tokens={detail ? (detail.run.openRouterTier ? 512 : 8) : openRouterTier ? 512 : 8} · stream=false · no temperature,
             top_p, top_k, system, tools, cache controls, or retries · 20-second
-            upstream timeout during ramp stages.
+            upstream timeout per request. OpenRouter routes use low reasoning effort.
           </p>
           {activeStage ? (
             <Progress
