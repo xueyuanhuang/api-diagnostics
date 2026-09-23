@@ -15,7 +15,7 @@ const SOURCES = {
 type Site = keyof typeof SOURCES;
 function result(data: unknown) { return { content: [{ type: 'text' as const, text: JSON.stringify(scrubEvidence(data)) }] }; }
 async function readRemote(url: string, json = true) {
-  const response = await fetch(url, { headers: { 'User-Agent': 'API-Diagnostics-MCP/1.0', Accept: json ? 'application/json' : 'text/plain' }, redirect: 'error', signal: AbortSignal.timeout(20000) });
+  const response = await fetch(url, { headers: { 'User-Agent': 'API-Diagnostics-MCP/1.0', Accept: json ? 'application/json' : 'text/plain' }, redirect: 'manual', signal: AbortSignal.timeout(20000) });
   if (!response.ok) throw new Error(`Public source returned HTTP ${response.status}. Source: ${url}`);
   const reader = response.body?.getReader(); if (!reader) throw new Error('Empty source');
   let size = 0, text = ''; const decoder = new TextDecoder();
