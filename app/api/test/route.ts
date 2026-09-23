@@ -1,13 +1,8 @@
-import { COLLECTOR_VERSION, ANALYSIS_VERSION } from '@/lib/result-assessment';
 import { openRouterRoute } from '@/lib/openrouter';
 import { env } from 'cloudflare:workers';
 import { NextRequest } from 'next/server';
 import { saveAnimation } from '@/lib/server/animation-store';
-import {
-  PELICAN_PROMPT,
-  pelicanOutputLimit,
-  PELICAN_TIMEOUT_MS,
-} from '@/lib/pelican-test';
+import { PELICAN_PROMPT, pelicanOutputLimit, PELICAN_TIMEOUT_MS } from '@/lib/pelican-test';
 
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import {
@@ -16,11 +11,7 @@ import {
 } from '@/lib/server/connection';
 import { noStore } from '@/lib/server/http';
 import { resolveTestConnection } from '@/lib/server/test-connection';
-import {
-  readProviderStream,
-  ANIMATION_MAX_RESPONSE_BYTES,
-  ProviderResponseSizeError,
-} from '@/lib/server/provider-stream';
+import { readProviderStream, ANIMATION_MAX_RESPONSE_BYTES, ProviderResponseSizeError } from '@/lib/server/provider-stream';
 import { combinedRequestSignal } from '@/lib/server/abort-signals';
 import { IpMappingError, isRawIpv4 } from '@/lib/server/ip-mapping';
 import { resolveHostedConnection } from '@/lib/server/hosted-ip-mapping';
@@ -40,11 +31,7 @@ type RequestPayload = {
 };
 
 function numberField(record: Record<string, unknown>, key: string) {
-  return typeof record[key] === 'number' &&
-    Number.isSafeInteger(record[key]) &&
-    record[key] >= 0
-    ? record[key]
-    : null;
+  return typeof record[key] === 'number' ? record[key] : null;
 }
 
 function redactSecret(
@@ -115,23 +102,10 @@ export async function POST(request: NextRequest) {
     return noStore({ error: 'Invalid request body.' }, { status: 400 });
   }
   const isPelican = payload.testKind === 'pelican';
-  let maxOutputTokens = isPelican
-    ? pelicanOutputLimit(payload.maxOutputTokens)
-    : 96;
-  if (maxOutputTokens === null)
-    return noStore(
-      {
-        error:
-          'Enter a positive whole-number output limit supported by your provider.',
-      },
-      { status: 400 },
-    );
+  let maxOutputTokens = isPelican ? pelicanOutputLimit(payload.maxOutputTokens) : 96;
+  if (maxOutputTokens === null) return noStore({ error: 'Enter a positive whole-number output limit supported by your provider.' }, { status: 400 });
   let timeoutMs = isPelican ? PELICAN_TIMEOUT_MS : 45_000;
-  const prompt = isPelican
-    ? PELICAN_PROMPT
-    : typeof payload.prompt === 'string'
-      ? payload.prompt
-      : '';
+  const prompt = isPelican ? PELICAN_PROMPT : typeof payload.prompt === 'string' ? payload.prompt : '';
   if (!prompt || prompt.length > 1_000) {
     return noStore({ error: 'Enter a valid test question.' }, { status: 400 });
   }
@@ -155,22 +129,10 @@ export async function POST(request: NextRequest) {
 
   const { apiType, baseUrl, apiKey, model } = connection;
   let routing;
-  try {
-    routing = openRouterRoute(baseUrl, apiType, model, payload.openRouterTier);
-  } catch (error) {
-    return noStore(
-      { error: error instanceof Error ? error.message : 'Invalid route.' },
-      { status: 400 },
-    );
-  }
-  if (routing && !isPelican) {
-    maxOutputTokens = 512;
-    timeoutMs = 120_000;
-  }
-  const animationSource = {
-    connectionName: connection.profileName || 'One-time connection',
-    keyHint: apiKey.slice(-4),
-  };
+  try { routing = openRouterRoute(baseUrl, apiType, model, payload.openRouterTier); }
+  catch (error) { return noStore({ error: error instanceof Error ? error.message : 'Invalid route.' }, { status: 400 }); }
+  if (routing && !isPelican) { maxOutputTokens = 512; timeoutMs = 120_000; }
+  const animationSource = { connectionName: connection.profileName || 'One-time connection', keyHint: apiKey.slice(-4) };
   const outbound = validateOutboundUrl(baseUrl, payload.allowInsecureHttp);
   if ('error' in outbound)
     return noStore({ error: outbound.error }, { status: 400 });
@@ -216,7 +178,6 @@ export async function POST(request: NextRequest) {
   const requestHeaders = exportedRequestHeaders(headers, apiKey);
   const startedAt = performance.now();
 
-  const deadline = combinedRequestSignal(request.signal, timeoutMs);
   try {
     const upstream = await fetch(requestUrl, {
       method: 'POST',
@@ -224,17 +185,15 @@ export async function POST(request: NextRequest) {
       body: requestBody,
       cache: 'no-store',
       redirect: 'manual',
-      signal: deadline,
+      signal: combinedRequestSignal(request.signal, timeoutMs),
     });
 
-    const headersReceivedMs = Math.round(performance.now() - startedAt);
     const streamed = await readProviderStream(
       upstream,
       apiType,
       apiKey,
       startedAt,
       isPelican ? ANIMATION_MAX_RESPONSE_BYTES : undefined,
-      { preservePartial: true, signal: request.signal, deadline },
     );
     const usage = streamed.usage;
     let inputTokens: number | null;
@@ -282,100 +241,37 @@ export async function POST(request: NextRequest) {
     const outputTokensPerSecond =
       outputTokens !== null &&
       streamed.generationMs !== null &&
-      streamed.generationMs >= 100 &&
-      outputTokens >= 32 &&
-      streamed.textChunkCount >= 2 &&
-      streamed.completionStatus === 'completed'
+      streamed.generationMs > 0
         ? Number((outputTokens / (streamed.generationMs / 1_000)).toFixed(2))
         : null;
-    const providerHtml = /^\s*(?:<!doctype html|<html|<head|<body)/i.test(
-      streamed.rawResponse,
-    );
+    const providerHtml = /^\s*(?:<!doctype html|<html|<head|<body)/i.test(streamed.rawResponse);
     const providerError = providerHtml
       ? `The provider returned an HTML page instead of an API response (HTTP ${upstream.status}). Check the connection's Base URL and API format; the provider may also be showing an access-block or gateway error. This is not an output-token limit error.`
-      : streamed.error
-        ? streamed.error
-        : upstream.ok
-          ? null
-          : (providerErrorMessage(streamed.rawResponse) ??
-            `The provider returned HTTP ${upstream.status}.`);
+      : upstream.ok
+      ? null
+      : (providerErrorMessage(streamed.rawResponse) ??
+        `The provider returned HTTP ${upstream.status}.`);
 
-    const evidenceHash = [
-      ...new Uint8Array(
-        await crypto.subtle.digest(
-          'SHA-256',
-          new TextEncoder().encode(streamed.rawResponse),
-        ),
-      ),
-    ]
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    const assessmentJson = JSON.stringify({
-      collectorVersion: COLLECTOR_VERSION,
-      analysisVersion: ANALYSIS_VERSION,
-      collectedAt: new Date().toISOString(),
-      headersReceivedMs,
-      completionStatus: streamed.completionStatus,
-      captureComplete: streamed.captureComplete,
-      capturedBytes: streamed.capturedBytes,
-      protocolFindings: streamed.protocolFindings,
-      rawUsage: streamed.usage,
-      rawResponseSha256: evidenceHash,
-      firstBodyByteMs: streamed.firstBodyByteMs,
-      firstSseEventMs: streamed.firstSseEventMs,
-      lastVisibleTextMs: streamed.lastVisibleTextMs,
-      textChunkCount: streamed.textChunkCount,
-      speedMeasurement:
-        outputTokensPerSecond === null
-          ? 'Insufficient streaming sample'
-          : 'Observed output delivery rate; not internal model decode speed',
-    });
     let savedAnimation = null;
     let saveError = null;
-    if (isPelican && streamed.answer) {
+    if (isPelican && upstream.ok && streamed.answer) {
       const user = await getChatGPTUser();
       if (user) {
         try {
           savedAnimation = await saveAnimation(env, user.userId, {
-            id:
-              typeof payload.animationId === 'string' &&
-              /^[0-9a-f-]{36}$/i.test(payload.animationId)
-                ? payload.animationId
-                : crypto.randomUUID(),
-            model,
-            prompt,
-            savedAt: new Date().toISOString(),
-            result: {
-              ...animationSource,
-              assessmentJson,
-              ...(providerError ? { error: providerError } : {}),
-              answer: streamed.answer,
-              finishReason: streamed.finishReason,
-              maxOutputTokens,
-              returnedModel: streamed.returnedModel,
-              totalInputTokens,
-              outputTokens,
-              totalTimeMs: streamed.totalTimeMs,
-            },
+            id: typeof payload.animationId === 'string' && /^[0-9a-f-]{36}$/i.test(payload.animationId) ? payload.animationId : crypto.randomUUID(),
+            model, prompt, savedAt: new Date().toISOString(),
+            result: { ...animationSource, answer: streamed.answer, finishReason: streamed.finishReason, maxOutputTokens, returnedModel: streamed.returnedModel, totalInputTokens, outputTokens, totalTimeMs: streamed.totalTimeMs },
           });
         } catch {
-          saveError =
-            'The animation response was received, but saving to your account failed. Retry saving below.';
+          saveError = 'The animation completed, but saving to your account failed. Retry saving below.';
         }
       }
     }
 
     return noStore({
       savedAnimation,
-      assessmentJson,
-      completionStatus: streamed.completionStatus,
-      ...(isPelican
-        ? {
-            ...animationSource,
-            maxOutputTokens,
-            finishReason: streamed.finishReason,
-          }
-        : {}),
+      ...(isPelican ? { ...animationSource, maxOutputTokens, finishReason: streamed.finishReason } : {}),
       saveError,
       httpStatus: upstream.status,
       returnedModel: streamed.returnedModel,
@@ -404,29 +300,16 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const isTimeout =
       error instanceof Error &&
-      !request.signal.aborted &&
-      (deadline.aborted || error.name === 'TimeoutError');
-    const responseTooLarge = error instanceof ProviderResponseSizeError;
+      (error.name === 'TimeoutError' || error.name === 'AbortError');
+    const responseTooLarge =
+      error instanceof ProviderResponseSizeError;
     return noStore(
       {
-        assessmentJson: JSON.stringify({
-          collectorVersion: COLLECTOR_VERSION,
-          analysisVersion: ANALYSIS_VERSION,
-          completionStatus: request.signal.aborted
-            ? 'cancelled'
-            : isTimeout
-              ? 'timeout'
-              : 'failed',
-          captureComplete: false,
-          capturedBytes: 0,
-        }),
-        error: request.signal.aborted
-          ? 'Request cancelled by you.'
-          : responseTooLarge
-            ? error.message
-            : isTimeout
-              ? `The provider did not complete the response within the ${timeoutMs / 1_000}-second test limit.`
-              : 'The tester relay could not complete the connection to the provider.',
+        error: responseTooLarge
+          ? error.message
+          : isTimeout
+            ? `The provider did not complete the response within the ${timeoutMs / 1_000}-second test limit.`
+            : 'The tester relay could not complete the connection to the provider.',
         totalTimeMs: Math.max(0, Math.round(performance.now() - startedAt)),
         requestMethod: 'POST',
         requestUrl,

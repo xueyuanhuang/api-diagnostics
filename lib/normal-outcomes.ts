@@ -6,10 +6,11 @@ export type NormalOutcomeSource = {
   unavailableCount?: number;
 };
 
-// Cache use alone is neutral. Legacy stored categories remain untouched.
+// Stored statuses are mutually exclusive. A large cached response is counted
+// once under `large`, not again under `cached`.
 export function normalOutcomes(source: NormalOutcomeSource) {
-  const normal = source.normalCount + source.cacheCount;
-  const anomaly = source.largeCount;
+  const normal = source.normalCount;
+  const anomaly = source.cacheCount + source.largeCount;
   const failed = source.errorCount;
   const unknown = source.unavailableCount ?? 0;
   return {

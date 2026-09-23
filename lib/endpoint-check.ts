@@ -42,7 +42,6 @@ export function endpointRequestBody(
     return {
       model,
       max_output_tokens: sample.maxTokens,
-      store: false,
       stream: false,
       input: sample.prompt,
     };

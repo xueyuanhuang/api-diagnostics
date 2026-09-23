@@ -13,12 +13,12 @@ export function NormalOutcomeCounts({
   const counts = normalOutcomes(source);
   const items = [
     {
-      label: 'No usage flag',
+      label: 'Normal',
       value: counts.normal,
       color: 'bg-emerald-50 text-emerald-700',
     },
     {
-      label: 'Elevated input',
+      label: 'Anomaly',
       value: counts.anomaly,
       color: 'bg-amber-50 text-amber-800',
     },
@@ -30,7 +30,7 @@ export function NormalOutcomeCounts({
     ...(counts.unknown
       ? [
           {
-            label: 'Needs review',
+            label: 'Unknown',
             value: counts.unknown,
             color: 'bg-slate-100 text-slate-700',
           },

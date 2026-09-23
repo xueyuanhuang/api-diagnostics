@@ -16,7 +16,7 @@ test('finished includes failures without treating them as normal', () => {
   assert.equal(normalOutcomeTitle(mixed), '10 normal · 0 anomalies · 2 failed');
 });
 
-test('cache observations are neutral; elevated input remains a finding', () => {
+test('both mutually exclusive anomaly statuses count as anomalies', () => {
   const mixed = {
     ...clean,
     normalCount: 7,
@@ -25,15 +25,15 @@ test('cache observations are neutral; elevated input remains a finding', () => {
     errorCount: 1,
   };
   assert.deepEqual(normalOutcomes(mixed), {
-    normal: 9,
-    anomaly: 2,
+    normal: 7,
+    anomaly: 4,
     failed: 1,
     unknown: 0,
     finished: 12,
   });
   assert.equal(
     normalOutcomeTitle({ ...clean, normalCount: 11, cacheCount: 1 }),
-    '12 normal · 0 anomalies · 0 failed',
+    '11 normal · 1 anomaly · 0 failed',
   );
 });
 
