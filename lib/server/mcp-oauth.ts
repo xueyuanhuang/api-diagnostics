@@ -29,7 +29,9 @@ export function resourceMetadata() {
   return json({ resource: resource(), authorization_servers: [origin()], scopes_supported: [MCP_SCOPE], bearer_methods_supported: ['header'], resource_name: 'API Diagnostics saved results' });
 }
 function html(content: string) {
-  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect ChatGPT · API Diagnostics</title><body><main><h1>Connect ChatGPT</h1>${content}</main></body></html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'", 'X-Frame-Options': 'DENY' } });
+  const scriptNonce = randomToken();
+  const script = `<script nonce="${scriptNonce}">document.querySelector('form[action="/oauth/authorize"]')?.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const button = event.submitter; button.disabled = true; const status = document.createElement('p'); status.setAttribute('role', 'status'); form.after(status); status.textContent = 'Connecting…'; try { const body = new URLSearchParams(new FormData(form)); body.set('decision', button.value); const response = await fetch(form.action, { method: 'POST', headers: { Accept: 'application/json' }, body }); const data = await response.json(); if (!response.ok || !data.redirect) throw new Error(data.error || 'Authorization failed'); window.location.assign(data.redirect); } catch (error) { status.textContent = 'Could not connect: ' + error.message + '. Refresh and try again.'; button.disabled = false; } });</script>`;
+  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect ChatGPT · API Diagnostics</title><body><main><h1>Connect ChatGPT</h1>${content}</main>${script}</body></html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin', 'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${scriptNonce}'; connect-src 'self'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'`, 'X-Frame-Options': 'DENY' } });
 }
 export async function oauth(request: Request, action: string) {
   try {
@@ -65,10 +67,10 @@ export async function oauth(request: Request, action: string) {
       const pending = await env.DB.prepare('DELETE FROM mcp_codes WHERE hash = ? AND user_id = ? AND approved = 0 AND expires_at > ? RETURNING *').bind(await tokenHash(nonce), user.user_id, Date.now()).first<{client_id:string; redirect_uri:string; challenge:string; state:string}>();
       if (!pending) return json({error:'invalid_request'},400);
       const callback = new URL(pending.redirect_uri); callback.searchParams.set('iss',origin()); callback.searchParams.set('state',pending.state);
-      if (p.get('decision') !== 'allow') { callback.searchParams.set('error','access_denied'); return redirect(callback.toString()); }
+      if (p.get('decision') !== 'allow') { callback.searchParams.set('error','access_denied'); return request.headers.get('accept')?.includes('application/json') ? json({redirect:callback.toString()}) : redirect(callback.toString()); }
       const code = randomToken();
       await env.DB.prepare('INSERT INTO mcp_codes (hash,user_id,client_id,redirect_uri,challenge,state,approved,expires_at) VALUES (?,?,?,?,?,?,1,?)').bind(await tokenHash(code),user.user_id,pending.client_id,pending.redirect_uri,pending.challenge,pending.state,Date.now()+60000).run();
-      callback.searchParams.set('code',code); return redirect(callback.toString());
+      callback.searchParams.set('code',code); return request.headers.get('accept')?.includes('application/json') ? json({redirect:callback.toString()}) : redirect(callback.toString());
     }
     if (action === 'token' && request.method === 'POST') {
       const p = new URLSearchParams(await request.text());
