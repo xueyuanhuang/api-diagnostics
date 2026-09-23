@@ -1,4 +1,7 @@
 'use client';
+import { readApiResponse } from '@/lib/api-response';
+import { assessResult } from '@/lib/result-assessment';
+import { EvidenceReviewPanel } from './evidence-review-panel';
 import { isOpenRouter, routeEvidence, type OpenRouterTier } from '@/lib/openrouter';
 import { ModelPicker } from '@/components/model-picker';
 import { WorkspaceLink as Link } from '@/components/workspace-navigation';
@@ -184,6 +187,8 @@ type TestResult = {
   requestId?: string | null;
   answer?: string | null;
   rawResponse?: string | null;
+  assessmentJson?: string | null;
+  completionStatus?: string;
   error?: string | null;
 };
 
@@ -296,6 +301,8 @@ function clientBaseUrlError(baseUrl: string) {
 function classifyResult(
   result: ApiResponse,
 ): Exclude<ResultStatus, 'waiting' | 'running' | 'stopped'> {
+  if (result.error || (result.completionStatus && !['completed', 'output_limit'].includes(result.completionStatus))) return 'error';
+  if (result.completionStatus === 'output_limit' || assessResult(result).usageAvailability === 'invalid' || assessResult(result).protocolFindings.length) return 'unavailable';
   if (!result.httpStatus || result.httpStatus < 200 || result.httpStatus >= 300)
     return 'error';
   if (typeof result.totalInputTokens !== 'number') return 'unavailable';
@@ -317,19 +324,19 @@ function verdict(status: ResultStatus) {
     };
   if (status === 'cached')
     return {
-      label: 'Cache found',
-      icon: AlertTriangle,
-      className: 'border-amber-200 bg-amber-50 text-amber-900',
+      label: 'Cache reported',
+      icon: CheckCircle2,
+      className: 'border-sky-200 bg-sky-50 text-sky-900',
     };
   if (status === 'large')
     return {
-      label: 'Large context',
+      label: 'Elevated input',
       icon: AlertTriangle,
       className: 'border-rose-200 bg-rose-50 text-rose-800',
     };
   if (status === 'unavailable')
     return {
-      label: 'Usage unavailable',
+      label: 'Needs review',
       icon: AlertTriangle,
       className: 'border-slate-200 bg-slate-50 text-slate-700',
     };
@@ -387,7 +394,7 @@ function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function testFetch(init: RequestInit): Promise<ApiResponse> {
   const response = await fetch('/api/test', { cache: 'no-store', ...init });
-  const data = (await response.json()) as ApiResponse;
+  const data = await readApiResponse<ApiResponse>(response, { preserveEvidence: true });
   if (!response.ok && !data.requestBody) {
     throw new Error(
       data.error || `Request failed with status ${response.status}.`,
@@ -481,6 +488,7 @@ function errorSolution(result: TestResult, message: string | null) {
 }
 
 function RequestResponseDetails({ result }: { result: TestResult }) {
+  const assessment = assessResult(result);
   const errorMessage = resultErrorMessage(result);
   const solution = errorSolution(result, errorMessage);
   const requestHeaders = formattedJson(result.requestHeaders);
@@ -503,6 +511,10 @@ function RequestResponseDetails({ result }: { result: TestResult }) {
         Request & response details
       </summary>
       <div className="mt-2 space-y-3 rounded-lg bg-muted/60 p-3 leading-5">
+        <p>Completion: {String(assessment.completion)} · Capture: {assessment.capture} · Usage: {assessment.usageAvailability}</p>
+        <p>Input: {assessment.inputSize} · Cache: {assessment.cache} (neutral observation)</p>
+        <p>{[...assessment.issues, ...(Array.isArray(assessment.protocolFindings) ? assessment.protocolFindings : [])].join(" · ")}</p>
+        <p>Evidence: {String(assessment.evidenceVersion)} · Analysis: {assessment.analysisVersion}</p>
         {errorMessage ? (
           <div className="rounded-md border border-rose-200 bg-rose-50 p-2.5">
             <p className="font-semibold text-rose-800">Error</p>
@@ -622,9 +634,7 @@ function evidenceRun(context: RunContext, results: TestResult[]): EvidenceRun {
         ? 'incomplete'
         : largeCount
           ? 'large'
-          : cacheCount
-            ? 'cached'
-            : errorCount || unavailableCount
+          : errorCount || unavailableCount
               ? 'incomplete'
               : 'normal',
     normalCount,
@@ -1152,8 +1162,8 @@ export function TokenCheckApp({
       };
     if (normalPhase === 'stopped') {
       const partialEvidence = [
-        cacheCount + largeCount
-          ? `${cacheCount + largeCount} anomalous result${cacheCount + largeCount === 1 ? '' : 's'}`
+        largeCount
+          ? `${largeCount} elevated-input result${largeCount === 1 ? '' : 's'}`
           : null,
         errorCount
           ? `${errorCount} failed request${errorCount === 1 ? '' : 's'}`
@@ -1180,7 +1190,7 @@ export function TokenCheckApp({
         tone: 'ready',
         title: 'Ready to check',
         description:
-          'Normal questions should have small inputs and no unexpected reported cache usage.',
+          'Short prompts usually have small reported inputs. Cache use is shown separately and is not an error by itself.',
       };
     return {
       tone: 'ready',
@@ -1191,7 +1201,7 @@ export function TokenCheckApp({
         errorCount,
         unavailableCount,
       }),
-      description: `${completed} / ${NORMAL_QUESTIONS.length} requests finished · ${completed < NORMAL_QUESTIONS.length ? 'Partial run' : errorCount ? `Completed with ${errorCount} failure${errorCount === 1 ? '' : 's'}` : cacheCount + largeCount ? 'Completed with anomalies' : unavailableCount ? 'Completed with missing usage data' : 'Completed'}.${unavailableCount ? ` Token usage was unavailable for ${unavailableCount} request${unavailableCount === 1 ? '' : 's'}.` : ''}`,
+      description: `${completed} / ${NORMAL_QUESTIONS.length} requests finished · ${completed < NORMAL_QUESTIONS.length ? 'Partial run' : errorCount ? `Completed with ${errorCount} failure${errorCount === 1 ? '' : 's'}` : largeCount ? 'Completed with elevated input' : unavailableCount ? 'Completed with results needing review' : 'Completed'}.${unavailableCount ? ` Completion, protocol or usage needs review for ${unavailableCount} request${unavailableCount === 1 ? '' : 's'}.` : ''}`,
     };
   }, [
     cacheCount,
@@ -2246,6 +2256,7 @@ export function TokenCheckApp({
               </div>
             ) : null}
 
+            {user && <EvidenceReviewPanel runs={runs} />}
             {viewMode === 'saved' ? (
               <section className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_18px_50px_rgb(15_23_42/0.06)]">
                 <div className="border-b border-border px-5 py-4">
@@ -2572,9 +2583,9 @@ export function TokenCheckApp({
                         className="mt-4 flex h-1.5 overflow-hidden rounded-full bg-muted"
                       >
                         {[
-                          { count: normalCount, color: 'bg-emerald-500' },
+                          { count: normalCount + cacheCount, color: 'bg-emerald-500' },
                           {
-                            count: cacheCount + largeCount,
+                            count: largeCount,
                             color: 'bg-amber-500',
                           },
                           { count: errorCount, color: 'bg-rose-500' },
@@ -2607,7 +2618,7 @@ export function TokenCheckApp({
                     <p className="mt-1 min-h-12 text-sm leading-6 text-muted-foreground">
                       Measured from this tester&apos;s relay to the provider
                       stream. DNS, TCP, and TLS are intentionally excluded. Each
-                      median uses the available timings for that metric.
+                      median uses the available timings for that metric. Delivery rate is hidden for short answers or a single burst, and is not internal model decoding speed.
                     </p>
                     <div className="mt-4 grid grid-cols-2 gap-2 text-center sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
                       <div className="rounded-xl border border-blue-200/80 bg-white/70 px-2 py-2.5">
@@ -2625,7 +2636,7 @@ export function TokenCheckApp({
                           )}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          Median generation
+                          Text delivery span
                         </div>
                       </div>
                       <div className="rounded-xl border border-blue-200/80 bg-white/70 px-2 py-2.5">
@@ -2643,7 +2654,7 @@ export function TokenCheckApp({
                           )}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          Median output speed
+                          Observed delivery rate
                         </div>
                       </div>
                     </div>

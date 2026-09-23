@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { SiteWorkspace } from '../components/site-workspace';
+import { assessResult, compareBaseline } from '../lib/result-assessment';
 import { NORMAL_QUESTIONS } from '../lib/questions';
 import '../app/globals.css';
 
@@ -145,6 +146,7 @@ window.fetch = async (input, init = {}) => {
   if (path === '/api/animations') return response({ results: [], nextBefore: null });
   if (path === '/api/diagnostic-runs') return response({ runs: [] });
   if (path === '/api/profiles') return response({ profiles: [profile] });
+  if (path.includes('/assessments')) { const report={analysisVersion:'fixture-2.0', results:savedResults.map(r=>({...assessResult(r),questionId:r.questionId})), comparison:compareBaseline(savedResults,savedResults,true)}; return Response.json(method==='GET'?{assessments:[]}:{report}); }
   if (path === '/api/runs' && method === 'GET')
     return response({ runs: [mixed, normal] });
   if (path === '/api/runs/saved-mixed')

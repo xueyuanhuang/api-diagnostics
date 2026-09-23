@@ -1,6 +1,7 @@
 export const MAX_ANIMATION_CHARACTERS = 32 * 1024 * 1024;
 
 export type AnimationResult = {
+  assessmentJson?: string | null;
   connectionName?: string | null;
   keyHint?: string | null;
   answer?: string;
@@ -27,6 +28,8 @@ export function parseAnimation(value: unknown): SavedAnimation | null {
     id: input.id, model: input.model.trim(), savedAt: new Date().toISOString(),
     prompt: typeof input.prompt === 'string' ? input.prompt.slice(0, 1000) : '',
     result: {
+      assessmentJson: typeof result.assessmentJson === 'string' ? result.assessmentJson.slice(0,100000) : null,
+      ...(typeof result.error === 'string' ? {error:result.error.slice(0,2000)} : {}),
       connectionName: typeof result.connectionName === 'string' ? result.connectionName.trim().slice(0, 200) || null : null,
       keyHint: typeof result.keyHint === 'string' && /^[A-Za-z0-9_-]{4}$/.test(result.keyHint) ? result.keyHint : null,
       answer: result.answer,

@@ -1,4 +1,5 @@
 'use client';
+import { assessResult, ANALYSIS_VERSION } from './result-assessment';
 
 type HeaderEntry = [string, string];
 
@@ -46,6 +47,7 @@ export type EvidenceResult = {
   requestId?: string | null;
   answer?: string | null;
   rawResponse?: string | null;
+  assessmentJson?: string | null;
   error?: string | null;
 };
 
@@ -269,6 +271,8 @@ function addText(entries: ZipEntry[], name: string, text: string) {
   entries.push({ name, bytes: encoder.encode(text) });
 }
 
+function parseMetadata(value: string | null | undefined) { try { return JSON.parse(value || 'null'); } catch { return {error:'Invalid legacy metadata'}; } }
+
 export function buildEvidenceArchive(
   run: EvidenceRun,
   results: EvidenceResult[],
@@ -276,7 +280,9 @@ export function buildEvidenceArchive(
   const exportedAt = new Date();
   const entries: ZipEntry[] = [];
   const manifest = {
-    exportFormat: 'normal-token-check-evidence-v1',
+    analysisVersion: ANALYSIS_VERSION,
+    assessments: results.map(result => ({questionId:result.id, capturedMetadata:parseMetadata(result.assessmentJson), currentAnalysis:assessResult(result)})),
+    exportFormat: 'normal-token-check-evidence-v2',
     exportedAt: exportedAt.toISOString(),
     run,
     configuredBaseUrl: run.baseUrl,
@@ -289,13 +295,13 @@ export function buildEvidenceArchive(
       responseHeaders:
         'Headers exposed to the tester relay by server-side fetch. Cookie values and any API-key echo are redacted.',
       responseBody:
-        'Complete upstream response body captured by the tester within its 1 MB safety limit.',
+        'Captured upstream response, possibly partial. Consult each result’s capture status, byte count and hash. Legacy records have unknown completeness.',
       timing:
         'Measured from the tester relay after automatic IP mapping is prepared. DNS, TCP, and TLS phase timings are not reported separately.',
       ipMapping:
         'Public HTTP IP origins use a DNS-only hostname. run.baseUrl is the original configuration; requestUrl and cURL show the actual hostname used. Host changes; scheme, port, and path are preserved. HTTP remains unencrypted.',
       apiKey:
-        'Never stored or exported. Reproducible cURL files use the $API_KEY environment variable.',
+        'Provider keys are excluded from evidence exports. Saved connection keys are encrypted separately on the server. Reproducible cURL files use the $API_KEY environment variable.',
     },
     questionCount: results.length,
   };

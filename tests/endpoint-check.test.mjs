@@ -117,7 +117,7 @@ test('requests use each protocol field and preserve identical prompts without in
         [limit]: sample.maxTokens,
         stream: false,
         ...(protocol === 'responses'
-          ? { input: sample.prompt }
+          ? { input: sample.prompt, store: false }
           : { messages: [{ role: 'user', content: sample.prompt }] }),
       });
     }

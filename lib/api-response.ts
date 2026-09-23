@@ -1,5 +1,5 @@
 /** Never expose a gateway's HTML (or its embedded private data) as an API error. */
-export async function readApiResponse<T>(response: Response): Promise<T> {
+export async function readApiResponse<T>(response: Response, options: { preserveEvidence?: boolean } = {}): Promise<T> {
   const status = `HTTP ${response.status}`;
   let text: string;
   try { text = await response.text(); }
@@ -24,6 +24,7 @@ export async function readApiResponse<T>(response: Response): Promise<T> {
     throw new Error(`The tester returned an unexpected response (${status}). Refresh the page and try again.`);
   }
   const error = (data as { error?: unknown }).error;
+  if (options.preserveEvidence && typeof (data as {requestBody?: unknown}).requestBody === 'string') return data as T;
   if (!response.ok || error) throw new Error(typeof error === 'string' ? error : `The request failed (${status}). Please try again.`);
   return data as T;
 }

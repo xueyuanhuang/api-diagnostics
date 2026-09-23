@@ -177,13 +177,19 @@ export async function POST(request: NextRequest) {
       answer: nullableText(record.answer, 20_000),
       rawResponse: nullableText(record.rawResponse, 1_000_000),
       error: nullableText(record.error, 2_000),
+      assessmentJson: nullableText(record.assessmentJson, 100_000),
     };
   });
   if (apiType === 'openai' && isOpenRouter(validated.baseUrl)) {
-    const tiers = new Set(results.map(result => routeEvidence(result.requestBody).requested).filter(Boolean));
+    const tiers = new Set(
+      results
+        .map((result) => routeEvidence(result.requestBody).requested)
+        .filter(Boolean),
+    );
     if (tiers.size === 1) {
       const tier = [...tiers][0];
-      if (tier === 'default' || tier === 'flex') profileName = `${profileName || 'OpenRouter'} · ${tier === 'flex' ? 'Flex' : 'Standard'} requested`;
+      if (tier === 'default' || tier === 'flex')
+        profileName = `${profileName || 'OpenRouter'} · ${tier === 'flex' ? 'Flex' : 'Standard'} requested`;
     }
   }
   const normalCount = results.filter(
@@ -203,11 +209,9 @@ export async function POST(request: NextRequest) {
   ).length;
   const verdict = largeCount
     ? 'large'
-    : cacheCount
-      ? 'cached'
-      : errorCount || unavailableCount
-        ? 'incomplete'
-        : 'normal';
+    : errorCount || unavailableCount
+      ? 'incomplete'
+      : 'normal';
   const medianTtftMs = median(results.map((result) => result.ttftMs));
   const medianGenerationMs = median(
     results.map((result) => result.generationMs),
@@ -246,7 +250,7 @@ export async function POST(request: NextRequest) {
       ),
       ...results.map((result) =>
         env.DB.prepare(
-          'INSERT INTO test_results (id, run_id, position, question_id, category, prompt, status, http_status, returned_model, input_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_input_tokens, output_tokens, ttft_ms, generation_ms, total_time_ms, output_tokens_per_second, request_method, request_url, request_headers, request_body, response_headers, request_id, answer, raw_response, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO test_results (id, run_id, position, question_id, category, prompt, status, http_status, returned_model, input_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_input_tokens, output_tokens, ttft_ms, generation_ms, total_time_ms, output_tokens_per_second, request_method, request_url, request_headers, request_body, response_headers, request_id, answer, raw_response, error, assessment_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).bind(
           crypto.randomUUID(),
           runId,
@@ -275,6 +279,7 @@ export async function POST(request: NextRequest) {
           result.answer,
           result.rawResponse,
           result.error,
+          result.assessmentJson,
         ),
       ),
     ]);

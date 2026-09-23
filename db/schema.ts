@@ -180,6 +180,7 @@ export const testResults = sqliteTable(
     requestId: text('request_id'),
     answer: text('answer'),
     rawResponse: text('raw_response'),
+    assessmentJson: text('assessment_json'),
     error: text('error'),
   },
   (table) => [

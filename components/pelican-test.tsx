@@ -164,15 +164,16 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
         body: JSON.stringify({ testKind: 'pelican', maxOutputTokens, animationId: resultId.current, apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
         signal: abort.signal,
       });
-      const data = await readApiResponse<Result>(response);
+      const data = await readApiResponse<Result>(response, { preserveEvidence: true });
       setResult(data);
+      if (data.error) setError(data.error);
       if (data.savedAnimation) {
         setSignedIn(true); setResultSaved(true);
         setSavedResults(current => [data.savedAnimation!, ...current.filter(item => item.id !== data.savedAnimation!.id)]);
-        setSaveMessage('Saved to your account. Available across devices in Saved results.');
+        setSaveMessage(data.error ? 'Partial result and failure details saved to your account.' : 'Saved to your account. Available across devices in Saved results.');
       } else if (data.saveError) setSaveMessage(data.saveError);
       else if (data.answer) setSaveMessage('Sign in before running a test to save results to your account. You can download this HTML now.');
-      if (!data.answer) setError('The provider returned no visible answer. Try another model.');
+      if (!data.answer && !data.error) setError('The provider returned no visible answer. Try another model.');
     } catch (caught) {
       setError(abort.signal.aborted ? 'Test stopped.' : caught instanceof Error ? caught.message : 'Could not reach the tester. Please try again.');
     } finally {
@@ -200,7 +201,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
       });
       setResultSaved(true);
       setSavedResults(current => [data.saved, ...current.filter(item => item.id !== data.saved.id)]);
-      setSaveMessage('Saved to your account. Available across devices in Saved results.');
+      setSaveMessage(result?.error ? 'Partial result and failure details saved to your account.' : 'Saved to your account. Available across devices in Saved results.');
     } catch (cause) { setSaveMessage(cause instanceof Error ? cause.message : 'Saving failed. Retry or download the HTML.'); }
     finally { setHistoryBusy(false); }
   }
@@ -211,7 +212,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
       const { saved } = await connectionRequest<{ saved: SavedAnimation }>(`/api/animations/${encodeURIComponent(id)}`);
       setLegacyProfileId('');
       setResult(saved.result); setResultModel(saved.model); resultId.current = saved.id;
-      setResultSaved(true); setError(''); setSaveMessage(`Opened result saved ${new Date(saved.savedAt).toLocaleString()}.`);
+      setResultSaved(true); setError(saved.result.error || ''); setSaveMessage(`Opened result saved ${new Date(saved.savedAt).toLocaleString()}.`);
     } catch (cause) { setSaveMessage(cause instanceof Error ? cause.message : 'Could not open result.'); }
     finally { setHistoryBusy(false); }
   }
