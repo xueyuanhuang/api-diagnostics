@@ -1,0 +1,86 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+import * as auth from '../lib/server/google-auth.ts';
+import * as security from '../lib/server/mcp-security.ts';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import { z } from 'zod';
+import { NORMAL_QUESTIONS } from '../lib/questions.ts';
+import { PELICAN_PROMPT } from '../lib/pelican-test.ts';
+const base='https://api-diagnostics.xue-yuanhuang.workers.dev';
+function moduleAt(path, deps) {
+  const source=readFileSync(new URL(path,import.meta.url),'utf8');
+  const exports={};
+  const scope={exports,require:name=>{if (!(name in deps)) throw new Error(name); return deps[name];},crypto,TextEncoder,TextDecoder,URL,URLSearchParams,Request,Response,Headers,AbortSignal,Uint8Array,atob,btoa,fetch:async()=>{throw new Error('No network in unit tests');}};
+  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
+  return exports;
+}
+function fixture() {
+  const sql=new DatabaseSync(':memory:');
+  sql.exec(readFileSync(new URL('../drizzle/0015_mcp_oauth.sql',import.meta.url),'utf8'));
+  sql.exec('CREATE TABLE auth_sessions (token_hash TEXT,user_id TEXT,expires_at INTEGER); CREATE TABLE test_runs (id TEXT,user_id TEXT); CREATE TABLE test_results (run_id TEXT,position INTEGER,answer TEXT)');
+  const DB={prepare:query=>({bind:(...args)=>({first:async()=>sql.prepare(query).get(...args)||null,run:async()=>sql.prepare(query).run(...args),all:async()=>({results:sql.prepare(query).all(...args)})})})};
+  const env={DB,APP_ORIGIN:base,EVIDENCE:{get:()=>{throw new Error('Unexpected evidence access');}}};
+  const oauth=moduleAt('../lib/server/mcp-oauth.ts',{'cloudflare:workers':{env},'./google-auth':auth,'./mcp-security':security});
+  return {sql,env,oauth};
+}
+const post=(path,body,headers={})=>new Request(base+path,{method:'POST',headers,body});
+test('OAuth enforces consent, PKCE, scope, audience, one-time codes and revocation',async()=>{
+  const {sql,oauth}=fixture();
+  const redirect='https://chatgpt.com/connector_platform_oauth_redirect';
+  const registered=await oauth.oauth(post('/oauth/register',JSON.stringify({redirect_uris:[redirect],token_endpoint_auth_method:'none'}),{'content-type':'application/json'}),'register');
+  assert.equal(registered.status,201); const {client_id}=await registered.json();
+  assert.equal((await oauth.oauth(post('/oauth/register',JSON.stringify({redirect_uris:['https://evil.test/callback']})),'register')).status,400);
+  const verifier=auth.randomToken(); const params=new URLSearchParams({client_id,redirect_uri:redirect,response_type:'code',scope:'results:read',resource:base+'/mcp',state:'state-test',code_challenge:await auth.tokenHash(verifier),code_challenge_method:'S256'});
+  assert.equal((await oauth.oauth(new Request(base+'/oauth/authorize?'+params),'authorize')).status,303);
+  const session=auth.randomToken(); sql.prepare('INSERT INTO auth_sessions VALUES (?,?,?)').run(await auth.tokenHash(session),'user-a',Date.now()+60000);
+  const cookie=`${auth.SESSION_COOKIE}=${session}`;
+  const consent=await oauth.oauth(new Request(base+'/oauth/authorize?'+params,{headers:{cookie}}),'authorize');
+  assert.equal(consent.status,200); const html=await consent.text(); const nonce=html.match(/name="nonce" value="([^"]+)"/)[1];
+  assert.equal((await oauth.oauth(post('/oauth/authorize',new URLSearchParams({nonce,decision:'allow'}),{cookie,origin:'https://evil.test'}),'authorize')).status,403);
+  const approved=await oauth.oauth(post('/oauth/authorize',new URLSearchParams({nonce,decision:'allow'}),{cookie,origin:base}),'authorize');
+  assert.equal(approved.status,303); const callback=new URL(approved.headers.get('location'));
+  assert.equal(callback.searchParams.get('iss'),base); assert.equal(callback.searchParams.get('state'),'state-test');
+  const exchange=new URLSearchParams({grant_type:'authorization_code',client_id,redirect_uri:redirect,resource:base+'/mcp',code:callback.searchParams.get('code'),code_verifier:auth.randomToken()});
+  assert.equal((await oauth.oauth(post('/oauth/token',exchange),'token')).status,400);
+  exchange.set('code_verifier',verifier); exchange.set('resource',base+'/other');
+  assert.equal((await oauth.oauth(post('/oauth/token',exchange),'token')).status,400);
+  exchange.set('resource',base+'/mcp');
+  const tokens=await oauth.oauth(post('/oauth/token',exchange),'token'); assert.equal(tokens.status,200);
+  const {access_token}=await tokens.json();
+  assert.equal((await oauth.oauth(post('/oauth/token',exchange),'token')).status,400);
+  const request=new Request(base+'/mcp',{headers:{authorization:'Bearer '+access_token}});
+  assert.equal((await oauth.bearerUser(request)).user_id,'user-a');
+  assert.equal(sql.prepare('SELECT hash FROM mcp_tokens').get().hash,await auth.tokenHash(access_token));
+  await oauth.oauth(post('/oauth/disconnect','',{cookie,origin:base}),'disconnect');
+  assert.equal(await oauth.bearerUser(request),null);
+  sql.close();
+});
+test('MCP protocol advertises read-only tools and checks ownership before returning evidence',async()=>{
+  const {env,sql,oauth}=fixture();
+  const mcp=moduleAt('../lib/server/review-mcp.ts',{'@modelcontextprotocol/sdk/server/mcp.js':{McpServer},'@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js':{WebStandardStreamableHTTPServerTransport},zod:{z},'cloudflare:workers':{env},'@/lib/questions':{NORMAL_QUESTIONS},'@/lib/pelican-test':{PELICAN_PROMPT},'./mcp-security':security,'./mcp-oauth':oauth});
+  const headers={'content-type':'application/json',accept:'application/json, text/event-stream'};
+  const call=async(site,method,params={},token)=>mcp.reviewMcp(post('/mcp',JSON.stringify({jsonrpc:'2.0',id:1,method,params}),{...headers,...(token?{authorization:'Bearer '+token}:{})}),site);
+  assert.equal((await call('diagnostics','tools/list')).status,401);
+  const init=await call('bazaarlink','initialize',{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'test',version:'1'}});
+  assert.equal(init.status,200);
+  const listing=await (await call('bazaarlink','tools/list')).json();
+  assert.ok(listing.result.tools.length>=5); assert.ok(listing.result.tools.every(t=>t.annotations.readOnlyHint));
+  const token=auth.randomToken(); sql.prepare('INSERT INTO mcp_tokens VALUES (?,?,?,?,?,?)').run(await auth.tokenHash(token),'user-a','client',base+'/mcp','results:read',Date.now()+60000);
+  sql.prepare('INSERT INTO test_runs VALUES (?,?)').run('other-run','user-b');
+  const denied=await (await call('diagnostics','tools/call',{name:'read_saved_run',arguments:{kind:'normal',id:'other-run'}},token)).json();
+  assert.equal(denied.result.isError,true);
+  const described=await (await call('diagnostics','tools/call',{name:'describe_tests',arguments:{}},token)).json();
+  assert.ok(described.result.content[0].text.includes('questions'));
+  sql.close();
+});
+test('MCP scrubs credential fields and rejects redirect lookalikes',async()=>{
+  assert.equal(security.allowedRedirect('https://chatgpt.com.evil.test/connector_platform_oauth_redirect'),false);
+  assert.equal(security.allowedRedirect('https://chatgpt.com/connector/oauth/test?next=evil'),false);
+  assert.deepEqual(security.scrubEvidence({apiKey:'secret',user_id:'private',answer:'sk-testonly12345',nested:{Authorization:'Bearer anything'}}),{answer:'[REDACTED]',nested:{}});
+  assert.equal(await security.readBoundedBody(post('/mcp','12345'),4),null);
+});
