@@ -29,7 +29,7 @@ export function resourceMetadata() {
   return json({ resource: resource(), authorization_servers: [origin()], scopes_supported: [MCP_SCOPE], bearer_methods_supported: ['header'], resource_name: 'API Diagnostics saved results' });
 }
 function html(content: string) {
-  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect ChatGPT · API Diagnostics</title><body><main><h1>Connect ChatGPT</h1>${content}</main></body></html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", 'X-Frame-Options': 'DENY' } });
+  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect ChatGPT · API Diagnostics</title><body><main><h1>Connect ChatGPT</h1>${content}</main></body></html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'", 'X-Frame-Options': 'DENY' } });
 }
 export async function oauth(request: Request, action: string) {
   try {
