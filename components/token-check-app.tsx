@@ -57,6 +57,7 @@ import {
 } from '@/lib/diagnostic-runs';
 import { EndpointCheck } from '@/components/endpoint-check';
 import { ToolBoundaryTest } from '@/components/tool-boundary-test';
+import { OpenRouterSelector, useOpenRouterTier, selectedRoute } from '@/components/openrouter-selector';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
 import { ModelTestQueue } from '@/components/model-test-queue';
@@ -353,6 +354,7 @@ function verdict(status: ResultStatus) {
 }
 
 function savedRpmVerdict(run: RpmRunSummary) {
+  if (run.rampMode === 'fixed' && run.status === 'passed') return {label: 'Measurement complete', className: 'border-blue-200 bg-blue-50 text-blue-800'};
   if (run.status === 'passed')
     return {
       label: `Passed ${run.targetRpm.toLocaleString()} RPM`,
@@ -671,7 +673,7 @@ export function TokenCheckApp({
   const [selectedJobId, setSelectedJobId] = useState('');
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [concurrency, setConcurrency] = useState(3);
-  const [openRouterTier, setOpenRouterTier] = useState<OpenRouterTier>('default');
+  const [openRouterTier, setOpenRouterTier] = useOpenRouterTier();
   const liveJob =
     queueJobs.find((job) => job.id === selectedJobId) ?? queueJobs.at(-1);
   const liveResults = (liveJob?.results ?? initialResults()) as TestResult[];
@@ -1651,7 +1653,7 @@ export function TokenCheckApp({
           baseUrl.trim(),
           modelsToEnqueue,
         );
-      const routingTier = apiType === 'openai' && isOpenRouter(baseUrl) && modelsToEnqueue.every(name => name.startsWith('openai/')) ? openRouterTier : undefined;
+      const routingTier = isOpenRouter(baseUrl) && modelsToEnqueue.every(name => name.startsWith('openai/')) ? openRouterTier : undefined;
       const requestBase = {
         openRouterTier: routingTier,
         allowInsecureHttp: isInsecureHttp(baseUrl),
@@ -1892,11 +1894,11 @@ export function TokenCheckApp({
               <Gauge className="size-5" />
             </span>
             <span>
-              <span className="block text-sm font-semibold">RPM Ramp Test</span>
+              <span className="block text-sm font-semibold">RPM / RPS Test</span>
               <span
                 className={`mt-1 block text-xs leading-5 ${testMode === 'rpm' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
               >
-                Staged capacity · stops after the first failed stage
+                Fixed rate · actual throughput, latency and errors
               </span>
             </span>
           </button>
@@ -2001,10 +2003,7 @@ export function TokenCheckApp({
               {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
               {testMode === 'normal' && ['running', 'queued', 'stopping'].includes(liveNormalPhase) && <Button key="normal-stop" type="button" variant="outline" className="h-10" onClick={stopNormalTest} disabled={liveNormalPhase === 'stopping'}>{liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop selected model'}</Button>}
             </div>
-            {testMode === 'normal' && apiType === 'openai' && isOpenRouter(baseUrl) && model.startsWith('openai/') && <div className="space-y-2 rounded-xl border border-border p-3">
-              <label className="block text-sm font-medium">OpenRouter resource<select aria-label="OpenRouter resource" className="ml-3 rounded-lg border border-input bg-background p-2" value={openRouterTier} onChange={event => setOpenRouterTier(event.target.value as OpenRouterTier)}><option value="default">OpenAI · Standard</option><option value="flex">OpenAI · Flex (discounted)</option></select></label>
-              <p className="text-sm text-muted-foreground">Pins the selected resource with fallback disabled. Each route uses the same 12 questions, low reasoning, a 512-token cap and a 120-second timeout per question. Actual tier and reported cost appear in request details. Flex availability and pricing depend on the model.</p>
-            </div>}
+            <OpenRouterSelector baseUrl={baseUrl} model={model} tier={openRouterTier} onChange={setOpenRouterTier} disabled={controlsLocked || isRpmRunning || isBoundaryRunning || isEndpointRunning} />
             {!selectedProfileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><div className="mt-3 grid gap-4 md:grid-cols-3">
               <label className="text-sm font-medium">Base URL<Input className="mt-2 h-10" value={baseUrl} onChange={event => updateConnection({ baseUrl: event.target.value })} disabled={controlsLocked} placeholder="https://your-provider.com/v1" /></label>
               <label className="text-sm font-medium">API key<Input className="mt-2 h-10" type="password" autoComplete="off" value={apiKey} onChange={event => updateApiKey(event.target.value)} disabled={controlsLocked} placeholder="Enter your key for this test" /></label>
@@ -2966,6 +2965,7 @@ export function TokenCheckApp({
                 apiType={apiType}
                 baseUrl={baseUrl}
                 model={model}
+                openRouterTier={selectedRoute(baseUrl, model, openRouterTier)}
                 apiKey={apiKey}
                 selectedProfileId={selectedProfileId}
                 profileName={selectedProfile?.name || profileName}
@@ -2987,6 +2987,7 @@ export function TokenCheckApp({
                 apiType={apiType}
                 baseUrl={baseUrl}
                 model={model}
+                openRouterTier={selectedRoute(baseUrl, model, openRouterTier)}
                 apiKey={apiKey}
                 selectedProfileId={selectedProfileId}
                 profileName={selectedProfile?.name || profileName}
@@ -3014,6 +3015,7 @@ export function TokenCheckApp({
                 apiType={apiType}
                 baseUrl={baseUrl}
                 model={model}
+                openRouterTier={selectedRoute(baseUrl, model, openRouterTier)}
                 profileDirty={profileDirty}
                 openedRunId=""
                 startBlocked={

@@ -1,3 +1,4 @@
+import { openRouterRoute, isOpenRouter } from '@/lib/openrouter';
 import { type ApiType, endpointFromBaseUrl } from '@/lib/server/connection';
 
 export const RPM_MAX_RESPONSE_BYTES = 64_000;
@@ -17,6 +18,7 @@ type ProviderRequest = {
   baseUrl: string;
   originalBaseUrl?: string;
   apiKey: string;
+  openRouterTier?: string | null;
   model: string;
   runId: string;
   stageIndex: number;
@@ -185,7 +187,7 @@ export function missedDispatchEvidence(
   const now = Date.now();
   const url = endpointFromBaseUrl(input.baseUrl, input.apiType).toString();
   const body = requestBody(input);
-  const headers = providerHeaders(input.apiType, input.apiKey);
+  const headers = providerHeaders(input.apiType, input.apiKey, input.baseUrl);
   return {
     runId: input.runId,
     stageIndex: input.stageIndex,
@@ -229,12 +231,12 @@ export function missedDispatchEvidence(
   };
 }
 
-function providerHeaders(apiType: ApiType, apiKey: string) {
+function providerHeaders(apiType: ApiType, apiKey: string, baseUrl: string) {
   const headers: Record<string, string> = {
     accept: 'application/json',
     'content-type': 'application/json',
   };
-  if (apiType === 'anthropic') {
+  if (apiType === 'anthropic' && !isOpenRouter(baseUrl)) {
     headers['x-api-key'] = apiKey;
     headers['anthropic-version'] = '2023-06-01';
   } else {
@@ -246,7 +248,8 @@ function providerHeaders(apiType: ApiType, apiKey: string) {
 function requestBody(input: ProviderRequest) {
   return JSON.stringify({
     model: input.model,
-    max_tokens: 8,
+    ...openRouterRoute(input.originalBaseUrl ?? input.baseUrl, input.apiType, input.model, input.openRouterTier),
+    max_tokens: input.openRouterTier ? 512 : 8,
     messages: [
       {
         role: 'user',
@@ -262,7 +265,7 @@ export async function runProviderRequest(
 ): Promise<RpmRequestEvidence> {
   const edgeStartedAt = Date.now();
   const url = endpointFromBaseUrl(input.baseUrl, input.apiType).toString();
-  const headers = providerHeaders(input.apiType, input.apiKey);
+  const headers = providerHeaders(input.apiType, input.apiKey, input.baseUrl);
   const body = requestBody(input);
   const exportedHeaders = Object.entries(headers).map(([name, value]) => [
     name,

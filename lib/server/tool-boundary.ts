@@ -1,3 +1,4 @@
+import { openRouterRoute, isOpenRouter } from '@/lib/openrouter';
 import {
   boundaryRequestBody,
   BOUNDARY_TIMEOUT_MS,
@@ -16,6 +17,7 @@ export async function captureBoundaryExchange(
   connection: {
     apiType: BoundaryApiType;
     model: string;
+    openRouterTier?: string;
     apiKey: string;
     baseUrl: string;
     actualBaseUrl: string;
@@ -27,7 +29,7 @@ export async function captureBoundaryExchange(
     accept: 'application/json',
     'content-type': 'application/json',
   };
-  if (connection.apiType === 'anthropic') {
+  if (connection.apiType === 'anthropic' && !isOpenRouter(connection.baseUrl)) {
     headers['x-api-key'] = connection.apiKey;
     headers['anthropic-version'] = '2023-06-01';
   } else headers.authorization = `Bearer ${connection.apiKey}`;
@@ -40,7 +42,7 @@ export async function captureBoundaryExchange(
         connection.apiType,
       ).href,
       body: JSON.stringify(
-        boundaryRequestBody(connection.apiType, connection.model),
+        {...boundaryRequestBody(connection.apiType, connection.model), ...openRouterRoute(connection.baseUrl, 'openai', connection.model, connection.openRouterTier)},
       ),
       timeoutMs: BOUNDARY_TIMEOUT_MS,
     },

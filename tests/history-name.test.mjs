@@ -60,6 +60,7 @@ test('actual batch handler freezes the entered history name for every model', as
     setLastRunMode() {},
     setShownApiType() {},
   };
+  scope.isOpenRouter = () => false;
   vm.createContext(scope);
   vm.runInContext(compile(handler), scope);
   await scope.runTests({ preventDefault() {} });
@@ -134,6 +135,7 @@ test('saved-profile batch persists every model before dispatch; failed persisten
     setLastRunMode() {},
     setShownApiType() {},
   };
+  scope.isOpenRouter = () => false;
   vm.createContext(scope);
   vm.runInContext(compile(handler), scope);
   await scope.runTests({ preventDefault() {} });

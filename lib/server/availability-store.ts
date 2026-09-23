@@ -21,13 +21,14 @@ export type StoredProbe = {
   profileName: string;
   apiType: 'anthropic' | 'openai';
   modelName: string;
+  openRouterTier?: string | null;
   baseUrl: string;
   allowInsecureHttp: number;
   createdAt: number;
   paused?: number;
 };
 const targetColumns = `t.id, t.user_id AS userId, t.profile_id AS profileId, p.name AS profileName,
-  t.api_type AS apiType, t.model_name AS modelName, t.base_url AS baseUrl,
+  t.openrouter_tier AS openRouterTier, t.api_type AS apiType, t.model_name AS modelName, t.base_url AS baseUrl,
   t.allow_insecure_http AS allowInsecureHttp, t.created_at AS createdAt, t.paused`;
 
 export class AvailabilityStore {
@@ -40,13 +41,13 @@ export class AvailabilityStore {
     const results = await this.db.batch([
       this.db
         .prepare(
-          `DELETE FROM availability_targets WHERE user_id=? AND profile_id=? AND api_type=? AND model_name=? AND deleted_at IS NOT NULL`,
+          `DELETE FROM availability_targets WHERE user_id=? AND profile_id=? AND api_type=? AND model_name=? AND COALESCE(openrouter_tier,'')=? AND deleted_at IS NOT NULL`,
         )
-        .bind(userId, input.profileId, input.apiType, input.modelName),
+        .bind(userId, input.profileId, input.apiType, input.modelName, input.openRouterTier ?? ''),
       this.db
         .prepare(`INSERT OR IGNORE INTO availability_targets
-        (id,user_id,profile_id,api_type,model_name,base_url,allow_insecure_http,created_at)
-        SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM connection_profiles WHERE id=? AND user_id=?)
+        (id,user_id,profile_id,api_type,model_name,base_url,allow_insecure_http,created_at,openrouter_tier)
+        SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM connection_profiles WHERE id=? AND user_id=?)
         AND (SELECT COUNT(*) FROM availability_targets WHERE deleted_at IS NULL)<200`)
         .bind(
           input.id,
@@ -57,6 +58,7 @@ export class AvailabilityStore {
           input.baseUrl,
           input.allowInsecureHttp,
           input.createdAt,
+          input.openRouterTier ?? null,
           input.profileId,
           userId,
         ),
@@ -69,9 +71,9 @@ export class AvailabilityStore {
       );
     return this.db
       .prepare(
-        `SELECT id FROM availability_targets WHERE user_id=? AND profile_id=? AND api_type=? AND model_name=? AND deleted_at IS NULL`,
+        `SELECT id FROM availability_targets WHERE user_id=? AND profile_id=? AND api_type=? AND model_name=? AND COALESCE(openrouter_tier,'')=? AND deleted_at IS NULL`,
       )
-      .bind(userId, input.profileId, input.apiType, input.modelName)
+      .bind(userId, input.profileId, input.apiType, input.modelName, input.openRouterTier ?? '')
       .first<{ id: string }>();
   }
 

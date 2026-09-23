@@ -195,6 +195,7 @@ export async function POST(_request: NextRequest, context: Context) {
       originalBaseUrl: run.baseUrl,
       apiKey,
       model: run.modelName,
+      openRouterTier: run.openRouterTier,
       runId: id,
       stageIndex: -1,
       sequence: 0,

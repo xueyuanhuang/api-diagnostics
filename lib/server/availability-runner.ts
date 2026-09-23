@@ -64,6 +64,7 @@ export async function runAvailabilityTarget(
       {
         apiType: target.apiType,
         model: target.modelName,
+        openRouterTier: target.openRouterTier,
         apiKey,
         actualBaseUrl: resolved.actualBaseUrl,
       },

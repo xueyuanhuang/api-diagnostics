@@ -43,6 +43,7 @@ export function EndpointCheck(props: {
   apiType: 'anthropic' | 'openai';
   baseUrl: string;
   model: string;
+  openRouterTier?: string;
   apiKey: string;
   selectedProfileId: string;
   profileName: string;
@@ -121,7 +122,7 @@ export function EndpointCheck(props: {
       apiType: props.apiType,
       baseUrl: props.baseUrl.trim(),
       profileId: props.selectedProfileId || null,
-      label: props.profileName.trim() || hostname,
+      label: `${props.profileName.trim() || hostname}${props.openRouterTier ? ` · ${props.openRouterTier === 'flex' ? 'Flex' : 'Standard'} requested` : ''}`,
       model: props.model.trim(),
       createdAt: new Date().toISOString(),
       rows: plan.map((task) => ({
@@ -135,6 +136,7 @@ export function EndpointCheck(props: {
     const payload = {
       apiType: props.apiType,
       model: item.model,
+      openRouterTier: props.openRouterTier,
       profileId: props.selectedProfileId || undefined,
       baseUrl: props.selectedProfileId ? undefined : props.baseUrl.trim(),
       apiKey: props.selectedProfileId ? undefined : props.apiKey.trim(),

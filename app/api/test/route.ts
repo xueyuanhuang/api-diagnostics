@@ -1,4 +1,4 @@
-import { openRouterRoute } from '@/lib/openrouter';
+import { openRouterRoute, isOpenRouter } from '@/lib/openrouter';
 import { env } from 'cloudflare:workers';
 import { NextRequest } from 'next/server';
 import { saveAnimation } from '@/lib/server/animation-store';
@@ -132,7 +132,7 @@ export async function POST(request: NextRequest) {
   try { routing = openRouterRoute(baseUrl, apiType, model, payload.openRouterTier); }
   catch (error) { return noStore({ error: error instanceof Error ? error.message : 'Invalid route.' }, { status: 400 }); }
   if (routing && !isPelican) { maxOutputTokens = 512; timeoutMs = 120_000; }
-  const animationSource = { connectionName: connection.profileName || 'One-time connection', keyHint: apiKey.slice(-4) };
+  const animationSource = { connectionName: `${connection.profileName || 'One-time connection'}${routing ? ` · ${payload.openRouterTier === 'flex' ? 'Flex' : 'Standard'} requested` : ''}`, keyHint: apiKey.slice(-4) };
   const outbound = validateOutboundUrl(baseUrl, payload.allowInsecureHttp);
   if ('error' in outbound)
     return noStore({ error: outbound.error }, { status: 400 });
@@ -157,7 +157,7 @@ export async function POST(request: NextRequest) {
     accept: 'text/event-stream',
     'content-type': 'application/json',
   };
-  if (apiType === 'anthropic') {
+  if (apiType === 'anthropic' && !isOpenRouter(baseUrl)) {
     headers['x-api-key'] = apiKey;
     headers['anthropic-version'] = '2023-06-01';
   } else {
@@ -202,7 +202,7 @@ export async function POST(request: NextRequest) {
     let totalInputTokens: number | null;
     let outputTokens: number | null;
 
-    if (apiType === 'anthropic') {
+    if (apiType === 'anthropic' && !isOpenRouter(baseUrl)) {
       inputTokens = numberField(usage, 'input_tokens');
       cacheCreationInputTokens = numberField(
         usage,

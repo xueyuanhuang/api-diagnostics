@@ -8,6 +8,7 @@ import { chatGPTSignInPath } from '@/lib/auth-paths';
 import { animationConnectionLabel, type AnimationResult, type AnimationSummary, type SavedAnimation } from '@/lib/animation-results';
 import { Input } from '@/components/ui/input';
 import { AnimationPreview } from '@/components/animation-preview';
+import { OpenRouterSelector, useOpenRouterTier, selectedRoute } from '@/components/openrouter-selector';
 import { ModelPicker } from '@/components/model-picker';
 import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_CEILING, adjustPelicanOutputLimit, pelicanOutputLimit, extractAnimationHtml, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
@@ -22,6 +23,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const [profileId, setProfileId] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [openRouterTier,setOpenRouterTier]=useOpenRouterTier();
   const [model, setModel] = useState('');
   const [maxOutputTokens, setMaxOutputTokens] = useState<number>(PELICAN_MAX_TOKENS);
   const [outputLimitDraft, setOutputLimitDraft] = useState(String(PELICAN_MAX_TOKENS));
@@ -161,7 +163,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testKind: 'pelican', maxOutputTokens, animationId: resultId.current, apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
+        body: JSON.stringify({ testKind: 'pelican', openRouterTier: selectedRoute(baseUrl, model, openRouterTier), maxOutputTokens, animationId: resultId.current, apiType, profileId: profileId || undefined, baseUrl: profileId ? undefined : checked.baseUrl, apiKey: profileId ? undefined : apiKey.trim(), model: model.trim(), allowInsecureHttp: isInsecureHttp(baseUrl) }),
         signal: abort.signal,
       });
       const data = await readApiResponse<Result>(response);
@@ -278,6 +280,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
                 <Input className="mt-2 h-10" type="password" autoComplete="off" minLength={8} maxLength={512} value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder="Enter your API key" />
               </label>
             </fieldset></details>}
+            <OpenRouterSelector baseUrl={baseUrl} model={model} tier={openRouterTier} onChange={setOpenRouterTier} disabled={running}/>
             <p className="text-sm leading-6 text-muted-foreground">Saved connections use your encrypted key through the relay. One-time keys are not saved. Manage URLs, keys, and models on the <Link href="/connections" className="font-semibold text-primary underline">Connections page</Link>.</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="block text-sm font-medium">Output limit (tokens)

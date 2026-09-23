@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   index,
   integer,
@@ -200,8 +201,9 @@ export const rpmRuns = sqliteTable(
     apiType: text('api_type', { enum: ['anthropic', 'openai'] }).notNull(),
     baseUrl: text('base_url').notNull(),
     modelName: text('model_name').notNull(),
+    openRouterTier: text('openrouter_tier'),
     rampMode: text('ramp_mode', {
-      enum: ['balanced', 'detailed'],
+      enum: ['balanced', 'detailed', 'fixed'],
     }).notNull(),
     targetRpm: integer('target_rpm').notNull(),
     stageDurationSeconds: integer('stage_duration_seconds').notNull(),
@@ -297,6 +299,7 @@ export const availabilityTargets = sqliteTable(
       .references(() => connectionProfiles.id, { onDelete: 'cascade' }),
     apiType: text('api_type', { enum: ['anthropic', 'openai'] }).notNull(),
     modelName: text('model_name').notNull(),
+    openRouterTier: text('openrouter_tier'),
     baseUrl: text('base_url').notNull(),
     allowInsecureHttp: integer('allow_insecure_http', { mode: 'boolean' })
       .notNull()
@@ -311,6 +314,7 @@ export const availabilityTargets = sqliteTable(
       table.profileId,
       table.apiType,
       table.modelName,
+      sql`COALESCE(${table.openRouterTier}, '')`,
     ),
     index('availability_target_user_active_idx').on(
       table.userId,

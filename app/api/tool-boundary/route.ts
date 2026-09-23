@@ -1,3 +1,4 @@
+import { openRouterRoute } from '@/lib/openrouter';
 import { NextRequest } from 'next/server';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { noStore } from '@/lib/server/http';
@@ -33,6 +34,7 @@ export async function POST(request: NextRequest) {
       { error: connection.error },
       { status: 'status' in connection ? connection.status : 400 },
     );
+  try { openRouterRoute(connection.baseUrl, connection.apiType, connection.model, payload.openRouterTier); } catch (error) {return noStore({error:(error as Error).message},{status:400});}
   const outbound = validateOutboundUrl(
     connection.baseUrl,
     payload.allowInsecureHttp,
@@ -46,7 +48,7 @@ export async function POST(request: NextRequest) {
     );
     request.signal.throwIfAborted();
     const exchange = await captureBoundaryExchange(
-      { ...connection, actualBaseUrl: resolved.actualBaseUrl },
+      { ...connection, openRouterTier: payload.openRouterTier as string | undefined, actualBaseUrl: resolved.actualBaseUrl },
       request.signal,
     );
     return noStore({ exchange });

@@ -114,12 +114,12 @@ export async function GET(_request: NextRequest, context: Context) {
     },
     diagnosticSummary: {
       classification:
-        detail.run.status === 'inconclusive'
+        detail.run.rampMode === 'fixed' && detail.run.status === 'passed' ? 'measurement_complete' : detail.run.status === 'inconclusive'
           ? 'tester_delivery_failure'
           : detail.run.status === 'failed'
             ? 'provider_threshold_failure'
             : detail.run.status,
-      providerJudged: detail.run.status !== 'inconclusive',
+      providerJudged: detail.run.rampMode !== 'fixed' && detail.run.status !== 'inconclusive',
       stopReason: detail.run.stopReason,
       stages: detail.stages.map((stage) => ({
         stageIndex: stage.stageIndex,

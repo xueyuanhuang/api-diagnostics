@@ -387,6 +387,7 @@ export function RpmRampTest({
   baseUrl,
   model,
   profileDirty,
+  openRouterTier,
   openedRunId,
   readOnly = false,
   startBlocked = false,
@@ -403,6 +404,7 @@ export function RpmRampTest({
   baseUrl: string;
   model: string;
   profileDirty: boolean;
+  openRouterTier?: string;
   openedRunId: string;
   readOnly?: boolean;
   startBlocked?: boolean;
@@ -412,8 +414,10 @@ export function RpmRampTest({
   onRunSaved?: (run: RpmRunSummary) => void;
 }) {
   const [targetRpm, setTargetRpm] = useState(1_000);
+  const [durationSeconds, setDuration] = useState(60);
+  const [rateUnit, setRateUnit] = useState('rpm');
   const [threshold, setThreshold] = useState(90);
-  const [rampMode, setRampMode] = useState<RpmRampMode>('balanced');
+  const [rampMode, setRampMode] = useState<RpmRampMode>('fixed');
   const [detail, setDetail] = useState<RpmDetailWithPreflight | null>(null);
   const [live, setLive] = useState<Record<number, LiveStage>>({});
   const [message, setMessage] = useState(
@@ -442,11 +446,16 @@ export function RpmRampTest({
   }, [isRunning]);
 
   const plan = useMemo(
-    () => buildRampTargets(Math.max(1, targetRpm || 1), rampMode),
-    [rampMode, targetRpm],
+    () =>
+      buildRampTargets(
+        Math.max(1, targetRpm || 1),
+        readOnly ? rampMode : 'fixed',
+      ),
+    [rampMode, targetRpm, readOnly],
   );
   const estimatedRequests = plan.reduce(
-    (total, stage) => total + stage.targetRpm,
+    (total, stage) =>
+      total + Math.max(1, Math.round((stage.targetRpm * durationSeconds) / 60)),
     0,
   );
   const activeStage = detail?.stages.find((stage) =>
@@ -494,6 +503,7 @@ export function RpmRampTest({
         setTargetRpm(data.run.targetRpm);
         setThreshold(data.run.thresholdBps / 100);
         setRampMode(data.run.rampMode);
+        setDuration(data.run.stageDurationSeconds);
         setPhase(
           data.run.status === 'cancelled'
             ? 'cancelled'
@@ -650,6 +660,12 @@ export function RpmRampTest({
       return setError(
         `This deployment supports targets up to ${RPM_MAX_TARGET_RPM.toLocaleString()} RPM.`,
       );
+    if (
+      !Number.isInteger(durationSeconds) ||
+      durationSeconds < 10 ||
+      durationSeconds > 300
+    )
+      return setError('Duration must be 10–300 whole seconds.');
     if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100)
       return setError(
         'Minimum success rate must be a whole number from 1 to 100.',
@@ -694,7 +710,9 @@ export function RpmRampTest({
           model: model.trim(),
           targetRpm,
           thresholdPercent: threshold,
-          rampMode,
+          rampMode: 'fixed',
+          durationSeconds: durationSeconds,
+          openRouterTier,
         }),
       });
       activeRunIdRef.current = createdRun.run.id;
@@ -742,7 +760,7 @@ export function RpmRampTest({
         return;
       }
 
-      setMessage('Preflight passed. Preparing the first ramp stage…');
+      setMessage('Preflight passed. Preparing the measurement…');
 
       for (const stage of current.stages) {
         if (controller.signal.aborted) break;
@@ -750,7 +768,7 @@ export function RpmRampTest({
         setPhaseStartedAt(Date.now());
         setPhaseEndsAt(null);
         setMessage(
-          `Starting stage ${stage.stageIndex + 1}: ${stage.targetRpm.toLocaleString()} RPM for 60 seconds.`,
+          `Starting stage ${stage.stageIndex + 1}: ${stage.targetRpm.toLocaleString()} RPM for ${current.run.stageDurationSeconds} seconds.`,
         );
         const started = await jsonFetch<{
           stage: RpmStageSummary;
@@ -995,7 +1013,7 @@ export function RpmRampTest({
         setRecoverableRunId('');
         setMessage(
           completed
-            ? `Ramp passed through ${current.run.targetRpm.toLocaleString()} RPM.`
+            ? `Throughput measurement complete at ${current.run.targetRpm.toLocaleString()} requested RPM. See measured sends, successes and errors below.`
             : (current.run.stopReason ?? 'Ramp finished.'),
         );
       }
@@ -1063,21 +1081,61 @@ export function RpmRampTest({
 
   return (
     <div className="space-y-5">
+      {latestMetrics && (
+        <section className="rounded-xl border bg-card p-4 text-sm">
+          <strong>Measured throughput</strong>
+          <p>
+            Sent:{' '}
+            {(
+              (latestMetrics.sent * 60) /
+              (detail?.run.stageDurationSeconds ?? durationSeconds)
+            ).toFixed(2)}{' '}
+            RPM ·{' '}
+            {(
+              latestMetrics.sent /
+              (detail?.run.stageDurationSeconds ?? durationSeconds)
+            ).toFixed(2)}{' '}
+            RPS
+          </p>
+          <p>
+            Successful outcomes per sending window:{' '}
+            {(
+              (latestMetrics.succeeded * 60) /
+              (detail?.run.stageDurationSeconds ?? durationSeconds)
+            ).toFixed(2)}{' '}
+            RPM ·{' '}
+            {(
+              latestMetrics.succeeded /
+              (detail?.run.stageDurationSeconds ?? durationSeconds)
+            ).toFixed(2)}{' '}
+            RPS
+          </p>
+          <p className="text-muted-foreground">
+            Counts divided by the configured sending duration. Successful
+            outcomes include responses received during the final wait; these are
+            not per-second completion peaks.{' '}
+            {detail?.run.openRouterTier
+              ? `Requested resource: ${detail.run.openRouterTier === 'flex' ? 'Flex' : 'Standard'}.`
+              : ''}
+          </p>
+        </section>
+      )}
       <section className="rounded-2xl border border-border bg-card p-5 shadow-[0_18px_50px_rgb(15_23_42/0.06)]">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              {readOnly ? 'Saved RPM results' : 'RPM ramp settings'}
+              {readOnly ? 'Saved RPM results' : 'RPM / RPS settings'}
             </p>
             <h2 className="mt-1 text-xl font-semibold tracking-tight">
               {readOnly
                 ? 'Saved request-rate test'
-                : 'Staged request-rate test'}
+                : 'Fixed-rate throughput test'}
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Each stage schedules requests over 60 seconds. A provider
-              threshold failure or incomplete tester delivery stops higher
-              stages.
+              Measure sent requests and successful outcomes at your chosen rate
+              and duration. Errors are recorded throughout; no success threshold
+              stops the test. This measures this workload, not maximum provider
+              capacity.
             </p>
             <p className="mt-2 max-w-2xl truncate font-mono text-[10px] text-muted-foreground">
               {profileName ?? 'No saved profile'} · {apiType} ·{' '}
@@ -1114,17 +1172,30 @@ export function RpmRampTest({
                   htmlFor="rpm-target"
                   className="grid gap-1.5 text-xs font-medium"
                 >
-                  Target RPM
+                  Requested rate ({rateUnit.toUpperCase()})
                   <Input
                     id="rpm-target"
                     type="number"
                     min={1}
-                    max={RPM_MAX_TARGET_RPM}
-                    step={1}
-                    value={targetRpm}
+                    max={
+                      rateUnit === 'rpm'
+                        ? RPM_MAX_TARGET_RPM
+                        : RPM_MAX_TARGET_RPM / 60
+                    }
+                    step={rateUnit === 'rps' ? 'any' : 1}
+                    value={
+                      rateUnit === 'rpm'
+                        ? targetRpm
+                        : Number((targetRpm / 60).toFixed(4))
+                    }
                     disabled={isRunning}
                     onChange={(event) =>
-                      setTargetRpm(Number(event.target.value))
+                      setTargetRpm(
+                        Math.round(
+                          Number(event.target.value) *
+                            (rateUnit === 'rps' ? 60 : 1),
+                        ),
+                      )
                     }
                     className="h-10 font-mono"
                   />
@@ -1133,48 +1204,33 @@ export function RpmRampTest({
                     RPM.
                   </span>
                 </label>
-                <label
-                  htmlFor="rpm-threshold"
-                  className="grid gap-1.5 text-xs font-medium"
-                >
-                  Minimum success rate
-                  <div className="relative">
-                    <Input
-                      id="rpm-threshold"
-                      type="number"
-                      min={1}
-                      max={100}
-                      step={1}
-                      value={threshold}
-                      disabled={isRunning}
-                      onChange={(event) =>
-                        setThreshold(Number(event.target.value))
-                      }
-                      className="h-10 pr-8 font-mono"
-                    />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                      %
-                    </span>
-                  </div>
-                  <span className="font-normal text-muted-foreground">
-                    Default 90%. Exactly 90.00% passes.
-                  </span>
+                <label className="grid gap-1.5 text-xs font-medium">
+                  Rate unit
+                  <select
+                    aria-label="Rate unit"
+                    value={rateUnit}
+                    disabled={isRunning}
+                    onChange={(e) => setRateUnit(e.target.value)}
+                    className="h-10 rounded-lg border px-3"
+                  >
+                    <option value="rpm">Requests per minute (RPM)</option>
+                    <option value="rps">Requests per second (RPS)</option>
+                  </select>
                 </label>
                 <label className="grid gap-1.5 text-xs font-medium">
-                  Ramp detail
-                  <select
-                    value={rampMode}
+                  Duration (seconds)
+                  <Input
+                    aria-label="Duration (seconds)"
+                    type="number"
+                    min={10}
+                    max={300}
+                    step={1}
+                    value={durationSeconds}
                     disabled={isRunning}
-                    onChange={(event) =>
-                      setRampMode(event.target.value as RpmRampMode)
-                    }
-                    className="h-10 rounded-lg border border-input bg-background px-3 text-sm shadow-xs outline-none focus:ring-2 focus:ring-ring/30"
-                  >
-                    <option value="balanced">Balanced · 5 stages</option>
-                    <option value="detailed">Detailed · 10% steps</option>
-                  </select>
-                  <span className="font-normal text-muted-foreground">
-                    Balanced: 10%, 25%, 50%, 75%, 100%.
+                    onChange={(e) => setDuration(Number(e.target.value))}
+                  />
+                  <span>
+                    10–300 seconds. Responses may finish after sending ends.
                   </span>
                 </label>
               </div>
@@ -1186,15 +1242,17 @@ export function RpmRampTest({
                   key={`${stage.percentage}-${stage.targetRpm}`}
                   variant="outline"
                 >
-                  {stage.percentage}% · {stage.targetRpm.toLocaleString()} RPM
+                  {stage.targetRpm.toLocaleString()} RPM ·{' '}
+                  {(stage.targetRpm / 60).toFixed(2)} RPS
                 </Badge>
               ))}
             </div>
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/75 p-3 text-xs leading-5 text-amber-950">
               <strong>Planned load:</strong> about{' '}
               {estimatedRequests.toLocaleString()} paid API requests, plus one
-              preflight. A 60-second quiet window separates stages so
-              rolling-minute limits do not overlap.
+              preflight. The preflight checks connectivity before load begins.
+              Each request has a 20-second timeout; slower requests count as
+              timeouts.
               <br />
               <strong>Keep this tab open:</strong> dispatch timing runs on the
               server, while this deployment keeps those workers attached through
@@ -1266,7 +1324,7 @@ export function RpmRampTest({
                 }
                 className="gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"
               >
-                <Play className="size-4 fill-current" /> Start RPM ramp
+                <Play className="size-4 fill-current" /> Start throughput test
               </Button>
             )}
             {startBlocked ? (
@@ -1345,7 +1403,7 @@ export function RpmRampTest({
           detail={
             latestMetrics
               ? `${percentage(latestMetrics.providerSuccessPercent)} of preserved response outcomes${latestStage?.dispatchValid === false ? ' · no provider verdict' : ''}`
-              : `Pass threshold ${threshold}%`
+              : 'Measured outcomes; no pass threshold'
           }
           icon={CheckCircle2}
           tone={latestStage?.status === 'failed' ? 'danger' : 'default'}
@@ -1394,7 +1452,7 @@ export function RpmRampTest({
 
       <section className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_18px_50px_rgb(15_23_42/0.06)]">
         <div className="border-b border-border px-5 py-4">
-          <h2 className="text-sm font-semibold">Ramp stages</h2>
+          <h2 className="text-sm font-semibold">Measurement windows</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Request payload: max_tokens=8 · stream=false · no temperature,
             top_p, top_k, system, tools, cache controls, or retries · 20-second
@@ -1417,7 +1475,10 @@ export function RpmRampTest({
               stageIndex,
               percentage: stage.percentage,
               targetRpm: stage.targetRpm,
-              scheduledCount: stage.targetRpm,
+              scheduledCount: Math.max(
+                1,
+                Math.round((stage.targetRpm * durationSeconds) / 60),
+              ),
               batchCount: 0,
               status: 'pending' as const,
               scheduledStartAt: null,
@@ -1458,12 +1519,16 @@ export function RpmRampTest({
                       variant="outline"
                       className={statusBadge(stage.status)}
                     >
-                      {statusLabel(stage.status)}
+                      {detail?.run.rampMode === 'fixed' &&
+                      stage.status === 'passed'
+                        ? 'Completed'
+                        : statusLabel(stage.status)}
                     </Badge>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {stage.percentage}% of target · Scheduled:{' '}
-                    {metrics.scheduled.toLocaleString()} requests / 60 s
+                    {metrics.scheduled.toLocaleString()} requests /{' '}
+                    {detail?.run.stageDurationSeconds ?? durationSeconds} s
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
@@ -1597,7 +1662,7 @@ function RunStatusCard({
               : phase === 'cooldown'
                 ? 'Between stages · Rolling-minute cooldown'
                 : phase === 'complete'
-                  ? 'Step 3 of 3 · Ramp complete'
+                  ? 'Step 3 of 3 · Measurement complete'
                   : phase === 'cancelled'
                     ? 'Run cancelled'
                     : phase === 'cancelling'

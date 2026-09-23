@@ -1,3 +1,4 @@
+import { openRouterRoute } from '@/lib/openrouter';
 import { env } from 'cloudflare:workers';
 import { validateOutboundUrl } from '@/lib/server/connection';
 import { desc, eq } from 'drizzle-orm';
@@ -29,6 +30,8 @@ type StartPayload = {
   targetRpm?: unknown;
   thresholdPercent?: unknown;
   rampMode?: unknown;
+  durationSeconds?: unknown;
+  openRouterTier?: unknown;
 };
 
 function integer(value: unknown) {
@@ -72,7 +75,7 @@ export async function POST(request: NextRequest) {
   const targetRpm = integer(payload.targetRpm);
   const thresholdPercent = integer(payload.thresholdPercent ?? 90);
   const rampMode: RpmRampMode =
-    payload.rampMode === 'detailed' ? 'detailed' : 'balanced';
+    payload.rampMode === 'fixed' ? 'fixed' : payload.rampMode === 'detailed' ? 'detailed' : 'balanced';
   if (!profileId)
     return noStore(
       { error: 'Save or select a connection profile before an RPM test.' },
@@ -122,6 +125,9 @@ export async function POST(request: NextRequest) {
       { status: 404 },
     );
 
+  const duration = rampMode === 'fixed' ? integer(payload.durationSeconds ?? 60) : STAGE_DURATION_SECONDS;
+  if (duration === null || duration < 10 || duration > 300) return noStore({error: 'Duration must be 10–300 whole seconds.'}, {status:400});
+  try { openRouterRoute(config.baseUrl, apiType, model, payload.openRouterTier); } catch (error) { return noStore({error: (error as Error).message}, {status:400}); }
   const outbound = validateOutboundUrl(
     config.baseUrl,
     payload.allowInsecureHttp,
@@ -132,7 +138,7 @@ export async function POST(request: NextRequest) {
     ...stage,
     scheduledCount: Math.max(
       1,
-      Math.round((stage.targetRpm * STAGE_DURATION_SECONDS) / 60),
+      Math.round((stage.targetRpm * duration) / 60),
     ),
   }));
   const totalPlanned = targets.reduce(
@@ -231,18 +237,19 @@ export async function POST(request: NextRequest) {
   try {
     await env.DB.batch([
       env.DB.prepare(
-        'INSERT INTO rpm_runs (id, user_id, profile_id, profile_name, api_type, base_url, model_name, ramp_mode, target_rpm, stage_duration_seconds, threshold_bps, status, total_planned, total_attempted, total_succeeded, total_rate_limited, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)',
+        'INSERT INTO rpm_runs (id, user_id, profile_id, profile_name, api_type, base_url, model_name, openrouter_tier, ramp_mode, target_rpm, stage_duration_seconds, threshold_bps, status, total_planned, total_attempted, total_succeeded, total_rate_limited, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)',
       ).bind(
         runId,
         user.userId,
         profileId,
-        config.profileName,
+        `${config.profileName}${payload.openRouterTier ? ` · ${payload.openRouterTier === 'flex' ? 'Flex' : 'Standard'} requested` : ''}`,
         apiType,
         config.baseUrl,
         model,
+        (payload.openRouterTier as string) || null,
         rampMode,
         targetRpm,
-        STAGE_DURATION_SECONDS,
+        duration,
         thresholdBps,
         'preflight',
         totalPlanned,

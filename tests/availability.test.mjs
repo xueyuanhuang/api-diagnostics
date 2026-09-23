@@ -455,3 +455,13 @@ test('scheduler retries transient delivery failure without changing slot, and ne
   );
   assert.equal(authCalls, 1);
 });
+
+ test('Standard and Flex monitors remain separate and retain their requested route', async()=>{
+ const f=fixture();
+ try {
+ await f.store.add('owner',{...input,id:'standard',openRouterTier:'default'});
+ await f.store.add('owner',{...input,id:'flex',openRouterTier:'flex'});
+ assert.equal((await f.store.active('standard','owner')).openRouterTier,'default');
+ assert.equal((await f.store.active('flex','owner')).openRouterTier,'flex');
+ } finally {f.close();}
+ });

@@ -1,4 +1,9 @@
 'use client';
+import {
+  OpenRouterSelector,
+  useOpenRouterTier,
+  selectedRoute,
+} from '@/components/openrouter-selector';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertDialog } from '@base-ui/react/alert-dialog';
@@ -78,11 +83,12 @@ export function AvailabilityMonitor({
     if (preferredLoaded.current || !profiles.length) return;
     preferredLoaded.current = true;
     const id = activeConnectionId();
-    if (profiles.some(item => item.id === id)) setProfileId(id);
+    if (profiles.some((item) => item.id === id)) setProfileId(id);
   }, [profiles]);
   const [chosenApiType, setApiType] = useState<ApiType | null>(null);
   const [clock, setClock] = useState(0);
   const [receivedAt, setReceivedAt] = useState(0);
+  const [tier, setTier] = useOpenRouterTier();
   const [model, setModel] = useState('');
   const [filter, setFilter] = useState('');
   const [onlyFailing, setOnlyFailing] = useState(false);
@@ -159,6 +165,7 @@ export function AvailabilityMonitor({
           profileId: profile.id,
           apiType,
           model: selectedModel,
+          openRouterTier: selectedRoute(config!.baseUrl, selectedModel, tier),
           allowInsecureHttp: isInsecureHttp(config!.baseUrl),
         }),
       });
@@ -183,12 +190,25 @@ export function AvailabilityMonitor({
     if (busy) return;
     setBusy(id);
     try {
-      const response=await fetch(`/api/availability/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused})});
-      const result=await response.json() as {error?: string};
-      if(!response.ok)throw new Error(result.error||'Could not update target.');
+      const response = await fetch(
+        `/api/availability/${encodeURIComponent(id)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paused }),
+        },
+      );
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok)
+        throw new Error(result.error || 'Could not update target.');
       await refresh();
-    }catch(cause){setError(cause instanceof Error?cause.message:'Could not update target.');}
-    finally{setBusy('');}
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : 'Could not update target.',
+      );
+    } finally {
+      setBusy('');
+    }
   }
   async function remove() {
     if (busy || !pendingRemoval) return;
@@ -344,6 +364,13 @@ export function AvailabilityMonitor({
                   ))}
                 </select>
               </label>
+              <OpenRouterSelector
+                baseUrl={config?.baseUrl ?? ''}
+                model={selectedModel}
+                tier={tier}
+                onChange={setTier}
+                disabled={Boolean(busy)}
+              />
               <Button
                 type="button"
                 onClick={() => void add()}
@@ -471,7 +498,13 @@ export function AvailabilityMonitor({
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                       {target.paused ? 'Paused' : 'Every 10 min'}
-                      <button className="mt-2 block underline" disabled={Boolean(busy)} onClick={()=>togglePause(target.id,!target.paused)}>{target.paused?'Resume':'Pause'}</button>
+                      <button
+                        className="mt-2 block underline"
+                        disabled={Boolean(busy)}
+                        onClick={() => togglePause(target.id, !target.paused)}
+                      >
+                        {target.paused ? 'Resume' : 'Pause'}
+                      </button>
                     </TableCell>
                     <TableCell className="max-w-80">
                       <Badge

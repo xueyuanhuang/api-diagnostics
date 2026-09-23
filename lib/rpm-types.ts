@@ -1,4 +1,4 @@
-export type RpmRampMode = 'balanced' | 'detailed';
+export type RpmRampMode = 'balanced' | 'detailed' | 'fixed';
 
 export type RpmRunStatus =
   | 'preflight'
@@ -27,6 +27,7 @@ export type RpmRunSummary = {
   apiType: 'anthropic' | 'openai';
   baseUrl: string;
   modelName: string;
+  openRouterTier?: string | null;
   rampMode: RpmRampMode;
   targetRpm: number;
   stageDurationSeconds: number;
@@ -98,6 +99,7 @@ export type RpmPreflightSummary = {
 };
 
 export function rampPercentages(mode: RpmRampMode) {
+  if (mode === 'fixed') return [100];
   return mode === 'detailed'
     ? [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     : [10, 25, 50, 75, 100];
@@ -149,4 +151,17 @@ export function rpmShardCount(scheduledCount: number) {
     1,
     Math.min(RPM_MAX_DISPATCH_SHARDS, Math.ceil(scheduledCount / 14)),
   );
+}
+
+// Fixed-rate measurements report outcomes, rather than grade a provider threshold.
+export function rpmMeasurementStatus(
+  mode: RpmRampMode,
+  dispatchValid: boolean,
+  successes: number,
+  responses: number,
+  thresholdBps: number,
+) {
+  if (!dispatchValid) return 'inconclusive';
+  if (mode === 'fixed') return 'passed'; // legacy storage status; UI displays Completed
+  return successes * 10_000 >= thresholdBps * responses ? 'passed' : 'failed';
 }

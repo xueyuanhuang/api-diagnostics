@@ -25,6 +25,7 @@ export type AvailabilityTarget = {
   profileName: string;
   apiType: BoundaryApiType;
   modelName: string;
+  openRouterTier?: string | null;
   baseUrl: string;
   createdAt: number;
   samples: AvailabilitySample[];

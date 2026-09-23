@@ -1,3 +1,4 @@
+import { openRouterRoute } from '@/lib/openrouter';
 import { NextRequest } from 'next/server';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { noStore } from '@/lib/server/http';
@@ -76,6 +77,7 @@ export async function POST(request: NextRequest) {
     });
     if (!config)
       throw new AvailabilityError('Saved connection or model not found.', 404);
+    openRouterRoute(config.baseUrl, config.apiType, config.modelName, body.openRouterTier);
     const checked = validateOutboundUrl(config.baseUrl, body.allowInsecureHttp);
     if ('error' in checked) throw new AvailabilityError(checked.error);
     const saved = await availabilityStore().add(user.userId, {
@@ -83,6 +85,7 @@ export async function POST(request: NextRequest) {
       profileId: body.profileId,
       apiType: config.apiType,
       modelName: config.modelName,
+      openRouterTier: typeof body.openRouterTier === 'string' ? body.openRouterTier : null,
       baseUrl: checked.baseUrl,
       allowInsecureHttp: body.allowInsecureHttp === true ? 1 : 0,
       createdAt: Date.now(),

@@ -33,6 +33,7 @@ export function ToolBoundaryTest(props: {
   apiType: BoundaryApiType;
   baseUrl: string;
   model: string;
+  openRouterTier?: string;
   apiKey: string;
   selectedProfileId: string;
   profileName: string;
@@ -109,7 +110,7 @@ export function ToolBoundaryTest(props: {
       testKind: 'boundary',
       baseUrl: props.baseUrl.trim(),
       profileId: props.selectedProfileId || null,
-      label: props.profileName.trim() || hostname,
+      label: `${props.profileName.trim() || hostname}${props.openRouterTier ? ` · ${props.openRouterTier === 'flex' ? 'Flex' : 'Standard'} requested` : ''}`,
       model: props.model.trim(),
       apiType: props.apiType,
       createdAt: new Date().toISOString(),
@@ -123,6 +124,7 @@ export function ToolBoundaryTest(props: {
     const payload = {
       apiType: props.apiType,
       model: item.model,
+      openRouterTier: props.openRouterTier,
       profileId: props.selectedProfileId || undefined,
       baseUrl: props.selectedProfileId ? undefined : props.baseUrl.trim(),
       apiKey: props.selectedProfileId ? undefined : props.apiKey.trim(),

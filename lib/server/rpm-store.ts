@@ -20,6 +20,7 @@ export function runSummary(row: RunRow): RpmRunSummary {
     apiType: row.apiType,
     baseUrl: row.baseUrl,
     modelName: row.modelName,
+    openRouterTier: row.openRouterTier,
     rampMode: row.rampMode,
     targetRpm: row.targetRpm,
     stageDurationSeconds: row.stageDurationSeconds,

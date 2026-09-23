@@ -9,6 +9,7 @@ export type RequestPayload = {
   baseUrl?: unknown;
   apiKey?: unknown;
   model?: unknown;
+  openRouterTier?: unknown;
 };
 
 export async function resolveTestConnection(payload: RequestPayload) {

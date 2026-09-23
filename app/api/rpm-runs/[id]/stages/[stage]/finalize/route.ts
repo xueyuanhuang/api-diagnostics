@@ -6,6 +6,7 @@ import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { getDb } from '@/db';
 import { rpmRuns, rpmStages } from '@/db/schema';
 import {
+  rpmMeasurementStatus,
   RPM_FINALIZE_GRACE_MS,
   RPM_FINALIZE_SETTLE_MS,
   RPM_MAX_DISPATCH_SHARDS,
@@ -424,11 +425,7 @@ export async function POST(_request: NextRequest, context: Context) {
     const scheduleLags = validEvidence
       .map((item) => Math.max(0, item.scheduleLagMs))
       .filter(Number.isFinite);
-    const stageStatus = !dispatchValid
-      ? 'inconclusive'
-      : successCount * 10_000 >= run.thresholdBps * responseCount
-        ? 'passed'
-        : 'failed';
+    const stageStatus = rpmMeasurementStatus(run.rampMode, dispatchValid, successCount, responseCount, run.thresholdBps);
     const finishedAt = Date.now();
     const stageUpdate = env.DB.prepare(
       "UPDATE rpm_stages SET status = ?, finished_at = ?, attempted_count = ?, success_count = ?, rate_limited_count = ?, client_error_count = ?, server_error_count = ?, timeout_count = ?, transport_error_count = ?, malformed_count = ?, missed_dispatch_count = ?, success_rate_bps = ?, dispatch_valid = ?, median_latency_ms = ?, p95_latency_ms = ?, p95_schedule_lag_ms = ? WHERE run_id = ? AND stage_index = ? AND status IN ('running', 'finalizing') AND EXISTS (SELECT 1 FROM rpm_runs WHERE id = ? AND user_id = ? AND status = 'running')",
@@ -512,7 +509,7 @@ export async function POST(_request: NextRequest, context: Context) {
         "UPDATE rpm_runs SET status = ?, highest_passed_rpm = ?, stopped_at_rpm = ?, stop_reason = ?, total_attempted = (SELECT COALESCE(SUM(attempted_count), 0) FROM rpm_stages WHERE run_id = ?), total_succeeded = (SELECT COALESCE(SUM(success_count), 0) FROM rpm_stages WHERE run_id = ?), total_rate_limited = (SELECT COALESCE(SUM(rate_limited_count), 0) FROM rpm_stages WHERE run_id = ?), median_latency_ms = ?, p95_latency_ms = ?, finished_at = ? WHERE id = ? AND user_id = ? AND status = 'running' AND EXISTS (SELECT 1 FROM rpm_stages WHERE run_id = ? AND stage_index = ? AND status = ? AND finished_at = ?)",
       ).bind(
         finalStatus,
-        stageStatus === 'passed' ? current.targetRpm : run.highestPassedRpm,
+        run.rampMode === 'fixed' ? null : stageStatus === 'passed' ? current.targetRpm : run.highestPassedRpm,
         stageStatus === 'passed' ? null : current.targetRpm,
         stopReason,
         id,

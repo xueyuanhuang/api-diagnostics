@@ -1,3 +1,4 @@
+import { openRouterRoute, isOpenRouter } from '../openrouter';
 import {
   availabilityRequestBody,
   PROBE_TIMEOUT_MS,
@@ -12,6 +13,7 @@ export async function checkProviderAvailability(
   connection: {
     apiType: ApiType;
     model: string;
+    openRouterTier?: string | null;
     apiKey: string;
     actualBaseUrl: string;
   },
@@ -40,7 +42,7 @@ export async function checkProviderAvailability(
       'content-type': 'application/json',
       accept: 'application/json',
     };
-    if (connection.apiType === 'anthropic') {
+    if (connection.apiType === 'anthropic' && !isOpenRouter(connection.actualBaseUrl)) {
       headers['x-api-key'] = connection.apiKey;
       headers['anthropic-version'] = '2023-06-01';
     } else headers.authorization = `Bearer ${connection.apiKey}`;
@@ -50,7 +52,7 @@ export async function checkProviderAvailability(
         method: 'POST',
         headers,
         body: JSON.stringify(
-          availabilityRequestBody(connection.apiType, connection.model),
+          {...availabilityRequestBody(connection.apiType, connection.model), ...openRouterRoute(connection.actualBaseUrl, connection.apiType, connection.model, connection.openRouterTier), ...(connection.openRouterTier ? {max_tokens:512} : {})},
         ),
         redirect: 'manual',
         signal: deadline,

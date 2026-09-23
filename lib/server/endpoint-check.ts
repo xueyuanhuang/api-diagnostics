@@ -1,3 +1,4 @@
+import { openRouterRoute, isOpenRouter } from '@/lib/openrouter';
 import {
   ENDPOINT_TIMEOUT_MS,
   endpointCheckUrl,
@@ -11,6 +12,7 @@ import { captureHttpExchange } from './http-exchange';
 export async function captureEndpointExchange(
   connection: {
     model: string;
+    openRouterTier?: string;
     apiKey: string;
     baseUrl: string;
     actualBaseUrl: string;
@@ -24,7 +26,7 @@ export async function captureEndpointExchange(
     accept: 'application/json',
     'content-type': 'application/json',
   };
-  if (protocol === 'messages') {
+  if (protocol === 'messages' && !isOpenRouter(connection.baseUrl)) {
     headers['x-api-key'] = connection.apiKey;
     headers['anthropic-version'] = '2023-06-01';
   } else headers.authorization = `Bearer ${connection.apiKey}`;
@@ -34,7 +36,7 @@ export async function captureEndpointExchange(
       headers,
       requestUrl: endpointCheckUrl(connection.actualBaseUrl, protocol),
       body: JSON.stringify(
-        endpointRequestBody(protocol, connection.model, caseId),
+        {...endpointRequestBody(protocol, connection.model, caseId), ...openRouterRoute(connection.baseUrl, 'openai', connection.model, connection.openRouterTier)},
       ),
       timeoutMs: ENDPOINT_TIMEOUT_MS,
     },
