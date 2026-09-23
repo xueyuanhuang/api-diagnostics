@@ -8,6 +8,7 @@ import {
   profileModels,
 } from '@/db/schema';
 import type { ApiType } from '@/lib/server/connection';
+import { mergeModelLists } from '@/lib/profile-models';
 
 export type OwnedProfileConfig = {
   profileId: string;
@@ -58,36 +59,34 @@ export async function getOwnedProfileConfig({
   const configs = await db
     .select({
       id: profileApiConfigs.id,
+      apiType: profileApiConfigs.apiType,
       baseUrl: profileApiConfigs.baseUrl,
       modelName: profileApiConfigs.modelName,
       encryptedApiKey: profileApiConfigs.encryptedApiKey,
       keyIv: profileApiConfigs.keyIv,
     })
     .from(profileApiConfigs)
-    .where(
-      and(
-        eq(profileApiConfigs.profileId, profileId),
-        eq(profileApiConfigs.apiType, resolvedApiType),
-      ),
-    )
-    .limit(1);
-
-  if (configs.length) {
-    const config = configs[0];
-    const modelRows = await db
+    .where(eq(profileApiConfigs.profileId, profileId));
+  const modelRows = await db
       .select({ modelName: profileApiModels.modelName })
       .from(profileApiModels)
-      .where(eq(profileApiModels.configId, config.id))
+      .innerJoin(profileApiConfigs, eq(profileApiModels.configId, profileApiConfigs.id))
+      .where(eq(profileApiConfigs.profileId, profileId))
       .orderBy(asc(profileApiModels.position));
-    const models = [
-      ...new Set([config.modelName, ...modelRows.map((row) => row.modelName)]),
-    ];
-    if (
-      requestedModel &&
-      !allowModelOverride &&
-      !models.includes(requestedModel)
-    )
-      return null;
+  const legacyRows = await db
+    .select({ modelName: profileModels.modelName })
+    .from(profileModels)
+    .where(eq(profileModels.profileId, profileId))
+    .orderBy(asc(profileModels.createdAt));
+  const models = mergeModelLists(
+    configs.map(config => config.modelName),
+    modelRows.map(row => row.modelName),
+    legacyRows.map(row => row.modelName),
+  );
+  if (requestedModel && !allowModelOverride && !models.includes(requestedModel)) return null;
+
+  const config = configs.find(item => item.apiType === resolvedApiType);
+  if (config) {
     return {
       profileId,
       profileName: profile.name,
@@ -102,20 +101,12 @@ export async function getOwnedProfileConfig({
 
   // Legacy profiles have one stored configuration. Until the owner next saves
   // the profile, expose that configuration through both API formats.
-  const modelRows = await db
-    .select({ modelName: profileModels.modelName })
-    .from(profileModels)
-    .where(eq(profileModels.profileId, profileId))
-    .orderBy(asc(profileModels.createdAt));
-  const models = modelRows.map((row) => row.modelName);
-  if (requestedModel && !allowModelOverride && !models.includes(requestedModel))
-    return null;
   return {
     profileId,
     profileName: profile.name,
     apiType: resolvedApiType,
     baseUrl: profile.baseUrl,
-    modelName: requestedModel || models[0] || '',
+    modelName: requestedModel || legacyRows[0]?.modelName || models[0] || '',
     models,
     encryptedApiKey: profile.encryptedApiKey,
     keyIv: profile.keyIv,

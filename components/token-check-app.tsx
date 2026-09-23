@@ -883,9 +883,10 @@ export function TokenCheckApp({
     markDraftTouched(['apiKey'], forType);
   }
 
-  function updateProfileModels(models: string[], forType = apiType) {
-    setProfileModels((current) => ({ ...current, [forType]: models }));
-    markDraftTouched(['models'], forType);
+  function updateProfileModels(models: string[]) {
+    setProfileModels({ anthropic: models, openai: models });
+    markDraftTouched(['models'], 'anthropic');
+    markDraftTouched(['models'], 'openai');
   }
 
   useEffect(() => {
@@ -1211,7 +1212,7 @@ export function TokenCheckApp({
     const sourceType = apiType;
     const targetTouched = draftTouched[nextType];
     const copyBaseUrl = !targetTouched.baseUrl;
-    const copyModel = !targetTouched.model;
+    const copyModel = Boolean(selectedProfileId) || !targetTouched.model;
     const copyApiKey = !targetTouched.apiKey && Boolean(apiKeys[sourceType]);
     const copyModels =
       !targetTouched.models && profileModels[sourceType].length > 0;
@@ -1319,6 +1320,10 @@ export function TokenCheckApp({
     setSelectedModels((current) => current.filter((name) => name !== item));
     const next = activeProfileModels.filter((modelName) => modelName !== item);
     updateProfileModels(next);
+    setConnections(current => ({
+      anthropic: { ...current.anthropic, model: current.anthropic.model === item ? next[0] ?? '' : current.anthropic.model },
+      openai: { ...current.openai, model: current.openai.model === item ? next[0] ?? '' : current.openai.model },
+    }));
     if (selectedProfileId) setProfileDirty(true);
     if (model === item) {
       updateConnection({ model: next[0] ?? '' });
@@ -1452,17 +1457,18 @@ export function TokenCheckApp({
               ...profile,
               configs: {
                 ...profile.configs,
-                [forType]: { ...profile.configs[forType], models: data.models },
+                anthropic: { ...profile.configs.anthropic, models: data.models },
+                openai: { ...profile.configs.openai, models: data.models },
               },
             },
       ),
     );
     // Connection edits are locked while awaiting this response. Preserve other API
     // settings and any additional model drafts; never replace the key or default model.
-    setProfileModels((current) => ({
-      ...current,
-      [forType]: [...new Set([...data.models, ...current[forType]])],
-    }));
+    setProfileModels((current) => {
+      const models = [...new Set([...data.models, ...current.anthropic, ...current.openai])];
+      return { anthropic: models, openai: models };
+    });
     return data;
   }
 
@@ -1485,7 +1491,7 @@ export function TokenCheckApp({
       );
       setProfileMessage(
         data.added
-          ? `${data.added} models restored and saved for ${apiType === 'anthropic' ? 'Anthropic' : 'OpenAI'}. No tests were sent.`
+          ? `${data.added} models restored and saved for both API formats. No tests were sent.`
           : 'All historical models are already saved. No tests were sent.',
       );
     } catch (error) {

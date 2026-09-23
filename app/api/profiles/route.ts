@@ -11,6 +11,7 @@ import {
   profileModels,
 } from '@/db/schema';
 import { encryptApiKey } from '@/lib/server/encryption';
+import { mergeModelLists, shareProfileModels } from '@/lib/profile-models';
 import { noStore, serverError } from '@/lib/server/http';
 import {
   API_TYPES,
@@ -175,7 +176,7 @@ export async function GET() {
           id: profile.id,
           name: profile.name,
           defaultApiType: profile.apiType,
-          configs,
+          configs: shareProfileModels(configs, mergeModelLists(configs.anthropic.models, configs.openai.models, fallbackModels)),
           createdAt: profile.createdAt,
           updatedAt: profile.updatedAt,
         });
@@ -220,10 +221,13 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  const configs = {
+  const configs = shareProfileModels({
     anthropic: { ...rawConfigs.anthropic },
     openai: { ...rawConfigs.openai },
-  };
+  }, parsed.sharedModels);
+  if (configs.anthropic.models.length > 200) {
+    return noStore({ error: 'Use at most 200 models per connection. No changes were saved.' }, { status: 400 });
+  }
   if (!configs.anthropic.apiKey) configs.anthropic.apiKey = firstKey;
   if (!configs.openai.apiKey) configs.openai.apiKey = firstKey;
 

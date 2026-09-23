@@ -11,6 +11,7 @@ import {
   profileModels,
 } from '@/db/schema';
 import { encryptApiKey } from '@/lib/server/encryption';
+import { shareProfileModels } from '@/lib/profile-models';
 import { noStore, serverError } from '@/lib/server/http';
 import {
   API_TYPES,
@@ -179,7 +180,7 @@ export async function PATCH(request: NextRequest, context: Context) {
       ApiType,
       { encryptedApiKey: string; keyIv: string }
     >;
-    const configs = Object.fromEntries(
+    const configs = shareProfileModels(Object.fromEntries(
       API_TYPES.map((type) => [
         type,
         {
@@ -190,7 +191,10 @@ export async function PATCH(request: NextRequest, context: Context) {
           keyIv: encrypted[type].keyIv,
         },
       ]),
-    ) as Record<ApiType, Omit<ExistingConfig, 'id' | 'createdAt'>>;
+    ) as Record<ApiType, Omit<ExistingConfig, 'id' | 'createdAt'>>, parsed.sharedModels);
+    if (configs.anthropic.models.length > 200) {
+      return noStore({ error: 'Use at most 200 models per connection. No changes were saved.' }, { status: 400 });
+    }
     const ids = {
       anthropic: existing.anthropic.id ?? crypto.randomUUID(),
       openai: existing.openai.id ?? crypto.randomUUID(),

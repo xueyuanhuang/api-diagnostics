@@ -13,6 +13,11 @@ const configSql = `SELECT c.id, c.base_url AS baseUrl, c.model_name AS model
   FROM profile_api_configs c JOIN connection_profiles p ON p.id = c.profile_id
   WHERE p.id = ? AND p.user_id = ? AND c.api_type = ?`;
 
+const catalogSql = `SELECT c.profile_id, m.model_name AS model
+  FROM profile_api_models m JOIN profile_api_configs c ON c.id = m.config_id
+  UNION SELECT profile_id, model_name FROM profile_api_configs
+  UNION SELECT profile_id, model_name FROM profile_models`;
+
 function normalizedUrl(value: unknown) {
   const result = validateBaseUrl(typeof value === 'string' ? value : '');
   return 'baseUrl' in result ? result.baseUrl : null;
@@ -76,14 +81,14 @@ export async function rememberModels(
   ];
   if (models.length > 200)
     throw new ModelListError(
-      'This API configuration supports 200 saved models. No models were added.',
+      'This connection supports 200 saved models. No models were added.',
       409,
     );
 
   // One atomic, append-only statement: concurrent batches cannot overwrite each other,
   // exceed the existing 200-model limit, or partially add an over-limit list.
   const inserted = await db
-    .prepare(`WITH requested AS (
+    .prepare(`WITH catalog AS (${catalogSql}), requested AS (
       SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.model') AS model, key AS position
       FROM json_each(?)
     )
@@ -93,8 +98,9 @@ export async function rememberModels(
     FROM requested r JOIN profile_api_configs c ON c.id = ?
     JOIN connection_profiles p ON p.id = c.profile_id
     WHERE p.id = ? AND p.user_id = ? AND c.api_type = ? AND c.base_url = ?
+      AND NOT EXISTS (SELECT 1 FROM catalog WHERE profile_id = p.id AND model = r.model)
       AND (SELECT COUNT(*) FROM (
-        SELECT model_name FROM profile_api_models WHERE config_id = c.id
+        SELECT model FROM catalog WHERE profile_id = p.id
         UNION SELECT model FROM requested
         UNION SELECT c.model_name
       )) <= 200
@@ -126,9 +132,9 @@ export async function rememberModels(
     );
   const stored = await db
     .prepare(
-      'SELECT model_name AS model FROM profile_api_models WHERE config_id = ? ORDER BY position, created_at, model_name',
+      `SELECT model FROM (${catalogSql}) WHERE profile_id = ? ORDER BY model`,
     )
-    .bind(config.id)
+    .bind(profileId)
     .all<{ model: string }>();
   const savedModels = [
     ...new Set([current.model, ...stored.results.map((row) => row.model)]),

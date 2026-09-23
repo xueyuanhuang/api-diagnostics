@@ -18,6 +18,7 @@ export type ParsedProfileInput = {
   defaultApiType: ApiType;
   configs: Partial<Record<ApiType, ProfileConfigInput>>;
   legacyPayload: boolean;
+  sharedModels?: string[];
 };
 
 function record(value: unknown) {
@@ -44,7 +45,7 @@ function configInput(value: unknown): ProfileConfigInput | { error: string } {
       [requestedModel, ...normalizeModels(input.models)].filter(Boolean),
     ),
   ];
-  if (models.length > 200) return { error: 'Use at most 200 models per API format. No changes were saved.' };
+  if (models.length > 200) return { error: 'Use at most 200 models per connection. No changes were saved.' };
   const model = requestedModel || models[0] || '';
   if (
     !model ||
@@ -75,6 +76,11 @@ export function parseProfileInput(
   const defaultApiType = apiType(payload.defaultApiType ?? payload.apiType);
   if (!defaultApiType) return { error: 'Choose an API type.' };
 
+  const sharedModels = payload.sharedModels === undefined ? undefined : normalizeModels(payload.sharedModels);
+  if (sharedModels && (!sharedModels.length || sharedModels.length > 200 || sharedModels.some(model => model.length > 120))) {
+    return { error: 'Use between 1 and 200 model names, each at most 120 characters. No changes were saved.' };
+  }
+
   const rawConfigs = record(payload.configs);
   if (rawConfigs) {
     const anthropic = configInput(rawConfigs.anthropic);
@@ -86,6 +92,7 @@ export function parseProfileInput(
       defaultApiType,
       configs: { anthropic, openai },
       legacyPayload: false,
+      sharedModels,
     };
   }
 
@@ -101,5 +108,6 @@ export function parseProfileInput(
     defaultApiType,
     configs: { [defaultApiType]: legacy },
     legacyPayload: true,
+    sharedModels,
   };
 }

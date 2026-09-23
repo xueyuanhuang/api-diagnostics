@@ -263,7 +263,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
                   const type = event.target.value as ConnectionApiType;
                   setApiType(type);
                   const config = profiles.find(item => item.id === profileId)?.configs[type];
-                  if (config) { setBaseUrl(config.baseUrl); setModel(config.model); }
+                  if (config) { setBaseUrl(config.baseUrl); setModel(current => config.models.includes(current) ? current : config.model); }
                 }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
                   <option value="openai">OpenAI-compatible</option>
                   <option value="anthropic">Anthropic-compatible</option>

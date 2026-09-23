@@ -15,6 +15,7 @@ function fixture() {
     CREATE TABLE connection_profiles(id TEXT PRIMARY KEY,user_id TEXT,name TEXT,encrypted_api_key TEXT);
     CREATE TABLE profile_api_configs(id TEXT PRIMARY KEY,profile_id TEXT,api_type TEXT,base_url TEXT,model_name TEXT,encrypted_api_key TEXT);
     CREATE TABLE profile_api_models(id TEXT PRIMARY KEY,config_id TEXT,model_name TEXT,position INTEGER,created_at INTEGER,UNIQUE(config_id,model_name));
+    CREATE TABLE profile_models(id TEXT PRIMARY KEY,profile_id TEXT,model_name TEXT,created_at INTEGER);
     CREATE TABLE test_runs(user_id TEXT,profile_id TEXT,api_type TEXT,base_url TEXT,model_name TEXT);
     INSERT INTO connection_profiles VALUES ('p','u','Saved','unchanged');
     INSERT INTO profile_api_configs VALUES ('a','p','anthropic','https://example.com','old','a-secret'),('o','p','openai','https://example.com','gpt','o-secret');
@@ -87,7 +88,7 @@ test('append preserves defaults, other API, keys; dedupes across parallel batche
       input(['new-a', 'new-b']),
     );
     assert.equal(again.added, 0);
-    assert.deepEqual(new Set(again.models), new Set(f.models()));
+    assert.deepEqual(new Set(again.models), new Set([...f.models(), 'gpt']));
     assert.ok(
       f.queries.every((sql) => !/encrypted|key_iv|UPDATE |DELETE /i.test(sql)),
     );
@@ -118,7 +119,7 @@ test('history restores nine missing models, excludes other owner/API/URL, and is
       source: 'history',
     });
     assert.equal(result.added, 9);
-    assert.equal(result.models.length, 10);
+    assert.equal(result.models.length, 11);
     assert.equal(
       (await rememberModels(f.db, 'u', 'p', { ...input(), source: 'history' }))
         .added,
@@ -218,7 +219,7 @@ test('metadata endpoint authenticates and never touches provider requests or cre
   const f = fixture();
   try {
     const saved = await rememberModels(f.db, 'u', 'p', input(models));
-    assert.deepEqual(saved.models, models);
+    assert.deepEqual(new Set(saved.models), new Set([...models, 'gpt']));
     assert.deepEqual(f.models(), models);
   } finally { f.sqlite.close(); }
 });
