@@ -154,7 +154,7 @@ export async function POST(
               ? 'cancelled'
               : 'passed';
           const reason = measured.failed
-            ? 'Evidence could not be fully saved. Measurement is incomplete.'
+            ? measured.failureReason ?? 'Evidence could not be fully saved. Measurement is incomplete.'
             : status === 'cancelled'
               ? 'Stopped early; partial results only.'
               : metrics.stopReason === 'request_cap'

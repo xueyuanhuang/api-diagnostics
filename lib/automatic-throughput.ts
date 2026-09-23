@@ -3,6 +3,7 @@ export const AUTOMATIC_DURATION_MS = 60_000;
 export const AUTOMATIC_REQUEST_CAP = 300;
 export type AutomaticSample = {
   outcome: string;
+  error?: string | null;
   completedAt: number;
   totalTimeMs: number;
 };
@@ -89,6 +90,10 @@ export async function measureAutomaticThroughput<
         const sequence = sent++;
         const sample = await options.request(sequence);
         samples.push(sample);
+        // A local platform limit is not a provider rejection. Stop all workers
+        // rather than burning the remaining budget on immediate local failures.
+        if (/too many subrequests/i.test(sample.error ?? ''))
+          failures.push(new Error('Tester hosting request limit reached; provider capacity was not measured.'));
         await options.save(sample, sequence);
         options.progress?.(metrics(Math.min(now(), deadline)));
         if (sample.outcome === 'rate_limited' && !options.signal.aborted)
@@ -102,5 +107,5 @@ export async function measureAutomaticThroughput<
   };
   await Promise.all(Array.from({ length: concurrency }, worker));
   const summary = metrics(Math.min(now(), deadline));
-  return { metrics: summary, samples, failed: failures.length > 0 };
+  return { metrics: summary, samples, failed: failures.length > 0, failureReason: failures[0] instanceof Error ? failures[0].message : null };
 }

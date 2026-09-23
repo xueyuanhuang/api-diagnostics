@@ -111,3 +111,19 @@ test('rate limiting pauses workers instead of hammering the provider', async () 
   assert.equal(result.metrics.sent, 2);
   assert.equal(result.metrics.successfulRps, 0);
 });
+
+ test('hosting request exhaustion stops the run and preserves its reason', async () => {
+  let calls = 0;
+  const result = await measureAutomaticThroughput({
+    signal: new AbortController().signal,
+    concurrency: 1,
+    request: async () => {
+      calls++;
+      return { outcome: 'transport_error', error: 'Too many subrequests by single Worker invocation.', completedAt: Date.now(), totalTimeMs: 0 };
+    },
+    save: async () => {},
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.failed, true);
+  assert.match(result.failureReason, /hosting request limit/);
+ });

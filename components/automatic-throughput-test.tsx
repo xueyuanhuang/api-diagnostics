@@ -24,6 +24,7 @@ export function AutomaticThroughputTest(
   const [activeId, setActiveId] = useState('');
   const controller = useRef<AbortController | null>(null);
   const idRef = useRef('');
+  const transportFailures = detail?.stages.reduce((sum, stage) => sum + stage.transportErrorCount, 0) ?? 0;
   const [clock, setClock] = useState(0);
   const [started, setStarted] = useState(0);
   useEffect(() => {
@@ -263,6 +264,11 @@ export function AutomaticThroughputTest(
           ? ` ${Math.floor(progress)} / 60 seconds${progress >= 60 ? ' · waiting for final responses' : ''}`
           : ''}
       </p>
+      {transportFailures > 0 && (
+        <p role="alert" className="text-sm text-amber-800">
+          {transportFailures} attempts failed without a complete provider response (transport errors). These are not HTTP 429 responses. Attempt counts do not prove delivery to the provider; this run cannot establish provider capacity. Latency includes failed attempts.
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}

@@ -355,7 +355,7 @@ function verdict(status: ResultStatus) {
 }
 
 function savedRpmVerdict(run: RpmRunSummary) {
-  if (['fixed','automatic'].includes(run.rampMode) && run.status === 'passed') return {label: 'Measurement complete', className: 'border-blue-200 bg-blue-50 text-blue-800'};
+  if (['fixed','automatic'].includes(run.rampMode) && run.status === 'passed') return {label: run.automaticMetrics?.errors ? 'Finished with errors' : 'Measurement complete', className: 'border-blue-200 bg-blue-50 text-blue-800'};
   if (run.status === 'passed')
     return {
       label: `Passed ${run.targetRpm.toLocaleString()} RPM`,
@@ -2287,7 +2287,7 @@ export function TokenCheckApp({
                         >
                           <option value="">All tests</option>
                           <option value="normal">Normal token</option>
-                          <option value="rpm">RPM ramp</option>
+                          <option value="rpm">RPM / RPS test</option>
                           <option value="boundary">Tool Boundary Probe</option>
                           <option value="endpoints">Three Endpoints</option>
                         </select>
@@ -2421,7 +2421,7 @@ export function TokenCheckApp({
                                 }
                               >
                                 {run.testKind === 'rpm'
-                                  ? 'RPM ramp'
+                                  ? 'RPM / RPS test'
                                   : run.testKind === 'normal'
                                     ? 'Normal token'
                                     : DIAGNOSTIC_LABELS[run.testKind]}
@@ -2452,13 +2452,17 @@ export function TokenCheckApp({
                             </p>
                             {run.testKind === 'rpm' ? (
                               <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                                {run.rampMode === 'automatic' ? 'Automatic throughput' : `Target ${run.targetRpm.toLocaleString()} RPM`} ·{' '}
-                                Sent {run.totalAttempted.toLocaleString()} ·
-                                Successful responses{' '}
-                                {run.totalSucceeded.toLocaleString()} · 429{' '}
-                                {run.totalRateLimited.toLocaleString()} ·
-                                Worst-stage P95{' '}
-                                {durationOrDash(run.p95LatencyMs)}
+                                {run.rampMode === 'automatic' && run.automaticMetrics ? (
+                                  <>
+                                    Successful throughput {(run.automaticMetrics.successfulRps * 60).toFixed(2)} RPM / {run.automaticMetrics.successfulRps.toFixed(2)} RPS · P95 {durationOrDash(run.automaticMetrics.p95LatencyMs)}
+                                    <br />
+                                    {run.automaticMetrics.succeeded} successful · {run.automaticMetrics.errors} errors · HTTP 429 {run.automaticMetrics.rateLimited} · {(run.automaticMetrics.elapsedMs / 1000).toFixed(2)} s observed
+                                  </>
+                                ) : (
+                                  <>
+                                    {run.rampMode === 'automatic' ? 'Connection check only' : `Target ${run.targetRpm.toLocaleString()} RPM`} · Sent {run.totalAttempted.toLocaleString()} · Successful responses {run.totalSucceeded.toLocaleString()} · HTTP 429 {run.totalRateLimited.toLocaleString()} · P95 {durationOrDash(run.p95LatencyMs)}
+                                  </>
+                                )}
                               </p>
                             ) : run.testKind !== 'normal' ? (
                               <p className="mt-1 text-xs text-muted-foreground">
