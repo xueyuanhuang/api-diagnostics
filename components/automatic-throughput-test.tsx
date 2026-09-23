@@ -122,6 +122,7 @@ export function AutomaticThroughputTest(
           openRouterTier: props.openRouterTier,
           allowInsecureHttp: isInsecureHttp(props.baseUrl),
           rampMode: 'automatic',
+          runnerVersion: 2,
         }),
       });
       id = created.run.id;
@@ -192,6 +193,7 @@ export function AutomaticThroughputTest(
       await refresh(id);
       setActiveId('');
     } catch (e) {
+      setMessage(abort.signal.aborted ? 'Test stopped.' : 'Test interrupted.');
       setError(
         abort.signal.aborted
           ? 'Test stopped. In-flight evidence may take a moment to appear in history.'
@@ -291,6 +293,9 @@ export function AutomaticThroughputTest(
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
+          {error.includes('out of date') && (
+            <button type="button" className="ml-2 underline" onClick={() => window.location.reload()}>Refresh page</button>
+          )}
         </p>
       )}
       {metrics && (

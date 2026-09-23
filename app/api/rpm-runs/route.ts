@@ -30,6 +30,7 @@ type StartPayload = {
   targetRpm?: unknown;
   thresholdPercent?: unknown;
   rampMode?: unknown;
+  runnerVersion?: unknown;
   durationSeconds?: unknown;
   openRouterTier?: unknown;
 };
@@ -67,6 +68,10 @@ export async function POST(request: NextRequest) {
   } catch {
     return noStore({ error: 'Invalid request body.' }, { status: 400 });
   }
+
+  // Reject stale browser code before credentials are read or any run is created.
+  if (payload.rampMode === 'automatic' && payload.runnerVersion !== 2)
+    return noStore({ error: 'This test page is out of date. Refresh the page before starting a test. No provider requests were sent.' }, { status: 409 });
 
   const profileId =
     typeof payload.profileId === 'string' ? payload.profileId : '';
