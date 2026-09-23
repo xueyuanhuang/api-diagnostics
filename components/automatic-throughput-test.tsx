@@ -24,7 +24,9 @@ export function AutomaticThroughputTest(
   const [activeId, setActiveId] = useState('');
   const controller = useRef<AbortController | null>(null);
   const idRef = useRef('');
-  const transportFailures = detail?.stages.reduce((sum, stage) => sum + stage.transportErrorCount, 0) ?? 0;
+  const transportFailures =
+    detail?.stages.reduce((sum, stage) => sum + stage.transportErrorCount, 0) ??
+    0;
   const [clock, setClock] = useState(0);
   const [started, setStarted] = useState(0);
   useEffect(() => {
@@ -137,45 +139,56 @@ export function AutomaticThroughputTest(
             'Connection check did not succeed. No throughput workload was started.',
         );
       setMessage('Measuring automatically…');
-      const response = await fetch(`/api/rpm-runs/${id}/measure`, {
-        method: 'POST',
-        signal: abort.signal,
-      });
-      if (!response.ok) {
-        const body = (await response.json()) as { error?: string };
-        throw new Error(body.error || 'Measurement could not start.');
-      }
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No measurement stream received.');
-      const decoder = new TextDecoder();
-      let pending = '';
-      let done = false;
-      while (true) {
-        const part = await reader.read();
-        if (part.done) break;
-        pending += decoder.decode(part.value, { stream: true });
-        let lineEnd;
-        while ((lineEnd = pending.indexOf('\n')) >= 0) {
-          const line = pending.slice(0, lineEnd);
-          pending = pending.slice(lineEnd + 1);
-          if (!line.trim()) continue;
-          const event = JSON.parse(line);
-          if (event.type === 'started') {
-            setStarted(event.startedAt);
-            setClock(Date.now());
-          }
-          if (event.metrics) setMetrics(event.metrics);
-          if (event.type === 'done') {
-            done = true;
-            setMessage(event.reason);
-          }
-          if (event.type === 'error') throw new Error(event.error);
+      let nextChunk: number | null = 0;
+      while (nextChunk !== null) {
+        const chunk: number = nextChunk;
+        nextChunk = null;
+        const response = await fetch(`/api/rpm-runs/${id}/measure`, {
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ chunk }),
+          method: 'POST',
+          signal: abort.signal,
+        });
+        if (!response.ok) {
+          const body = (await response.json()) as { error?: string };
+          throw new Error(body.error || 'Measurement could not start.');
         }
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('No measurement stream received.');
+        const decoder = new TextDecoder();
+        let pending = '';
+        let done = false;
+        while (true) {
+          const part = await reader.read();
+          if (part.done) break;
+          pending += decoder.decode(part.value, { stream: true });
+          let lineEnd;
+          while ((lineEnd = pending.indexOf('\n')) >= 0) {
+            const line = pending.slice(0, lineEnd);
+            pending = pending.slice(lineEnd + 1);
+            if (!line.trim()) continue;
+            const event = JSON.parse(line);
+            if (event.type === 'started') {
+              setStarted(event.startedAt);
+              setClock(Date.now());
+            }
+            if (event.metrics) setMetrics(event.metrics);
+            if (event.type === 'continue') {
+              nextChunk = event.chunk;
+              done = true;
+            }
+            if (event.type === 'done') {
+              done = true;
+              setMessage(event.reason);
+            }
+            if (event.type === 'error') throw new Error(event.error);
+          }
+        }
+        if (!done)
+          throw new Error(
+            'Progress connection ended before the result was confirmed. Check saved history.',
+          );
       }
-      if (!done)
-        throw new Error(
-          'Progress connection ended before the result was confirmed. Check saved history.',
-        );
       await refresh(id);
       setActiveId('');
     } catch (e) {
@@ -266,7 +279,13 @@ export function AutomaticThroughputTest(
       </p>
       {transportFailures > 0 && (
         <p role="alert" className="text-sm text-amber-800">
-          {transportFailures} attempts failed without a complete provider response (transport errors). These are not HTTP 429 responses. Attempt counts do not prove delivery to the provider; this run cannot establish provider capacity. Latency includes failed attempts.
+          {transportFailures} attempts failed without a complete provider
+          response (transport errors). These are not HTTP 429 responses. Attempt
+          counts do not prove delivery to the provider; this run cannot
+          establish provider capacity.{' '}
+          {metrics?.latencyScope !== 'successful_responses'
+            ? 'This older run includes failed attempts in latency.'
+            : ''}
         </p>
       )}
       {error && (
@@ -278,9 +297,9 @@ export function AutomaticThroughputTest(
         <>
           <div className="grid gap-3 sm:grid-cols-3">
             {[
-              ['Completed requests', metrics.completedRps],
+              ['Completed attempts', metrics.completedRps],
               ['Successful requests', metrics.successfulRps],
-              ['Sent requests', metrics.sentRps],
+              ['Request attempts', metrics.sentRps],
             ].map(([label, value]) => (
               <div key={String(label)} className="rounded-xl border p-4">
                 <p className="text-sm text-muted-foreground">{label}</p>
@@ -292,15 +311,24 @@ export function AutomaticThroughputTest(
             ))}
           </div>
           <p className="text-sm">
-            {metrics.sent} sent · {metrics.completed} completed in the window ·{' '}
-            {metrics.succeeded} successful · {metrics.errors} errors (including{' '}
-            {metrics.rateLimited} rate-limit responses) ·{' '}
+            {metrics.providerResponses !== undefined &&
+              `${metrics.providerResponses} provider responses · `}
+            {metrics.sent} attempts · {metrics.completed} completed in the
+            window · {metrics.succeeded} successful · {metrics.errors} errors
+            (including {metrics.rateLimited} rate-limit responses) ·{' '}
             {metrics.lateResponses} responses after the window.
           </p>
           <p className="text-sm">
             Observed window: {number(metrics.elapsedMs / 1000)} seconds · Median
-            latency: {metrics.medianLatencyMs ?? '—'} ms · P95 latency:{' '}
-            {metrics.p95LatencyMs ?? '—'} ms.
+            latency (
+            {metrics.latencyScope === 'successful_responses'
+              ? 'successful responses'
+              : 'all attempts'}
+            ): {metrics.medianLatencyMs ?? '—'} ms · P95 (
+            {metrics.latencyScope === 'successful_responses'
+              ? 'successful responses'
+              : 'all attempts'}
+            ): {metrics.p95LatencyMs ?? '—'} ms.
           </p>
           <p className="text-sm text-muted-foreground">
             Rates use the actual observed window. Late responses remain in the

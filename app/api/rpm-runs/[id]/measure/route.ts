@@ -7,7 +7,10 @@ import { rpmRuns, rpmRunSecrets } from '@/db/schema';
 import { noStore, serverError } from '@/lib/server/http';
 import { decryptApiKey } from '@/lib/server/encryption';
 import { prepareRpmConnection } from '@/lib/server/hosted-ip-mapping';
-import { runProviderRequest } from '@/lib/server/rpm-provider';
+import {
+  runProviderRequest,
+  type RpmRequestEvidence,
+} from '@/lib/server/rpm-provider';
 import {
   measureAutomaticThroughput,
   type AutomaticMetrics,
@@ -40,7 +43,34 @@ export async function POST(
       .where(and(eq(rpmRuns.id, id), eq(rpmRuns.userId, user.userId)))
       .limit(1);
     if (!run) return noStore({ error: 'Run not found.' }, { status: 404 });
-    if (run.rampMode !== 'automatic' || run.status !== 'ready')
+    const payload = (await request.json().catch(() => ({}))) as {
+      chunk?: number;
+    };
+    const chunk = payload.chunk ?? 0;
+    if (!Number.isInteger(chunk) || chunk < 0 || chunk >= 12)
+      return noStore(
+        { error: 'Invalid measurement continuation.' },
+        { status: 400 },
+      );
+    let checkpoint: {
+      startedAt: number;
+      samples: RpmRequestEvidence[];
+    } | null = null;
+    if (chunk > 0) {
+      const object = await env.EVIDENCE.get(
+        `rpm/v1/${id}/checkpoints/${chunk - 1}.json`,
+      );
+      if (!object)
+        return noStore(
+          { error: 'Previous measurement segment is not complete.' },
+          { status: 409 },
+        );
+      checkpoint = await object.json();
+    }
+    if (
+      run.rampMode !== 'automatic' ||
+      run.status !== (chunk === 0 ? 'ready' : 'running')
+    )
       return noStore(
         { error: 'This measurement is not ready, or has already started.' },
         { status: 409 },
@@ -58,14 +88,21 @@ export async function POST(
     const apiKey = await decryptApiKey(secret.encryptedApiKey, secret.keyIv);
     const connection = await prepareRpmConnection(id, run.baseUrl);
     request.signal.throwIfAborted();
-    const claim = await env.DB.prepare(
-      "UPDATE rpm_runs SET status='running', current_stage=0 WHERE id=? AND user_id=? AND status='ready'",
-    )
-      .bind(id, user.userId)
-      .run();
+    const claim =
+      chunk === 0
+        ? await env.DB.prepare(
+            "UPDATE rpm_runs SET status='running', current_stage=0 WHERE id=? AND user_id=? AND status='ready'",
+          )
+            .bind(id, user.userId)
+            .run()
+        : await env.DB.prepare(
+            "INSERT OR IGNORE INTO rpm_automatic_chunks(run_id,chunk_index) SELECT id,? FROM rpm_runs WHERE id=? AND user_id=? AND status='running'",
+          )
+            .bind(chunk, id, user.userId)
+            .run();
     if (!claim.meta.changes)
       return noStore(
-        { error: 'This measurement has already started.' },
+        { error: 'This segment has already started or the run stopped.' },
         { status: 409 },
       );
     const abort = new AbortController();
@@ -89,7 +126,7 @@ export async function POST(
         let latest: AutomaticMetrics | null = null;
         let persistence = Promise.resolve();
         try {
-          const startedAt = Date.now();
+          const startedAt = checkpoint?.startedAt ?? Date.now();
           await env.DB.prepare(
             "UPDATE rpm_stages SET status='running',started_at=?,scheduled_start_at=? WHERE run_id=? AND stage_index=0 AND status='pending'",
           )
@@ -117,6 +154,9 @@ export async function POST(
           }, 1000);
           const measured = await measureAutomaticThroughput({
             signal: abort.signal,
+            startedAt,
+            initialSamples: checkpoint?.samples,
+            chunkSize: 25,
             request: (sequence) =>
               runProviderRequest({
                 apiType: run.apiType,
@@ -146,6 +186,23 @@ export async function POST(
           });
           clearInterval(timer);
           await persistence;
+          if (measured.continuation) {
+            await env.EVIDENCE.put(
+              `rpm/v1/${id}/checkpoints/${chunk}.json`,
+              JSON.stringify({ startedAt, samples: measured.samples }),
+            );
+            await env.DB.prepare(
+              "UPDATE rpm_runs SET automatic_metrics_json=? WHERE id=? AND status='running'",
+            )
+              .bind(JSON.stringify(measured.metrics), id)
+              .run();
+            send({
+              type: 'continue',
+              chunk: chunk + 1,
+              metrics: measured.metrics,
+            });
+            return;
+          }
           const metrics = measured.metrics;
           const counts = countRpmOutcomes(measured.samples);
           const status = measured.failed
@@ -154,7 +211,8 @@ export async function POST(
               ? 'cancelled'
               : 'passed';
           const reason = measured.failed
-            ? measured.failureReason ?? 'Evidence could not be fully saved. Measurement is incomplete.'
+            ? (measured.failureReason ??
+              'Evidence could not be fully saved. Measurement is incomplete.')
             : status === 'cancelled'
               ? 'Stopped early; partial results only.'
               : metrics.stopReason === 'request_cap'

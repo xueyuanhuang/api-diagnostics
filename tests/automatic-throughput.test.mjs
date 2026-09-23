@@ -112,18 +112,67 @@ test('rate limiting pauses workers instead of hammering the provider', async () 
   assert.equal(result.metrics.successfulRps, 0);
 });
 
- test('hosting request exhaustion stops the run and preserves its reason', async () => {
+test('hosting request exhaustion stops the run and preserves its reason', async () => {
   let calls = 0;
   const result = await measureAutomaticThroughput({
     signal: new AbortController().signal,
     concurrency: 1,
     request: async () => {
       calls++;
-      return { outcome: 'transport_error', error: 'Too many subrequests by single Worker invocation.', completedAt: Date.now(), totalTimeMs: 0 };
+      return {
+        outcome: 'transport_error',
+        error: 'Too many subrequests by single Worker invocation.',
+        completedAt: Date.now(),
+        totalTimeMs: 0,
+      };
     },
     save: async () => {},
   });
   assert.equal(calls, 1);
   assert.equal(result.failed, true);
   assert.match(result.failureReason, /hosting request limit/);
- });
+});
+
+test('continuations retain the original deadline, including time between segments', async () => {
+  let clock = 0;
+  const options = {
+    signal: new AbortController().signal,
+    now: () => clock,
+    concurrency: 1,
+    chunkSize: 2,
+    requestCap: 300,
+    durationMs: 100,
+    save: async () => {},
+    request: async () => {
+      clock += 10;
+      return { outcome: 'success', completedAt: clock, totalTimeMs: 10 };
+    },
+  };
+  const first = await measureAutomaticThroughput(options);
+  assert.equal(first.continuation, true);
+  clock = 101;
+  const second = await measureAutomaticThroughput({
+    ...options,
+    startedAt: first.startedAt,
+    initialSamples: first.samples,
+  });
+  assert.equal(second.metrics.sent, 2);
+  assert.equal(second.continuation, false);
+  assert.equal(second.metrics.elapsedMs, 100);
+});
+test('transport failures do not count as provider responses or successful latency samples', async () => {
+  const r = await measureAutomaticThroughput({
+    signal: new AbortController().signal,
+    concurrency: 1,
+    requestCap: 2,
+    save: async () => {},
+    request: async (i) => ({
+      outcome: i ? 'success' : 'transport_error',
+      completedAt: Date.now(),
+      totalTimeMs: i ? 500 : 0,
+    }),
+  });
+  assert.equal(r.metrics.providerResponses, 1);
+  assert.equal(r.metrics.medianLatencyMs, 500);
+  assert.equal(r.metrics.p95LatencyMs, 500);
+});

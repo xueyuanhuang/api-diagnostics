@@ -23,6 +23,8 @@ export type AutomaticMetrics = {
   successfulRps: number;
   medianLatencyMs: number | null;
   p95LatencyMs: number | null;
+  providerResponses?: number;
+  latencyScope?: 'successful_responses';
   stopReason: 'duration' | 'request_cap' | 'cancelled';
 };
 export async function measureAutomaticThroughput<
@@ -37,21 +39,35 @@ export async function measureAutomaticThroughput<
   durationMs?: number;
   concurrency?: number;
   requestCap?: number;
+  startedAt?: number;
+  initialSamples?: T[];
+  chunkSize?: number;
 }) {
   const now = options.now ?? Date.now;
   const durationMs = options.durationMs ?? AUTOMATIC_DURATION_MS;
   const concurrency = options.concurrency ?? AUTOMATIC_CONCURRENCY;
   const requestCap = options.requestCap ?? AUTOMATIC_REQUEST_CAP;
-  const start = now();
+  const start = options.startedAt ?? now();
   const deadline = start + durationMs;
-  let sent = 0;
-  const samples: T[] = [];
+  const samples: T[] = [...(options.initialSamples ?? [])];
+  let sent = samples.length;
+  const chunkEnd = sent + (options.chunkSize ?? requestCap);
   const metrics = (end: number): AutomaticMetrics => {
     const elapsedMs = Math.max(1, end - start);
     const measured = samples.filter((s) => s.completedAt <= end);
     const succeeded = measured.filter((s) => s.outcome === 'success').length;
-    const latencies = samples.map((s) => s.totalTimeMs).sort((a, b) => a - b);
+    const latencies = measured
+      .filter((s) => s.outcome === 'success')
+      .map((s) => s.totalTimeMs)
+      .sort((a, b) => a - b);
     return {
+      providerResponses: measured.filter(
+        (s) =>
+          !['transport_error', 'timeout', 'missed_dispatch'].includes(
+            s.outcome,
+          ),
+      ).length,
+      latencyScope: 'successful_responses',
       concurrency,
       durationMs,
       requestCap,
@@ -85,6 +101,7 @@ export async function measureAutomaticThroughput<
         !options.signal.aborted &&
         now() < deadline &&
         sent < requestCap &&
+        sent < chunkEnd &&
         !failures.length
       ) {
         const sequence = sent++;
@@ -93,7 +110,11 @@ export async function measureAutomaticThroughput<
         // A local platform limit is not a provider rejection. Stop all workers
         // rather than burning the remaining budget on immediate local failures.
         if (/too many subrequests/i.test(sample.error ?? ''))
-          failures.push(new Error('Tester hosting request limit reached; provider capacity was not measured.'));
+          failures.push(
+            new Error(
+              'Tester hosting request limit reached; provider capacity was not measured.',
+            ),
+          );
         await options.save(sample, sequence);
         options.progress?.(metrics(Math.min(now(), deadline)));
         if (sample.outcome === 'rate_limited' && !options.signal.aborted)
@@ -107,5 +128,16 @@ export async function measureAutomaticThroughput<
   };
   await Promise.all(Array.from({ length: concurrency }, worker));
   const summary = metrics(Math.min(now(), deadline));
-  return { metrics: summary, samples, failed: failures.length > 0, failureReason: failures[0] instanceof Error ? failures[0].message : null };
+  return {
+    startedAt: start,
+    continuation:
+      !failures.length &&
+      !options.signal.aborted &&
+      now() < deadline &&
+      sent < requestCap,
+    metrics: summary,
+    samples,
+    failed: failures.length > 0,
+    failureReason: failures[0] instanceof Error ? failures[0].message : null,
+  };
 }
