@@ -72,10 +72,10 @@ export async function POST(request: NextRequest) {
     typeof payload.profileId === 'string' ? payload.profileId : '';
   const model = typeof payload.model === 'string' ? payload.model.trim() : '';
   const apiType = payload.apiType;
-  const targetRpm = integer(payload.targetRpm);
+  const targetRpm = payload.rampMode === 'automatic' ? 1 : integer(payload.targetRpm);
   const thresholdPercent = integer(payload.thresholdPercent ?? 90);
   const rampMode: RpmRampMode =
-    payload.rampMode === 'fixed' ? 'fixed' : payload.rampMode === 'detailed' ? 'detailed' : 'balanced';
+    payload.rampMode === 'automatic' ? 'automatic' : payload.rampMode === 'fixed' ? 'fixed' : payload.rampMode === 'detailed' ? 'detailed' : 'balanced';
   if (!profileId)
     return noStore(
       { error: 'Save or select a connection profile before an RPM test.' },
@@ -134,14 +134,14 @@ export async function POST(request: NextRequest) {
   );
   if ('error' in outbound)
     return noStore({ error: outbound.error }, { status: 400 });
-  const targets = buildRampTargets(targetRpm, rampMode).map((stage) => ({
+  const targets = (rampMode === 'automatic' ? [{percentage:100,targetRpm:0}] : buildRampTargets(targetRpm, rampMode)).map((stage) => ({
     ...stage,
     scheduledCount: Math.max(
       1,
       Math.round((stage.targetRpm * duration) / 60),
     ),
   }));
-  const totalPlanned = targets.reduce(
+  const totalPlanned = rampMode === 'automatic' ? 300 : targets.reduce(
     (total, stage) => total + stage.scheduledCount,
     0,
   );
@@ -248,7 +248,7 @@ export async function POST(request: NextRequest) {
         model,
         (payload.openRouterTier as string) || null,
         rampMode,
-        targetRpm,
+        rampMode === 'automatic' ? 0 : targetRpm,
         duration,
         thresholdBps,
         'preflight',

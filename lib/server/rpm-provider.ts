@@ -25,6 +25,7 @@ type ProviderRequest = {
   sequence: number;
   plannedAt: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   onUpstreamStarted?: (startedAt: number) => void | Promise<void>;
   onProviderSlotReleased?: () => void;
   dispatcher?: {
@@ -288,7 +289,7 @@ export async function runProviderRequest(
       body,
       redirect: 'manual',
       cache: 'no-store',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
     dispatchStartPersistence = Promise.resolve(
       input.onUpstreamStarted?.(upstreamStartedAt),

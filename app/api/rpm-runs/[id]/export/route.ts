@@ -103,11 +103,11 @@ export async function GET(_request: NextRequest, context: Context) {
       requestedServiceTier: detail.run.openRouterTier ?? null,
       clientRetries: 0,
       preflightTimeoutMs: 45_000,
-      rampRequestTimeoutMs: dispatcherKeys.length
+      rampRequestTimeoutMs: detail.run.rampMode === 'automatic' ? RPM_REQUEST_TIMEOUT_MS : dispatcherKeys.length
         ? RPM_REQUEST_TIMEOUT_MS
         : 45_000,
       maxStoredResponseBodyBytes: RPM_MAX_RESPONSE_BYTES,
-      dispatchMode: dispatcherKeys.length
+      dispatchMode: detail.run.rampMode === 'automatic' ? 'automatic-closed-loop-v1' : dispatcherKeys.length
         ? upstreamClaimKeys.length
           ? 'server-timed-shard-v1'
           : 'server-timed-shard-v2'
@@ -115,12 +115,12 @@ export async function GET(_request: NextRequest, context: Context) {
     },
     diagnosticSummary: {
       classification:
-        detail.run.rampMode === 'fixed' && detail.run.status === 'passed' ? 'measurement_complete' : detail.run.status === 'inconclusive'
+        ['fixed','automatic'].includes(detail.run.rampMode) && detail.run.status === 'passed' ? 'measurement_complete' : detail.run.status === 'inconclusive'
           ? 'tester_delivery_failure'
           : detail.run.status === 'failed'
             ? 'provider_threshold_failure'
             : detail.run.status,
-      providerJudged: detail.run.rampMode !== 'fixed' && detail.run.status !== 'inconclusive',
+      providerJudged: !['fixed','automatic'].includes(detail.run.rampMode) && detail.run.status !== 'inconclusive',
       stopReason: detail.run.stopReason,
       stages: detail.stages.map((stage) => ({
         stageIndex: stage.stageIndex,

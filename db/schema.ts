@@ -202,8 +202,9 @@ export const rpmRuns = sqliteTable(
     baseUrl: text('base_url').notNull(),
     modelName: text('model_name').notNull(),
     openRouterTier: text('openrouter_tier'),
+    automaticMetricsJson: text('automatic_metrics_json'),
     rampMode: text('ramp_mode', {
-      enum: ['balanced', 'detailed', 'fixed'],
+      enum: ['balanced', 'detailed', 'fixed', 'automatic'],
     }).notNull(),
     targetRpm: integer('target_rpm').notNull(),
     stageDurationSeconds: integer('stage_duration_seconds').notNull(),

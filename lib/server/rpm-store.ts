@@ -14,6 +14,7 @@ type StageRow = typeof rpmStages.$inferSelect;
 export function runSummary(row: RunRow): RpmRunSummary {
   return {
     testKind: 'rpm',
+    automaticMetrics: row.automaticMetricsJson ? JSON.parse(row.automaticMetricsJson) : null,
     id: row.id,
     profileId: row.profileId,
     profileName: row.profileName,

@@ -58,6 +58,7 @@ import {
 import { EndpointCheck } from '@/components/endpoint-check';
 import { ToolBoundaryTest } from '@/components/tool-boundary-test';
 import { OpenRouterSelector, useOpenRouterTier, selectedRoute } from '@/components/openrouter-selector';
+import { AutomaticThroughputTest } from '@/components/automatic-throughput-test';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
 import { ModelTestQueue } from '@/components/model-test-queue';
@@ -354,7 +355,7 @@ function verdict(status: ResultStatus) {
 }
 
 function savedRpmVerdict(run: RpmRunSummary) {
-  if (run.rampMode === 'fixed' && run.status === 'passed') return {label: 'Measurement complete', className: 'border-blue-200 bg-blue-50 text-blue-800'};
+  if (['fixed','automatic'].includes(run.rampMode) && run.status === 'passed') return {label: 'Measurement complete', className: 'border-blue-200 bg-blue-50 text-blue-800'};
   if (run.status === 'passed')
     return {
       label: `Passed ${run.targetRpm.toLocaleString()} RPM`,
@@ -1826,6 +1827,7 @@ export function TokenCheckApp({
     setFormError('');
   }
 
+  const SavedRpmComponent = savedPreview?.run.testKind === 'rpm' && savedPreview.run.rampMode === 'automatic' ? AutomaticThroughputTest : RpmRampTest;
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto w-full max-w-[1480px] px-4 py-5 sm:px-6 lg:px-10 lg:py-8">
@@ -1898,7 +1900,7 @@ export function TokenCheckApp({
               <span
                 className={`mt-1 block text-xs leading-5 ${testMode === 'rpm' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
               >
-                Fixed rate · actual throughput, latency and errors
+                One click · measured throughput, latency and errors
               </span>
             </span>
           </button>
@@ -2450,7 +2452,7 @@ export function TokenCheckApp({
                             </p>
                             {run.testKind === 'rpm' ? (
                               <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                                Target {run.targetRpm.toLocaleString()} RPM ·{' '}
+                                {run.rampMode === 'automatic' ? 'Automatic throughput' : `Target ${run.targetRpm.toLocaleString()} RPM`} ·{' '}
                                 Sent {run.totalAttempted.toLocaleString()} ·
                                 Successful responses{' '}
                                 {run.totalSucceeded.toLocaleString()} · 429{' '}
@@ -2911,7 +2913,7 @@ export function TokenCheckApp({
             ) : null}
 
             {viewMode === 'detail' && savedPreview?.run.testKind === 'rpm' ? (
-              <RpmRampTest
+              <SavedRpmComponent
                 key={savedPreview.run.id}
                 user={user}
                 signInPath={signInPath}
@@ -3007,7 +3009,7 @@ export function TokenCheckApp({
               hidden={viewMode !== 'current' || testMode !== 'rpm'}
               data-testid="live-rpm-panel"
             >
-              <RpmRampTest
+              <AutomaticThroughputTest
                 user={user}
                 signInPath={signInPath}
                 selectedProfileId={selectedProfileId}
