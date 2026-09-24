@@ -300,6 +300,10 @@ export function AutomaticThroughputTest(
       )}
       {metrics && (
         <>
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm">
+            <strong>Provider limit not established</strong>
+            <p>This older test used a fixed limit of {metrics.concurrency} concurrent requests. {number(metrics.successfulRps * 60)} RPM is its measured throughput, not the model’s maximum. {metrics.rateLimited === 0 ? 'No HTTP 429 was observed; higher load was not tested.' : 'Rate limiting was observed, but its cause and the sustainable limit need further testing.'}</p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-3">
             {[
               ['Completed attempts', metrics.completedRps],

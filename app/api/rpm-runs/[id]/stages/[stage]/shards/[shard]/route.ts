@@ -130,6 +130,7 @@ export async function POST(request: NextRequest, context: Context) {
     if (!rows.length)
       return noStore({ error: 'Active RPM stage not found.' }, { status: 404 });
     const { run, stage: stageRow, secret } = rows[0];
+    if (run.rampMode === 'concurrency') return noStore({error:'Use the concurrency dispatcher for this run.'}, {status:409});
     if (
       run.status !== 'running' ||
       run.currentStage !== stageIndex ||

@@ -11,7 +11,7 @@ test('old automatic clients are rejected before connection lookup, storage, or p
   return new Proxy({}, {get(){throw new Error('Unexpected dependency use before version check: '+name);}});
  },Response};
  vm.runInNewContext(code,scope);
- for (const runnerVersion of [undefined,1,'2']) {
+ for (const runnerVersion of [undefined,1,2,'2']) {
   const response=await scope.exports.POST(new Request('https://test.local/api/rpm-runs',{method:'POST',body:JSON.stringify({rampMode:'automatic',runnerVersion})}));
   assert.equal(response.status,409);
   assert.match((await response.json()).error,/out of date.*No provider requests/);

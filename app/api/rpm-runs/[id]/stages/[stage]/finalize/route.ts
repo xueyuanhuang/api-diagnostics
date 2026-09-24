@@ -163,6 +163,7 @@ export async function POST(_request: NextRequest, context: Context) {
     if (!runs.length)
       return noStore({ error: 'RPM run not found.' }, { status: 404 });
     const run = runs[0];
+    if (run.rampMode === 'concurrency') return noStore({error:'Use concurrency finalization for this run.'}, {status:409});
     const stageRows = await getDb()
       .select()
       .from(rpmStages)

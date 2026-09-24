@@ -107,7 +107,7 @@ export async function GET(_request: NextRequest, context: Context) {
         ? RPM_REQUEST_TIMEOUT_MS
         : 45_000,
       maxStoredResponseBodyBytes: RPM_MAX_RESPONSE_BYTES,
-      dispatchMode: detail.run.rampMode === 'automatic' ? 'automatic-closed-loop-v1' : dispatcherKeys.length
+      dispatchMode: detail.run.rampMode === 'concurrency' ? 'concurrency-shards-v1' : detail.run.rampMode === 'automatic' ? 'automatic-closed-loop-v1' : dispatcherKeys.length
         ? upstreamClaimKeys.length
           ? 'server-timed-shard-v1'
           : 'server-timed-shard-v2'
@@ -115,12 +115,12 @@ export async function GET(_request: NextRequest, context: Context) {
     },
     diagnosticSummary: {
       classification:
-        ['fixed','automatic'].includes(detail.run.rampMode) && detail.run.status === 'passed' ? 'measurement_complete' : detail.run.status === 'inconclusive'
+        ['fixed','automatic','concurrency'].includes(detail.run.rampMode) && detail.run.status === 'passed' ? 'measurement_complete' : detail.run.status === 'inconclusive'
           ? 'tester_delivery_failure'
           : detail.run.status === 'failed'
             ? 'provider_threshold_failure'
             : detail.run.status,
-      providerJudged: !['fixed','automatic'].includes(detail.run.rampMode) && detail.run.status !== 'inconclusive',
+      providerJudged: !['fixed','automatic','concurrency'].includes(detail.run.rampMode) && detail.run.status !== 'inconclusive',
       stopReason: detail.run.stopReason,
       stages: detail.stages.map((stage) => ({
         stageIndex: stage.stageIndex,
@@ -253,7 +253,7 @@ export async function GET(_request: NextRequest, context: Context) {
     .replace(/[:.]/g, '-')
     .replace('T', '_')
     .replace('Z', '');
-  const filename = `rpm-ramp_${filenamePart(detail.run.profileName ?? 'one-time')}_${filenamePart(detail.run.modelName)}_${timestamp}_${detail.run.status}.json`;
+  const filename = `rpm-rps_${filenamePart(detail.run.profileName ?? 'one-time')}_${filenamePart(detail.run.modelName)}_${timestamp}_${detail.run.status}.json`;
   return new Response(stream, {
     headers: {
       'cache-control': 'private, no-store',

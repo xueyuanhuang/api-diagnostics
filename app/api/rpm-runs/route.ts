@@ -1,3 +1,4 @@
+import { CONCURRENCY_LEVELS, CONCURRENCY_RUNNER_VERSION, concurrencyPlan } from '@/lib/concurrency-test';
 import { openRouterRoute } from '@/lib/openrouter';
 import { env } from 'cloudflare:workers';
 import { validateOutboundUrl } from '@/lib/server/connection';
@@ -70,17 +71,19 @@ export async function POST(request: NextRequest) {
   }
 
   // Reject stale browser code before credentials are read or any run is created.
-  if (payload.rampMode === 'automatic' && payload.runnerVersion !== 2)
+  if (payload.rampMode === 'automatic')
     return noStore({ error: 'This test page is out of date. Refresh the page before starting a test. No provider requests were sent.' }, { status: 409 });
+
+  if (payload.rampMode === 'concurrency' && payload.runnerVersion !== CONCURRENCY_RUNNER_VERSION) return noStore({error: 'Refresh this page before starting a concurrency test. No provider requests were sent.'}, {status:409});
 
   const profileId =
     typeof payload.profileId === 'string' ? payload.profileId : '';
   const model = typeof payload.model === 'string' ? payload.model.trim() : '';
   const apiType = payload.apiType;
-  const targetRpm = payload.rampMode === 'automatic' ? 1 : integer(payload.targetRpm);
+  const targetRpm = ['automatic', 'concurrency'].includes(String(payload.rampMode)) ? 1 : integer(payload.targetRpm);
   const thresholdPercent = integer(payload.thresholdPercent ?? 90);
   const rampMode: RpmRampMode =
-    payload.rampMode === 'automatic' ? 'automatic' : payload.rampMode === 'fixed' ? 'fixed' : payload.rampMode === 'detailed' ? 'detailed' : 'balanced';
+    payload.rampMode === 'concurrency' ? 'concurrency' : payload.rampMode === 'automatic' ? 'automatic' : payload.rampMode === 'fixed' ? 'fixed' : payload.rampMode === 'detailed' ? 'detailed' : 'balanced';
   if (!profileId)
     return noStore(
       { error: 'Save or select a connection profile before an RPM test.' },
@@ -139,7 +142,7 @@ export async function POST(request: NextRequest) {
   );
   if ('error' in outbound)
     return noStore({ error: outbound.error }, { status: 400 });
-  const targets = (rampMode === 'automatic' ? [{percentage:100,targetRpm:0}] : buildRampTargets(targetRpm, rampMode)).map((stage) => ({
+  const targets = rampMode === 'concurrency' ? CONCURRENCY_LEVELS.map((_, i) => { const plan = concurrencyPlan(i); return {percentage:100, targetRpm:0, scheduledCount:plan.requestCap}; }) : (rampMode === 'automatic' ? [{percentage:100,targetRpm:0}] : buildRampTargets(targetRpm, rampMode)).map((stage) => ({
     ...stage,
     scheduledCount: Math.max(
       1,
@@ -253,7 +256,7 @@ export async function POST(request: NextRequest) {
         model,
         (payload.openRouterTier as string) || null,
         rampMode,
-        rampMode === 'automatic' ? 0 : targetRpm,
+        ['automatic','concurrency'].includes(rampMode) ? 0 : targetRpm,
         duration,
         thresholdBps,
         'preflight',
@@ -270,7 +273,7 @@ export async function POST(request: NextRequest) {
           stage.percentage,
           stage.targetRpm,
           stage.scheduledCount,
-          rpmShardCount(stage.scheduledCount),
+          rampMode === 'concurrency' ? concurrencyPlan(stageIndex).shards : rpmShardCount(stage.scheduledCount),
           'pending',
         ),
       ),

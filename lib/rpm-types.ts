@@ -1,4 +1,4 @@
-export type RpmRampMode = 'balanced' | 'detailed' | 'fixed' | 'automatic';
+export type RpmRampMode = 'balanced' | 'detailed' | 'fixed' | 'automatic' | 'concurrency';
 
 export type RpmRunStatus =
   | 'preflight'
@@ -21,6 +21,7 @@ export type RpmStageStatus =
 
 export type RpmRunSummary = {
   testKind: 'rpm';
+  concurrencyMetrics?: import('./concurrency-test').ConcurrencyMetrics | null;
   automaticMetrics?: import('./automatic-throughput').AutomaticMetrics | null;
   id: string;
   profileId: string | null;

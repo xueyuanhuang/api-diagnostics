@@ -58,6 +58,7 @@ import {
 import { EndpointCheck } from '@/components/endpoint-check';
 import { ToolBoundaryTest } from '@/components/tool-boundary-test';
 import { OpenRouterSelector, useOpenRouterTier, selectedRoute } from '@/components/openrouter-selector';
+import { ConcurrencyThroughputTest } from '@/components/concurrency-throughput-test';
 import { AutomaticThroughputTest } from '@/components/automatic-throughput-test';
 import { RpmRampTest } from '@/components/rpm-ramp-test';
 import { NormalOutcomeCounts } from '@/components/normal-outcome-counts';
@@ -355,6 +356,7 @@ function verdict(status: ResultStatus) {
 }
 
 function savedRpmVerdict(run: RpmRunSummary) {
+  if (run.rampMode === 'concurrency' && run.status === 'passed') return {label: run.concurrencyMetrics?.stages.at(-1)?.outcome === 'no_limit_observed' ? 'Limit not reached' : 'Stopped after errors', className:'border-blue-200 bg-blue-50 text-blue-800'};
   if (['fixed','automatic'].includes(run.rampMode) && run.status === 'passed') return {label: run.automaticMetrics?.errors ? 'Finished with errors' : 'Measurement complete', className: 'border-blue-200 bg-blue-50 text-blue-800'};
   if (run.status === 'passed')
     return {
@@ -1833,7 +1835,7 @@ export function TokenCheckApp({
     setFormError('');
   }
 
-  const SavedRpmComponent = savedPreview?.run.testKind === 'rpm' && savedPreview.run.rampMode === 'automatic' ? AutomaticThroughputTest : RpmRampTest;
+  const SavedRpmComponent = savedPreview?.run.testKind === 'rpm' && savedPreview.run.rampMode === 'concurrency' ? ConcurrencyThroughputTest : savedPreview?.run.testKind === 'rpm' && savedPreview.run.rampMode === 'automatic' ? AutomaticThroughputTest : RpmRampTest;
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto w-full max-w-[1480px] px-4 py-5 sm:px-6 lg:px-10 lg:py-8">
@@ -1906,7 +1908,7 @@ export function TokenCheckApp({
               <span
                 className={`mt-1 block text-xs leading-5 ${testMode === 'rpm' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
               >
-                One click · measured throughput, latency and errors
+                Automatic concurrency · RPM/RPS, P95 and errors
               </span>
             </span>
           </button>
@@ -2458,7 +2460,9 @@ export function TokenCheckApp({
                             </p>
                             {run.testKind === 'rpm' ? (
                               <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                                {run.rampMode === 'automatic' && run.automaticMetrics ? (
+                                {run.rampMode === 'concurrency' && run.concurrencyMetrics?.stages.length ? (
+                                  <><span className="mt-1 block font-mono text-[11px] text-muted-foreground">Latest level: {run.concurrencyMetrics.stages.at(-1)!.concurrency} target / {run.concurrencyMetrics.stages.at(-1)!.peakConcurrency} actual peak concurrent · Successful {(run.concurrencyMetrics.stages.at(-1)!.successfulRps * 60).toFixed(2)} RPM / {run.concurrencyMetrics.stages.at(-1)!.successfulRps.toFixed(2)} RPS · P95 {durationOrDash(run.concurrencyMetrics.stages.at(-1)!.p95LatencyMs)}</span><span className="mt-1 block text-xs text-muted-foreground">{run.concurrencyMetrics.stages.length} levels measured · {run.totalAttempted} attempts · {run.concurrencyMetrics.stages.reduce((n,s)=>n+s.errors,0)} errors · HTTP 429 {run.totalRateLimited}</span></>
+                                ) : run.rampMode === 'automatic' && run.automaticMetrics ? (
                                   <>
                                     Successful throughput {(run.automaticMetrics.successfulRps * 60).toFixed(2)} RPM / {run.automaticMetrics.successfulRps.toFixed(2)} RPS · P95 {durationOrDash(run.automaticMetrics.p95LatencyMs)}
                                     <br />
@@ -2466,7 +2470,7 @@ export function TokenCheckApp({
                                   </>
                                 ) : (
                                   <>
-                                    {run.rampMode === 'automatic' ? 'Connection check only' : `Target ${run.targetRpm.toLocaleString()} RPM`} · Sent {run.totalAttempted.toLocaleString()} · Successful responses {run.totalSucceeded.toLocaleString()} · HTTP 429 {run.totalRateLimited.toLocaleString()} · P95 {durationOrDash(run.p95LatencyMs)}
+                                    {['automatic','concurrency'].includes(run.rampMode) ? 'Connection check only' : `Target ${run.targetRpm.toLocaleString()} RPM`} · Sent {run.totalAttempted.toLocaleString()} · Successful responses {run.totalSucceeded.toLocaleString()} · HTTP 429 {run.totalRateLimited.toLocaleString()} · P95 {durationOrDash(run.p95LatencyMs)}
                                   </>
                                 )}
                               </p>
@@ -3019,7 +3023,7 @@ export function TokenCheckApp({
               hidden={viewMode !== 'current' || testMode !== 'rpm'}
               data-testid="live-rpm-panel"
             >
-              <AutomaticThroughputTest
+              <ConcurrencyThroughputTest
                 user={user}
                 signInPath={signInPath}
                 selectedProfileId={selectedProfileId}
