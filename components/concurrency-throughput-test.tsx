@@ -297,7 +297,7 @@ export function ConcurrencyThroughputTest(
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
           One click to explore higher concurrency and measure successful
-          RPM/RPS, P95 and errors.
+          RPM/RPS, TTFT and errors.
         </p>
       </div>
       <div className="rounded-xl bg-muted/50 p-4 text-sm leading-6">
@@ -314,8 +314,9 @@ export function ConcurrencyThroughputTest(
         </p>
         <p>
           Uses your selected connection, model and Standard/Flex resource. These
-          are short “OK” requests. TTFT and token/s remain in Normal Token
-          Check. Provider usage may be charged. Keep this tab open.
+          are short “OK” requests. New runs stream the answer to measure TTFT.
+          Token/s is available in Normal Token Check. Provider usage may be
+          charged. Keep this tab open.
         </p>
       </div>
       {!props.readOnly && (
@@ -401,13 +402,11 @@ export function ConcurrencyThroughputTest(
                 </p>
               </div>
               <div className="rounded-xl border p-4">
-                <p className="text-sm text-muted-foreground">
-                  P95 · successful responses
-                </p>
+                <p className="text-sm text-muted-foreground">TTFT · median</p>
                 <p className="text-2xl font-semibold">
-                  {last.p95LatencyMs === null
+                  {last.medianTtftMs == null
                     ? '—'
-                    : `${number(last.p95LatencyMs / 1000)} s`}
+                    : `${number(last.medianTtftMs / 1000)} s`}
                 </p>
                 <p className="text-sm">
                   {last.errors} errors · {last.rateLimited} HTTP 429
@@ -425,11 +424,10 @@ export function ConcurrencyThroughputTest(
                   {[
                     'Target / actual peak',
                     'Successful RPM / RPS',
-                    'P95',
+                    'TTFT (median)',
                     'Success / attempts',
                     'Errors / 429',
                     'Observed time',
-                    'Time at target',
                   ].map((label) => (
                     <th className="p-2 font-medium" key={label}>
                       {label}
@@ -448,9 +446,14 @@ export function ConcurrencyThroughputTest(
                       {number(level.successfulRps)}
                     </td>
                     <td className="p-2">
-                      {level.p95LatencyMs === null
+                      {level.medianTtftMs == null
                         ? '—'
-                        : `${number(level.p95LatencyMs / 1000)} s`}
+                        : `${number(level.medianTtftMs / 1000)} s`}
+                      <span className="block text-xs text-muted-foreground">
+                        {level.medianTtftMs == null
+                          ? 'Not recorded'
+                          : `${level.ttftSamples} responses measured`}
+                      </span>
                     </td>
                     <td className="p-2">
                       {level.succeeded} / {level.attempts}
@@ -473,12 +476,17 @@ export function ConcurrencyThroughputTest(
                               : 'Window ended'}
                       </span>
                     </td>
-                    <td className="p-2">{number(level.secondsAtTarget)} s</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <p className="text-sm text-muted-foreground">
+            TTFT is the median time from sending a request to receiving its
+            first answer text, including network time. It uses successful
+            responses completed within the observed window. Older runs and
+            non-streaming responses have no recorded TTFT.
+          </p>
           <p className="text-sm text-muted-foreground">
             Actual concurrency is measured from overlapping upstream request
             intervals, including network time. Throughput uses each level’s

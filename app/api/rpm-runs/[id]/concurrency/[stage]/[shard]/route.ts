@@ -6,6 +6,7 @@ import { getDb } from '@/db';
 import { rpmRuns, rpmStages, rpmRunSecrets } from '@/db/schema';
 import {
   concurrencyPlan,
+  concurrencyUsesStreaming,
   CONCURRENCY_WINDOW_MS,
   CONCURRENCY_CHUNK_SIZE,
   runConcurrencyChunk,
@@ -226,6 +227,7 @@ export async function POST(request: NextRequest, context: Context) {
                 sequence: shardIndex + ordinal * plan.shards,
                 plannedAt: Date.now(),
                 timeoutMs: 20_000,
+                stream: concurrencyUsesStreaming(run.automaticMetricsJson),
                 signal: abort.signal,
               }),
             onResult: (sample) => {
@@ -264,6 +266,7 @@ export async function POST(request: NextRequest, context: Context) {
             upstreamStartedAt: s.upstreamStartedAt,
             completedAt: s.completedAt,
             totalTimeMs: s.totalTimeMs,
+            ttftMs: s.ttftMs ?? null,
             outcome: s.outcome,
             error: s.error,
           }));

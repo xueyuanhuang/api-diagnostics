@@ -1,5 +1,6 @@
 import { openRouterRoute, isOpenRouter } from '@/lib/openrouter';
 import { type ApiType, endpointFromBaseUrl } from '@/lib/server/connection';
+import { createRpmStreamParser } from './rpm-stream';
 
 export const RPM_MAX_RESPONSE_BYTES = 64_000;
 const SENSITIVE_RESPONSE_HEADERS = new Set([
@@ -25,6 +26,7 @@ type ProviderRequest = {
   sequence: number;
   plannedAt: number;
   timeoutMs?: number;
+  stream?: boolean;
   signal?: AbortSignal;
   onUpstreamStarted?: (startedAt: number) => void | Promise<void>;
   onProviderSlotReleased?: () => void;
@@ -50,6 +52,7 @@ export type RpmRequestEvidence = {
   completedAt: number;
   scheduleLagMs: number;
   firstByteMs: number | null;
+  ttftMs?: number | null;
   totalTimeMs: number;
   dispatcher?: ProviderRequest['dispatcher'];
   request: {
@@ -157,28 +160,43 @@ function providerFields(apiType: ApiType, raw: string) {
   }
 }
 
-async function readBody(response: Response) {
-  if (!response.body) return { body: '', complete: true, firstByteAt: null };
-  const reader = response.body.getReader();
+async function readBody(response: Response, input: ProviderRequest) {
+  const parser = input.stream ? createRpmStreamParser(input.apiType) : null;
+  const reader = response.body?.getReader();
   const decoder = new TextDecoder();
   let body = '';
   let bytes = 0;
   let firstByteAt: number | null = null;
   let complete = true;
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    if (firstByteAt === null) firstByteAt = Date.now();
-    bytes += chunk.value.byteLength;
-    if (bytes > RPM_MAX_RESPONSE_BYTES) {
-      complete = false;
-      await reader.cancel();
-      break;
+  let error: unknown = null;
+  try {
+    while (reader) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (firstByteAt === null && chunk.value.byteLength)
+        firstByteAt = Date.now();
+      bytes += chunk.value.byteLength;
+      if (bytes > RPM_MAX_RESPONSE_BYTES) {
+        complete = false;
+        await reader.cancel();
+        break;
+      }
+      const text = decoder.decode(chunk.value, { stream: true });
+      body += text;
+      parser?.push(text);
     }
-    body += decoder.decode(chunk.value, { stream: true });
+  } catch (caught) {
+    error = caught;
+    complete = false;
+    await reader?.cancel().catch(() => {});
+  } finally {
+    reader?.releaseLock();
   }
-  body += decoder.decode();
-  return { body, complete, firstByteAt };
+  const tail = decoder.decode();
+  body += tail;
+  parser?.push(tail);
+  parser?.end();
+  return { body, complete, firstByteAt, stream: parser?.state, error };
 }
 
 export function missedDispatchEvidence(
@@ -201,6 +219,7 @@ export function missedDispatchEvidence(
     completedAt: now,
     scheduleLagMs: now - input.plannedAt,
     firstByteMs: null,
+    ttftMs: null,
     totalTimeMs: 0,
     dispatcher: input.dispatcher,
     request: {
@@ -234,7 +253,7 @@ export function missedDispatchEvidence(
 
 function providerHeaders(apiType: ApiType, apiKey: string, baseUrl: string) {
   const headers: Record<string, string> = {
-    accept: 'application/json',
+    accept: 'application/json, text/event-stream',
     'content-type': 'application/json',
   };
   if (apiType === 'anthropic' && !isOpenRouter(baseUrl)) {
@@ -249,7 +268,12 @@ function providerHeaders(apiType: ApiType, apiKey: string, baseUrl: string) {
 function requestBody(input: ProviderRequest) {
   return JSON.stringify({
     model: input.model,
-    ...openRouterRoute(input.originalBaseUrl ?? input.baseUrl, input.apiType, input.model, input.openRouterTier),
+    ...openRouterRoute(
+      input.originalBaseUrl ?? input.baseUrl,
+      input.apiType,
+      input.model,
+      input.openRouterTier,
+    ),
     max_tokens: input.openRouterTier ? 512 : 8,
     messages: [
       {
@@ -257,7 +281,7 @@ function requestBody(input: ProviderRequest) {
         content: `Reply with only OK. RPM test ${input.runId.slice(0, 8)} stage ${input.stageIndex + 1} request ${input.sequence + 1}.`,
       },
     ],
-    stream: false,
+    stream: input.stream ?? false,
   });
 }
 
@@ -289,7 +313,9 @@ export async function runProviderRequest(
       body,
       redirect: 'manual',
       cache: 'no-store',
-      signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+      signal: input.signal
+        ? AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
     dispatchStartPersistence = Promise.resolve(
       input.onUpstreamStarted?.(upstreamStartedAt),
@@ -300,15 +326,30 @@ export async function runProviderRequest(
     const response = await responsePromise;
     const headersReceivedAt = Date.now();
     releaseProviderSlot();
-    const read = await readBody(response);
+    const read = await readBody(response, input);
     const completedAt = Date.now();
     const redactedBody = redact(read.body, input.apiKey);
-    const fields = providerFields(input.apiType, redactedBody);
+    const streamed = read.stream?.sawData ? read.stream : null;
+    const fields = streamed
+      ? {
+          valid: streamed.hasText && streamed.finished && !streamed.error,
+          model: streamed.model,
+          usage: streamed.usage,
+        }
+      : providerFields(input.apiType, redactedBody);
+    const streamStatus = streamed?.errorStatus;
+    const readTimedOut =
+      read.error instanceof Error &&
+      ['TimeoutError', 'AbortError'].includes(read.error.name);
     let outcome: RpmRequestEvidence['outcome'];
     if (response.status === 429) outcome = 'rate_limited';
     else if (response.status >= 500) outcome = 'server_error';
     else if (response.status >= 400) outcome = 'client_error';
     else if (!response.ok) outcome = 'client_error';
+    else if (read.error) outcome = readTimedOut ? 'timeout' : 'transport_error';
+    else if (streamStatus === 429) outcome = 'rate_limited';
+    else if (streamStatus && streamStatus >= 500) outcome = 'server_error';
+    else if (streamStatus && streamStatus >= 400) outcome = 'client_error';
     else if (!read.complete || !fields.valid) outcome = 'malformed';
     else outcome = 'success';
     const evidence: RpmRequestEvidence = {
@@ -324,6 +365,10 @@ export async function runProviderRequest(
       scheduleLagMs: upstreamStartedAt - input.plannedAt,
       firstByteMs:
         read.firstByteAt === null ? null : read.firstByteAt - upstreamStartedAt,
+      ttftMs:
+        streamed?.firstTextAt == null
+          ? null
+          : Math.max(0, streamed.firstTextAt - upstreamStartedAt),
       totalTimeMs: completedAt - upstreamStartedAt,
       dispatcher: input.dispatcher,
       request: {
@@ -350,18 +395,28 @@ export async function runProviderRequest(
             response.headers.get('anthropic-request-id');
           return value === null ? null : redact(value, input.apiKey);
         })(),
-        returnedModel: fields.model,
-        usage: fields.usage,
+        returnedModel: fields.model ? redact(fields.model, input.apiKey) : null,
+        usage: fields.usage
+          ? JSON.parse(redact(JSON.stringify(fields.usage), input.apiKey))
+          : null,
       },
       outcome,
       error:
         outcome === 'success'
           ? null
-          : !read.complete
-            ? `Response exceeded ${RPM_MAX_RESPONSE_BYTES} bytes and was truncated.`
-            : response.ok
-              ? 'The response did not match the selected API format.'
-              : `Provider returned HTTP ${response.status}.`,
+          : read.error
+            ? readTimedOut
+              ? `Provider request timed out after ${timeoutMs / 1_000} seconds.`
+              : 'Provider stream was interrupted before completion.'
+            : streamed?.error
+              ? redact(streamed.error, input.apiKey)
+              : !read.complete
+                ? `Response exceeded ${RPM_MAX_RESPONSE_BYTES} bytes and was truncated.`
+                : response.ok
+                  ? streamed && !streamed.finished
+                    ? 'Provider stream ended before completion was confirmed.'
+                    : 'The response did not match the selected API format.'
+                  : `Provider returned HTTP ${response.status}.`,
     };
     await dispatchStartPersistence;
     return evidence;
@@ -383,6 +438,7 @@ export async function runProviderRequest(
       completedAt,
       scheduleLagMs: upstreamStartedAt - input.plannedAt,
       firstByteMs: null,
+      ttftMs: null,
       totalTimeMs: completedAt - upstreamStartedAt,
       dispatcher: input.dispatcher,
       request: {

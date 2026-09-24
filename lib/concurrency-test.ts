@@ -2,7 +2,15 @@
 export const CONCURRENCY_LEVELS = [5, 10, 25, 50, 100, 200] as const;
 export const CONCURRENCY_WINDOW_MS = 60_000;
 export const CONCURRENCY_CHUNK_SIZE = 25;
-export const CONCURRENCY_RUNNER_VERSION = 1;
+export const CONCURRENCY_RUNNER_VERSION = 2;
+export function concurrencyUsesStreaming(metricsJson: string | null) {
+  if (!metricsJson) return false;
+  try {
+    return JSON.parse(metricsJson).version === 2;
+  } catch {
+    return false;
+  }
+}
 export function concurrencyPlan(index: number) {
   const concurrency = CONCURRENCY_LEVELS[index];
   if (!concurrency) throw new Error('Invalid concurrency level.');
@@ -19,6 +27,7 @@ export type ConcurrencySample = {
   upstreamStartedAt: number | null;
   completedAt: number;
   totalTimeMs: number;
+  ttftMs?: number | null;
   outcome: string;
   error?: string | null;
 };
@@ -47,6 +56,8 @@ export type ConcurrencyStageMetrics = {
   successfulRps: number;
   p95LatencyMs: number | null;
   medianLatencyMs: number | null;
+  medianTtftMs?: number | null;
+  ttftSamples?: number;
   complete: boolean;
   budgetReached: boolean;
   outcome:
@@ -56,7 +67,7 @@ export type ConcurrencyStageMetrics = {
     | 'tester_incomplete';
 };
 export type ConcurrencyMetrics = {
-  version: 1;
+  version: 1 | 2;
   stages: ConcurrencyStageMetrics[];
   conclusion: string;
 };
@@ -99,6 +110,13 @@ export function summarizeConcurrencyStage(
   );
   const success = measured.filter((s) => s.outcome === 'success');
   const latency = success.map((s) => s.totalTimeMs).sort((a, b) => a - b);
+  const ttft = success
+    .map((s) => s.ttftMs)
+    .filter(
+      (value): value is number =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 0,
+    )
+    .sort((a, b) => a - b);
   const points: { at: number; delta: number }[] = [];
   for (const sample of samples) {
     if (
@@ -153,6 +171,12 @@ export function summarizeConcurrencyStage(
     medianLatencyMs: latency.length
       ? latency[Math.floor(latency.length / 2)]
       : null,
+    medianTtftMs: ttft.length
+      ? (ttft[Math.floor((ttft.length - 1) / 2)] +
+          ttft[Math.floor(ttft.length / 2)]) /
+        2
+      : null,
+    ttftSamples: ttft.length,
     complete,
     budgetReached: samples.length >= plan.requestCap,
     outcome: !complete

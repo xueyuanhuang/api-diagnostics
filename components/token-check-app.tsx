@@ -1908,7 +1908,7 @@ export function TokenCheckApp({
               <span
                 className={`mt-1 block text-xs leading-5 ${testMode === 'rpm' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
               >
-                Automatic concurrency · RPM/RPS, P95 and errors
+                Automatic concurrency · RPM/RPS, TTFT and errors
               </span>
             </span>
           </button>
@@ -2461,7 +2461,7 @@ export function TokenCheckApp({
                             {run.testKind === 'rpm' ? (
                               <p className="mt-1 font-mono text-[10px] text-muted-foreground">
                                 {run.rampMode === 'concurrency' && run.concurrencyMetrics?.stages.length ? (
-                                  <><span className="mt-1 block font-mono text-[11px] text-muted-foreground">Latest level: {run.concurrencyMetrics.stages.at(-1)!.concurrency} target / {run.concurrencyMetrics.stages.at(-1)!.peakConcurrency} actual peak concurrent · Successful {(run.concurrencyMetrics.stages.at(-1)!.successfulRps * 60).toFixed(2)} RPM / {run.concurrencyMetrics.stages.at(-1)!.successfulRps.toFixed(2)} RPS · P95 {durationOrDash(run.concurrencyMetrics.stages.at(-1)!.p95LatencyMs)}</span><span className="mt-1 block text-xs text-muted-foreground">{run.concurrencyMetrics.stages.length} levels measured · {run.totalAttempted} attempts · {run.concurrencyMetrics.stages.reduce((n,s)=>n+s.errors,0)} errors · HTTP 429 {run.totalRateLimited}</span></>
+                                  <><span className="mt-1 block font-mono text-[11px] text-muted-foreground">Latest level: {run.concurrencyMetrics.stages.at(-1)!.concurrency} target / {run.concurrencyMetrics.stages.at(-1)!.peakConcurrency} actual peak concurrent · Successful {(run.concurrencyMetrics.stages.at(-1)!.successfulRps * 60).toFixed(2)} RPM / {run.concurrencyMetrics.stages.at(-1)!.successfulRps.toFixed(2)} RPS · TTFT (median) {durationOrDash(run.concurrencyMetrics.stages.at(-1)!.medianTtftMs ?? null)}</span><span className="mt-1 block text-xs text-muted-foreground">{run.concurrencyMetrics.stages.length} levels measured · {run.totalAttempted} attempts · {run.concurrencyMetrics.stages.reduce((n,s)=>n+s.errors,0)} errors · HTTP 429 {run.totalRateLimited}</span></>
                                 ) : run.rampMode === 'automatic' && run.automaticMetrics ? (
                                   <>
                                     Successful throughput {(run.automaticMetrics.successfulRps * 60).toFixed(2)} RPM / {run.automaticMetrics.successfulRps.toFixed(2)} RPS · P95 {durationOrDash(run.automaticMetrics.p95LatencyMs)}
@@ -2470,7 +2470,7 @@ export function TokenCheckApp({
                                   </>
                                 ) : (
                                   <>
-                                    {['automatic','concurrency'].includes(run.rampMode) ? 'Connection check only' : `Target ${run.targetRpm.toLocaleString()} RPM`} · Sent {run.totalAttempted.toLocaleString()} · Successful responses {run.totalSucceeded.toLocaleString()} · HTTP 429 {run.totalRateLimited.toLocaleString()} · P95 {durationOrDash(run.p95LatencyMs)}
+                                    {['automatic','concurrency'].includes(run.rampMode) ? 'Connection check only' : `Target ${run.targetRpm.toLocaleString()} RPM`} · Sent {run.totalAttempted.toLocaleString()} · Successful responses {run.totalSucceeded.toLocaleString()} · HTTP 429 {run.totalRateLimited.toLocaleString()} · {run.rampMode === 'concurrency' ? 'TTFT —' : `P95 ${durationOrDash(run.p95LatencyMs)}`}
                                   </>
                                 )}
                               </p>

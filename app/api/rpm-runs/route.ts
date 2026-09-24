@@ -245,7 +245,7 @@ export async function POST(request: NextRequest) {
   try {
     await env.DB.batch([
       env.DB.prepare(
-        'INSERT INTO rpm_runs (id, user_id, profile_id, profile_name, api_type, base_url, model_name, openrouter_tier, ramp_mode, target_rpm, stage_duration_seconds, threshold_bps, status, total_planned, total_attempted, total_succeeded, total_rate_limited, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)',
+        'INSERT INTO rpm_runs (id, user_id, profile_id, profile_name, api_type, base_url, model_name, openrouter_tier, ramp_mode, target_rpm, stage_duration_seconds, threshold_bps, status, total_planned, total_attempted, total_succeeded, total_rate_limited, created_at, automatic_metrics_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)',
       ).bind(
         runId,
         user.userId,
@@ -262,6 +262,7 @@ export async function POST(request: NextRequest) {
         'preflight',
         totalPlanned,
         now,
+        rampMode === 'concurrency' ? JSON.stringify({ version: CONCURRENCY_RUNNER_VERSION, stages: [], conclusion: '' }) : null,
       ),
       ...targets.map((stage, stageIndex) =>
         env.DB.prepare(

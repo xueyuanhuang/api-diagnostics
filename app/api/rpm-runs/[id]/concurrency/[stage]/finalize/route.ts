@@ -86,7 +86,7 @@ export async function POST(request: NextRequest, context: Context) {
       current,
     ];
     const metrics: ConcurrencyMetrics = {
-      version: 1,
+      version: prior.version,
       stages,
       conclusion: concurrencyConclusion(stages),
     };

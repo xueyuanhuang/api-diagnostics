@@ -23,6 +23,7 @@ function fixture({
   index = 0,
   outcome = 'success',
   failSave = false,
+  streaming = true,
 } = {}) {
   const objects = new Map(),
     writes = [];
@@ -36,7 +37,9 @@ function fixture({
     status: 'running',
     currentStage: index,
     stopReason: null,
-    automaticMetricsJson: null,
+    automaticMetricsJson: streaming
+      ? JSON.stringify({ version: 2, stages: [], conclusion: '' })
+      : null,
     baseUrl: 'https://openrouter.ai/api/v1',
     apiType: 'openai',
     modelName: 'openai/gpt-6-astra',
@@ -165,6 +168,7 @@ function fixture({
         assert.equal(input.openRouterTier, 'flex');
         assert.equal(input.model, 'openai/gpt-6-astra');
         assert.equal(input.timeoutMs, 20000);
+        assert.equal(input.stream, streaming);
         const begin = Date.now();
         await new Promise((r) => setTimeout(r, 2));
         active--;
@@ -173,6 +177,7 @@ function fixture({
           upstreamStartedAt: begin,
           completedAt: Date.now(),
           totalTimeMs: Date.now() - begin,
+          ttftMs: streaming ? 1 : null,
           outcome,
           response: { status: outcome === 'success' ? 200 : 429 },
           request: { headers: { authorization: '$API_KEY' } },
@@ -294,11 +299,22 @@ test('real shard route carries 100 requests over four bounded invocations, saves
   const detail = await response.json();
   assert.equal(detail.run.status, 'running');
   assert.equal(detail.run.concurrencyMetrics.stages[0].attempts, 100);
+  assert.equal(detail.run.concurrencyMetrics.version, 2);
+  assert.equal(detail.run.concurrencyMetrics.stages[0].medianTtftMs, 1);
+  assert.equal(detail.run.concurrencyMetrics.stages[0].ttftSamples, 100);
   assert.match(detail.run.concurrencyMetrics.conclusion, /Limit not reached/);
   assert.equal(
     f.writes.some((q) => q.sql.startsWith('DELETE FROM rpm_run_secrets')),
     false,
   );
+});
+test('in-progress legacy runs retain non-streaming requests and missing TTFT', async () => {
+  const f = fixture({ streaming: false });
+  for (let chunk = 0; chunk < 4; chunk++)
+    await events(await f.post(req(chunk), ctx()));
+  const detail = await (await f.finalize(req(), ctx())).json();
+  assert.equal(detail.run.concurrencyMetrics.version, 1);
+  assert.equal(detail.run.concurrencyMetrics.stages[0].medianTtftMs, null);
 });
 test('forty real dispatcher routes overlap 200 simulated requests and stop at the bounded ceiling', async () => {
   const f = fixture({ index: 5 });

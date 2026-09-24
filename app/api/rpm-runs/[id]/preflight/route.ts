@@ -15,6 +15,7 @@ import {
 import { runDetail } from '@/lib/server/rpm-store';
 import { prepareRpmConnection } from '@/lib/server/hosted-ip-mapping';
 import { IpMappingError } from '@/lib/server/ip-mapping';
+import { concurrencyUsesStreaming } from '@/lib/concurrency-test';
 
 type Context = { params: Promise<{ id: string }> };
 
@@ -200,6 +201,9 @@ export async function POST(_request: NextRequest, context: Context) {
       stageIndex: -1,
       sequence: 0,
       plannedAt: Date.now(),
+      stream:
+        run.rampMode === 'concurrency' &&
+        concurrencyUsesStreaming(run.automaticMetricsJson),
     });
     run = (await ownedRun(id, user.userId)) ?? run;
     const savedEvidence = await env.EVIDENCE.put(

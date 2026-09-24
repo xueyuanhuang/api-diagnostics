@@ -7,6 +7,7 @@ import {
   summarizeConcurrencyStage,
   concurrencyConclusion,
   runConcurrencyChunk,
+  concurrencyUsesStreaming,
 } from '../lib/concurrency-test.ts';
 
 const sample = (sequence, start, end, outcome = 'success') => ({
@@ -15,6 +16,34 @@ const sample = (sequence, start, end, outcome = 'success') => ({
   completedAt: end,
   totalTimeMs: end - start,
   outcome,
+});
+test('TTFT median excludes missing, invalid, failed and late samples without reusing completion latency', () => {
+  const withTtft = (sequence, ttftMs, outcome = 'success', end = 2000) => ({
+    ...sample(sequence, 1000, end, outcome),
+    ttftMs,
+  });
+  const s = summarizeConcurrencyStage(0, 1000, [
+    manifest([
+      withTtft(0, 100),
+      withTtft(1, 300),
+      withTtft(2, null),
+      withTtft(3, 10000, 'rate_limited'),
+      withTtft(4, 999, 'success', 62000),
+      withTtft(5, NaN),
+      withTtft(6, -1),
+      withTtft(7, Infinity),
+    ]),
+  ]);
+  assert.equal(s.medianTtftMs, 200);
+  assert.equal(s.ttftSamples, 2);
+  const old = summarizeConcurrencyStage(0, 1000, [
+    manifest([sample(0, 1000, 3000)]),
+  ]);
+  assert.equal(old.medianTtftMs, null);
+  assert.equal(old.ttftSamples, 0);
+  assert.equal(concurrencyUsesStreaming(null), false);
+  assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 1 })), false);
+  assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 2 })), true);
 });
 const manifest = (samples, extra = {}) => ({
   stageIndex: 0,
