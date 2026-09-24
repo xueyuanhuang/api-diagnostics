@@ -124,13 +124,24 @@ const request = (extras) =>
     method: 'POST',
     body: JSON.stringify({
       rampMode: 'concurrency',
-      runnerVersion: 3,
+      runnerVersion: concurrency.CONCURRENCY_RUNNER_VERSION,
+      concurrencyMode: 'custom',
       profileId: 'profile',
       apiType: 'openai',
       model: 'model',
       ...extras,
     }),
   });
+
+test('creation saves automatic stop behavior separately from custom continuation', async () => {
+  const f = fixture();
+  const response = await f.post(request({ concurrencyMode: 'automatic' }));
+  assert.equal(response.status, 201);
+  assert.equal(
+    (await response.json()).run.concurrencyMetrics.mode,
+    'automatic',
+  );
+});
 
 test('creation persists custom plans and allocates exact per-level budgets and dispatchers', async () => {
   for (const levels of [
@@ -142,7 +153,8 @@ test('creation persists custom plans and allocates exact per-level budgets and d
     const response = await f.post(request({ concurrencyLevels: levels }));
     assert.equal(response.status, 201);
     const metrics = (await response.json()).run.concurrencyMetrics;
-    assert.equal(metrics.version, 3);
+    assert.equal(metrics.version, concurrency.CONCURRENCY_RUNNER_VERSION);
+    assert.equal(metrics.mode, 'custom');
     assert.deepEqual(metrics.levels, levels);
     const stages = f.writes.filter((query) =>
       query.sql.startsWith('INSERT INTO rpm_stages'),
@@ -165,7 +177,10 @@ test('creation persists custom plans and allocates exact per-level budgets and d
 test('invalid custom plans and stale clients are rejected before secrets or storage are accessed', async () => {
   for (const payload of [
     { runnerVersion: 2 },
+    { runnerVersion: 3 },
     { runnerVersion: '3' },
+    { concurrencyMode: 'unknown' },
+    { concurrencyMode: undefined },
     { concurrencyLevels: [] },
     { concurrencyLevels: [61.5] },
     { concurrencyLevels: [201] },

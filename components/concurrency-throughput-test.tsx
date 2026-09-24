@@ -149,6 +149,7 @@ export function ConcurrencyThroughputTest(
           rampMode: 'concurrency',
           runnerVersion: CONCURRENCY_RUNNER_VERSION,
           concurrencyLevels: selectedLevels,
+          concurrencyMode: customLevels ? 'custom' : 'automatic',
         }),
       });
       id = created.run.id;
@@ -306,6 +307,10 @@ export function ConcurrencyThroughputTest(
   const number = (value: number) =>
     value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   const last = metrics?.stages.at(-1);
+  const shownCustomMode =
+    props.readOnly || running
+      ? detail?.run.concurrencyMetrics?.mode === 'custom'
+      : customLevels;
   const shownLevels =
     props.readOnly || running
       ? (detail?.run.concurrencyMetrics?.levels ?? CONCURRENCY_LEVELS)
@@ -384,9 +389,11 @@ export function ConcurrencyThroughputTest(
             ? '—'
             : concurrencyRequestBudget(shownLevels).toLocaleString()}{' '}
           requests plus one connection check. Fast responses may reach the
-          request budget sooner. New requests replace completed requests; higher
-          levels stop after any request failure. Each request has a 20-second
-          timeout.
+          request budget sooner. New requests replace completed requests.{' '}
+          {shownCustomMode
+            ? 'Custom tests finish every selected level, recording request errors and timeouts. You can stop the test; a tester interruption can also end it early.'
+            : 'Automatic tests stop higher levels after a request failure.'}{' '}
+          Each request has a 20-second timeout.
         </p>
         <p>
           Uses your selected connection, model and Standard/Flex resource. These
@@ -450,13 +457,15 @@ export function ConcurrencyThroughputTest(
               {detail &&
               ['cancelled', 'inconclusive'].includes(detail.run.status)
                 ? 'Test incomplete — provider limit undetermined'
-                : last?.outcome === 'no_limit_observed'
-                  ? 'Limit not reached'
-                  : last?.outcome === 'rate_limit_observed'
-                    ? 'Rate limiting observed'
-                    : last?.outcome === 'tester_incomplete'
-                      ? 'Tester incomplete'
-                      : 'Request failures observed'}
+                : metrics.mode === 'custom'
+                  ? `${metrics.stages.length === (metrics.levels ?? CONCURRENCY_LEVELS).length ? 'Custom test complete' : 'Custom test in progress'}${metrics.stages.some((stage) => stage.errors > 0) ? ' — errors recorded' : ''}`
+                  : last?.outcome === 'no_limit_observed'
+                    ? 'Limit not reached'
+                    : last?.outcome === 'rate_limit_observed'
+                      ? 'Rate limiting observed'
+                      : last?.outcome === 'tester_incomplete'
+                        ? 'Tester incomplete'
+                        : 'Request failures observed'}
             </p>
             <p className="mt-1 text-sm">{metrics.conclusion}</p>
           </div>
@@ -552,7 +561,7 @@ export function ConcurrencyThroughputTest(
                           ? 'Incomplete'
                           : level.budgetReached
                             ? 'Budget reached'
-                            : level.errors
+                            : level.errors && metrics.mode !== 'custom'
                               ? 'Stopped after errors'
                               : 'Window ended'}
                       </span>

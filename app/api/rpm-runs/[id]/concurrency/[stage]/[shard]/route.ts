@@ -7,6 +7,8 @@ import { rpmRuns, rpmStages, rpmRunSecrets } from '@/db/schema';
 import {
   concurrencyPlan,
   concurrencyLevelsForRun,
+  concurrencyModeForRun,
+  concurrencyStopsAfter,
   CONCURRENCY_MAX_LEVELS,
   concurrencyUsesStreaming,
   CONCURRENCY_WINDOW_MS,
@@ -77,6 +79,7 @@ export async function POST(request: NextRequest, context: Context) {
     )
       return noStore({ error: 'This level is not running.' }, { status: 409 });
     const levels = concurrencyLevelsForRun(run.automaticMetricsJson);
+    const mode = concurrencyModeForRun(run.automaticMetricsJson);
     if (stageIndex >= levels.length)
       return noStore({ error: 'Invalid concurrency level.' }, { status: 400 });
     const plan = concurrencyPlan(stageIndex, levels);
@@ -222,6 +225,7 @@ export async function POST(request: NextRequest, context: Context) {
               shardPlan.requestCap - offset,
             ),
             concurrency: shardPlan.concurrency,
+            mode,
             signal: abort.signal,
             stopped: () => stopped,
             request: (ordinal) =>
@@ -242,7 +246,7 @@ export async function POST(request: NextRequest, context: Context) {
               }),
             onResult: (sample) => {
               emit({ type: 'request', shardIndex, outcome: sample.outcome });
-              if (sample.outcome !== 'success' && !publishStop) {
+              if (concurrencyStopsAfter(sample.outcome, mode) && !publishStop) {
                 stopped = true;
                 publishStop = env.DB.prepare(
                   "UPDATE rpm_runs SET stop_reason=? WHERE id=? AND status='running' AND stop_reason IS NULL",
@@ -283,7 +287,7 @@ export async function POST(request: NextRequest, context: Context) {
           const samples = [...(previous?.samples ?? []), ...compact];
           const continueRun =
             !measured.failed &&
-            !measured.observedError &&
+            !measured.stoppedAfterError &&
             !stopped &&
             Date.now() < startAt + CONCURRENCY_WINDOW_MS &&
             samples.length < shardPlan.requestCap;

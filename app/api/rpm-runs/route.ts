@@ -33,6 +33,7 @@ type StartPayload = {
   rampMode?: unknown;
   runnerVersion?: unknown;
   concurrencyLevels?: unknown;
+  concurrencyMode?: unknown;
   durationSeconds?: unknown;
   openRouterTier?: unknown;
 };
@@ -78,6 +79,8 @@ export async function POST(request: NextRequest) {
   if (payload.rampMode === 'concurrency' && payload.runnerVersion !== CONCURRENCY_RUNNER_VERSION) return noStore({error: 'Refresh this page before starting a concurrency test. No provider requests were sent.'}, {status:409});
 
   let concurrencyLevels: number[] = [...CONCURRENCY_LEVELS];
+  if (payload.rampMode === 'concurrency' && !['automatic', 'custom'].includes(String(payload.concurrencyMode)))
+    return noStore({ error: 'Choose automatic or custom concurrency levels.' }, { status: 400 });
   if (payload.rampMode === 'concurrency' && payload.concurrencyLevels !== undefined) {
     try {
       concurrencyLevels = validateConcurrencyLevels(payload.concurrencyLevels);
@@ -272,7 +275,7 @@ export async function POST(request: NextRequest) {
         'preflight',
         totalPlanned,
         now,
-        rampMode === 'concurrency' ? JSON.stringify({ version: CONCURRENCY_RUNNER_VERSION, levels: concurrencyLevels, stages: [], conclusion: '' }) : null,
+        rampMode === 'concurrency' ? JSON.stringify({ version: CONCURRENCY_RUNNER_VERSION, mode: payload.concurrencyMode, levels: concurrencyLevels, stages: [], conclusion: '' }) : null,
       ),
       ...targets.map((stage, stageIndex) =>
         env.DB.prepare(

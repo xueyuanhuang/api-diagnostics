@@ -25,6 +25,7 @@ function fixture({
   failSave = false,
   streaming = true,
   levels,
+  mode,
 } = {}) {
   const objects = new Map(),
     writes = [];
@@ -40,7 +41,8 @@ function fixture({
     stopReason: null,
     automaticMetricsJson: streaming
       ? JSON.stringify({
-          version: levels ? 3 : 2,
+          version: mode ? 4 : levels ? 3 : 2,
+          ...(mode ? { mode } : {}),
           ...(levels ? { levels } : {}),
           stages: [],
           conclusion: '',
@@ -184,7 +186,7 @@ function fixture({
           completedAt: Date.now(),
           totalTimeMs: Date.now() - begin,
           ttftMs: streaming ? 1 : null,
-          outcome,
+          outcome: typeof outcome === 'function' ? outcome(input) : outcome,
           response: { status: outcome === 'success' ? 200 : 429 },
           request: { headers: { authorization: '$API_KEY' } },
         };
@@ -428,7 +430,7 @@ test('a seventh custom level is runnable, and single-level tests finish at their
     assert.equal(detail.run.concurrencyMetrics.stages.at(-1).concurrency, 61);
   }
 });
-test('partial dispatchers cannot exceed their saved budget and custom failures still stop later levels', async () => {
+test('partial dispatchers cannot exceed their saved budget and legacy custom failures retain their original stop behavior', async () => {
   const f = fixture({ levels: [61, 70], outcome: 'rate_limited' });
   assert.equal((await f.post(req(1), ctx(0, 12))).status, 400);
   assert.equal((await f.post(req(), ctx(0, 13))).status, 400);
@@ -450,4 +452,76 @@ test('partial dispatchers cannot exceed their saved budget and custom failures s
     /concurrency 61.*Higher load was stopped/,
   );
   assert.ok(f.writes.some((q) => q.sql.includes("status='skipped'")));
+});
+
+test('custom run finishes 50, 60 and 65 despite timeouts and 429s, retaining earlier errors when the final level is clean', async () => {
+  const levels = [50, 60, 65];
+  const f = fixture({
+    levels,
+    mode: 'custom',
+    outcome: (input) =>
+      input.sequence % 19
+        ? 'success'
+        : ['timeout', 'rate_limited', 'success'][input.stageIndex],
+  });
+  let expected = 0;
+  for (let index = 0; index < levels.length; index++) {
+    f.run.currentStage = index;
+    f.stage.stageIndex = index;
+    f.stage.scheduledStartAt = Date.now() - 1;
+    const plan = concurrency.concurrencyPlan(index, levels);
+    await Promise.all(
+      plan.shardPlans.map(async (shard, shardIndex) => {
+        for (let chunk = 0; chunk < Math.ceil(shard.requestCap / 25); chunk++)
+          await events(await f.post(req(chunk), ctx(index, shardIndex)));
+      }),
+    );
+    expected += plan.requestCap;
+    assert.equal(f.calls(), expected);
+    assert.equal(f.run.stopReason, null);
+    const detail = await (await f.finalize(req(), ctx(index))).json();
+    const metrics = detail.run.concurrencyMetrics;
+    assert.equal(metrics.mode, 'custom');
+    assert.equal(metrics.stages.length, index + 1);
+    assert.equal(metrics.stages.at(-1).attempts, plan.requestCap);
+    assert.equal(metrics.stages.at(-1).budgetReached, true);
+    assert.equal(detail.run.status, index === 2 ? 'passed' : 'running');
+    assert.doesNotMatch(
+      metrics.conclusion,
+      /Higher load was stopped|no request failures observed through/,
+    );
+    if (index < 2) {
+      assert.ok(metrics.stages.at(-1).errors > 0);
+      assert.ok(
+        !f.writes.some((q) => q.sql.includes('DELETE FROM rpm_run_secrets')),
+      );
+    } else {
+      assert.equal(metrics.stages.at(-1).errors, 0);
+      assert.match(
+        metrics.conclusion,
+        /All selected levels were tested.*50, 60/,
+      );
+    }
+  }
+});
+
+test('custom error continuation crosses chunk boundaries but still stops when evidence storage fails', async () => {
+  const f = fixture({ levels: [5, 10], mode: 'custom', outcome: 'timeout' });
+  for (let chunk = 0; chunk < 4; chunk++) {
+    const stream = await events(await f.post(req(chunk), ctx()));
+    assert.equal(stream.at(-1).type, chunk < 3 ? 'continue' : 'complete');
+  }
+  assert.equal(f.calls(), 100);
+  assert.equal(
+    (await (await f.finalize(req(), ctx())).json()).run.status,
+    'running',
+  );
+  const broken = fixture({ levels: [5, 10], mode: 'custom', failSave: true });
+  await events(await broken.post(req(), ctx()));
+  const detail = await (await broken.finalize(req(), ctx())).json();
+  assert.equal(detail.run.status, 'inconclusive');
+  assert.equal(
+    detail.run.concurrencyMetrics.stages[0].outcome,
+    'tester_incomplete',
+  );
 });

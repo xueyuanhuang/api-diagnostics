@@ -9,6 +9,7 @@ import {
   runConcurrencyChunk,
   concurrencyUsesStreaming,
   concurrencyLevelsForRun,
+  concurrencyModeForRun,
   parseConcurrencyLevels,
   validateConcurrencyLevels,
   concurrencyRequestBudget,
@@ -49,6 +50,76 @@ test('TTFT median excludes missing, invalid, failed and late samples without reu
   assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 1 })), false);
   assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 2 })), true);
   assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 3 })), true);
+  assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 4 })), true);
+});
+
+test('custom tests keep replacing failed requests while respecting cancellation, deadlines and runner failures', async () => {
+  assert.equal(concurrencyModeForRun(null), 'automatic');
+  assert.equal(
+    concurrencyModeForRun('{"version":3,"levels":[60,61]}'),
+    'automatic',
+  );
+  assert.equal(
+    concurrencyModeForRun('{"version":4,"mode":"custom"}'),
+    'custom',
+  );
+  for (const outcome of [
+    'timeout',
+    'rate_limited',
+    'server_error',
+    'client_error',
+    'malformed',
+  ]) {
+    const result = await runConcurrencyChunk({
+      start: 0,
+      deadline: 1000,
+      first: 0,
+      count: 25,
+      mode: 'custom',
+      signal: new AbortController().signal,
+      stopped: () => false,
+      now: () => 1,
+      request: async (sequence) => sample(sequence, 0, 1, outcome),
+    });
+    assert.equal(result.samples.length, 25);
+    assert.equal(result.observedError, true);
+    assert.equal(result.stoppedAfterError, false);
+  }
+  for (const stop of [
+    'cancel',
+    'shared',
+    'deadline',
+    'transport_error',
+    'missed_dispatch',
+  ]) {
+    const abort = new AbortController();
+    let stopped = false,
+      now = 1;
+    const result = await runConcurrencyChunk({
+      start: 0,
+      deadline: 1000,
+      first: 0,
+      count: 25,
+      mode: 'custom',
+      signal: abort.signal,
+      stopped: () => stopped,
+      now: () => now,
+      request: async (sequence) => {
+        if (stop === 'cancel') abort.abort();
+        if (stop === 'shared') stopped = true;
+        if (stop === 'deadline') now = 1000;
+        return sample(
+          sequence,
+          0,
+          1,
+          stop.endsWith('error') || stop === 'missed_dispatch'
+            ? stop
+            : 'timeout',
+        );
+      },
+    });
+    assert.ok(result.samples.length <= 5, stop);
+  }
 });
 test('custom levels validate exact integers and retain historical default plans', () => {
   assert.deepEqual(parseConcurrencyLevels('60, 61, 70'), [60, 61, 70]);

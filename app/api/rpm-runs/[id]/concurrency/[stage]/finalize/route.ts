@@ -7,6 +7,7 @@ import { rpmRuns, rpmStages } from '@/db/schema';
 import {
   concurrencyPlan,
   concurrencyLevelsForRun,
+  concurrencyModeForRun,
   summarizeConcurrencyStage,
   concurrencyConclusion,
   CONCURRENCY_MAX_LEVELS,
@@ -55,6 +56,7 @@ export async function POST(request: NextRequest, context: Context) {
     )
       return noStore(await runDetail(run));
     const levels = concurrencyLevelsForRun(run.automaticMetricsJson);
+    const mode = concurrencyModeForRun(run.automaticMetricsJson);
     if (index >= levels.length)
       return noStore({ error: 'Invalid concurrency level.' }, { status: 400 });
     const plan = concurrencyPlan(index, levels);
@@ -88,12 +90,15 @@ export async function POST(request: NextRequest, context: Context) {
     ];
     const metrics: ConcurrencyMetrics = {
       version: prior.version,
+      ...(prior.mode ? { mode } : {}),
       ...(prior.levels ? { levels } : {}),
       stages,
-      conclusion: concurrencyConclusion(stages, levels),
+      conclusion: concurrencyConclusion(stages, levels, mode),
     };
     const continueTest =
-      current.outcome === 'no_limit_observed' && index < levels.length - 1;
+      current.complete &&
+      (mode === 'custom' || current.outcome === 'no_limit_observed') &&
+      index < levels.length - 1;
     const status =
       current.outcome === 'tester_incomplete' ? 'inconclusive' : 'passed';
     const samples = manifests.flatMap((m) => m.samples);

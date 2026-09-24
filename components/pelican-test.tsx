@@ -13,7 +13,7 @@ import { ModelPicker } from '@/components/model-picker';
 import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_CEILING, adjustPelicanOutputLimit, pelicanOutputLimit, extractAnimationHtml, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
-import { activeConnectionId, rememberConnection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
+import { activeConnectionId, rememberConnection, connectionSelection, rememberConnectionSelection, connectionRequest, type SavedConnection, type ConnectionApiType } from '@/lib/saved-connections';
 
 type Result = AnimationResult & { savedAnimation?: AnimationSummary | null; saveError?: string | null };
 
@@ -72,10 +72,15 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
     rememberConnection(profile?.id ?? '');
     setApiKey('');
     if (profile) {
-      setApiType(profile.defaultApiType);
-      setBaseUrl(profile.configs[profile.defaultApiType].baseUrl);
-      setModel(profile.configs[profile.defaultApiType].model);
+      const selection = connectionSelection(profile);
+      setApiType(selection.apiType);
+      setBaseUrl(profile.configs[selection.apiType].baseUrl);
+      setModel(selection.model);
     }
+  }
+  function chooseModel(value: string) {
+    setModel(value);
+    if (profileId) rememberConnectionSelection(profileId, { apiType: apiType as ConnectionApiType, model: value });
   }
   useEffect(() => {
     let alive = true;
@@ -263,14 +268,18 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
                   const type = event.target.value as ConnectionApiType;
                   setApiType(type);
                   const config = profiles.find(item => item.id === profileId)?.configs[type];
-                  if (config) { setBaseUrl(config.baseUrl); setModel(current => config.models.includes(current) ? current : config.model); }
+                  if (config) {
+                    const nextModel = config.models.includes(model) ? model : config.model;
+                    setBaseUrl(config.baseUrl); setModel(nextModel);
+                    rememberConnectionSelection(profileId, { apiType: type, model: nextModel });
+                  }
                 }} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
                   <option value="openai">OpenAI-compatible</option>
                   <option value="anthropic">Anthropic-compatible</option>
                 </select>
               </label>
               <div className="block text-sm font-medium">Model name
-                {profileId ? <ModelPicker key={`${profileId}:${apiType}`} value={model} onChange={setModel} disabled={running} models={profiles.find(item => item.id === profileId)?.configs[apiType as ConnectionApiType].models ?? []} /> : <Input aria-label="Model name" className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />}
+                {profileId ? <ModelPicker key={`${profileId}:${apiType}`} value={model} onChange={chooseModel} disabled={running} models={profiles.find(item => item.id === profileId)?.configs[apiType as ConnectionApiType].models ?? []} /> : <Input aria-label="Model name" className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />}
               </div>
             </fieldset>
             {!profileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><fieldset disabled={running} className="mt-4 grid gap-4 md:grid-cols-2"><label className="block text-sm font-medium">Base URL

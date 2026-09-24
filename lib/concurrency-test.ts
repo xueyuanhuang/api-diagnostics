@@ -4,7 +4,27 @@ export const CONCURRENCY_MAX_LEVEL = 200;
 export const CONCURRENCY_MAX_LEVELS = 12;
 export const CONCURRENCY_WINDOW_MS = 60_000;
 export const CONCURRENCY_CHUNK_SIZE = 25;
-export const CONCURRENCY_RUNNER_VERSION = 3;
+export const CONCURRENCY_RUNNER_VERSION = 4;
+export type ConcurrencyMode = 'automatic' | 'custom';
+export function concurrencyModeForRun(
+  metricsJson: string | null,
+): ConcurrencyMode {
+  return metricsJson && JSON.parse(metricsJson).mode === 'custom'
+    ? 'custom'
+    : 'automatic';
+}
+// Provider failures are measurements in a custom test. Delivery failures still
+// stop the runner because it cannot verify that it generated the chosen load.
+export function concurrencyStopsAfter(
+  outcome: string,
+  mode: ConcurrencyMode = 'automatic',
+) {
+  return (
+    outcome !== 'success' &&
+    (mode !== 'custom' ||
+      ['transport_error', 'missed_dispatch'].includes(outcome))
+  );
+}
 export function validateConcurrencyLevels(value: unknown): number[] {
   if (
     !Array.isArray(value) ||
@@ -48,7 +68,7 @@ export function concurrencyLevelsForRun(metricsJson: string | null): number[] {
 export function concurrencyUsesStreaming(metricsJson: string | null) {
   if (!metricsJson) return false;
   try {
-    return [2, 3].includes(JSON.parse(metricsJson).version);
+    return [2, 3, 4].includes(JSON.parse(metricsJson).version);
   } catch {
     return false;
   }
@@ -134,7 +154,8 @@ export type ConcurrencyStageMetrics = {
     | 'tester_incomplete';
 };
 export type ConcurrencyMetrics = {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
+  mode?: ConcurrencyMode;
   levels?: number[];
   stages: ConcurrencyStageMetrics[];
   conclusion: string;
@@ -260,11 +281,24 @@ export function summarizeConcurrencyStage(
 export function concurrencyConclusion(
   stages: ConcurrencyStageMetrics[],
   levels: readonly number[] = CONCURRENCY_LEVELS,
+  mode: ConcurrencyMode = 'automatic',
 ) {
   const last = stages.at(-1);
   if (!last) return 'No concurrency measurement yet.';
   if (last.outcome === 'tester_incomplete')
     return 'Tester interrupted or could not deliver the workload. Provider limit undetermined.';
+  if (mode === 'custom') {
+    const failures = stages.filter((stage) => stage.errors > 0);
+    const progress =
+      stages.length === levels.length
+        ? 'All selected levels were tested.'
+        : `${stages.length} of ${levels.length} selected levels measured; continuing to the next level.`;
+    return `${progress} ${
+      failures.length
+        ? `Request failures were recorded at target concurrency ${failures.map((stage) => stage.concurrency).join(', ')}; see each level’s results.`
+        : 'No request failures were observed.'
+    } These short workloads do not establish a sustainable or hard provider limit.`;
+  }
   if (last.outcome === 'rate_limit_observed')
     return `HTTP 429 observed at target concurrency ${last.concurrency}. Higher load was stopped. The rate limit may depend on this key, route, token quota or a rolling window; this is not the model’s hard limit.`;
   if (last.outcome === 'request_failures')
@@ -281,6 +315,7 @@ export async function runConcurrencyChunk<
   first: number;
   count: number;
   concurrency?: number;
+  mode?: ConcurrencyMode;
   signal: AbortSignal;
   stopped: () => boolean;
   request: (ordinal: number) => Promise<T>;
@@ -295,14 +330,15 @@ export async function runConcurrencyChunk<
     );
   let next = options.first,
     failed = false,
-    observedError = false;
+    observedError = false,
+    stoppedAfterError = false;
   const samples: T[] = [];
   await Promise.all(
     Array.from({ length: slots }, async () => {
       try {
         while (
           !failed &&
-          !observedError &&
+          !stoppedAfterError &&
           !options.signal.aborted &&
           !options.stopped() &&
           now() < options.deadline &&
@@ -311,6 +347,8 @@ export async function runConcurrencyChunk<
           const sample = await options.request(next++);
           samples.push(sample);
           if (sample.outcome !== 'success') observedError = true;
+          if (concurrencyStopsAfter(sample.outcome, options.mode))
+            stoppedAfterError = true;
           options.onResult?.(sample);
         }
       } catch {
@@ -318,5 +356,10 @@ export async function runConcurrencyChunk<
       }
     }),
   );
-  return { samples, failed: failed || options.signal.aborted, observedError };
+  return {
+    samples,
+    failed: failed || options.signal.aborted,
+    observedError,
+    stoppedAfterError,
+  };
 }

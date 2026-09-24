@@ -4,7 +4,7 @@ import { ModelPicker } from '@/components/model-picker';
 import { WorkspaceLink as Link } from '@/components/workspace-navigation';
 import { useWorkspaceNavigation } from '@/components/workspace-navigation';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
-import { activeConnectionId, rememberConnection } from '@/lib/saved-connections';
+import { activeConnectionId, rememberConnection, connectionSelection, rememberConnectionSelection } from '@/lib/saved-connections';
 import { validateBaseUrl } from '@/lib/server/connection';
 /* oxlint-disable react/react-compiler */
 
@@ -356,7 +356,7 @@ function verdict(status: ResultStatus) {
 }
 
 function savedRpmVerdict(run: RpmRunSummary) {
-  if (run.rampMode === 'concurrency' && run.status === 'passed') return {label: run.concurrencyMetrics?.stages.at(-1)?.outcome === 'no_limit_observed' ? 'Limit not reached' : 'Stopped after errors', className:'border-blue-200 bg-blue-50 text-blue-800'};
+  if (run.rampMode === 'concurrency' && run.status === 'passed') return {label: run.concurrencyMetrics?.mode === 'custom' ? (run.concurrencyMetrics.stages.some((stage) => stage.errors > 0) ? 'Completed with errors' : 'Custom test complete') : run.concurrencyMetrics?.stages.at(-1)?.outcome === 'no_limit_observed' ? 'Limit not reached' : 'Stopped after errors', className:'border-blue-200 bg-blue-50 text-blue-800'};
   if (['fixed','automatic'].includes(run.rampMode) && run.status === 'passed') return {label: run.automaticMetrics?.errors ? 'Finished with errors' : 'Measurement complete', className: 'border-blue-200 bg-blue-50 text-blue-800'};
   if (run.status === 'passed')
     return {
@@ -861,6 +861,8 @@ export function TokenCheckApp({
     patch: Partial<ConnectionSettings>,
     forType = apiType,
   ) {
+    if (selectedProfileId && patch.model !== undefined)
+      rememberConnectionSelection(selectedProfileId, { apiType: forType, model: patch.model });
     setConnections((current) => ({
       ...current,
       [forType]: { ...current[forType], ...patch },
@@ -1218,6 +1220,11 @@ export function TokenCheckApp({
     const copyApiKey = !targetTouched.apiKey && Boolean(apiKeys[sourceType]);
     const copyModels =
       !targetTouched.models && profileModels[sourceType].length > 0;
+    if (selectedProfileId)
+      rememberConnectionSelection(selectedProfileId, {
+        apiType: nextType,
+        model: copyModel ? connections[sourceType].model : connections[nextType].model,
+      });
     setConnections((current) => ({
       ...current,
       [nextType]: {
@@ -1275,6 +1282,7 @@ export function TokenCheckApp({
     }
     const profile = availableProfiles.find((item) => item.id === id);
     if (!profile) return;
+    const selection = connectionSelection(profile);
     setProfileName(profile.name);
     setProfileModels({
       anthropic: profile.configs.anthropic.models,
@@ -1283,11 +1291,11 @@ export function TokenCheckApp({
     setConnections({
       anthropic: {
         baseUrl: profile.configs.anthropic.baseUrl,
-        model: profile.configs.anthropic.model,
+        model: selection.apiType === 'anthropic' ? selection.model : profile.configs.anthropic.model,
       },
       openai: {
         baseUrl: profile.configs.openai.baseUrl,
-        model: profile.configs.openai.model,
+        model: selection.apiType === 'openai' ? selection.model : profile.configs.openai.model,
       },
     });
     setDraftTouched({
@@ -1304,7 +1312,7 @@ export function TokenCheckApp({
         models: true,
       },
     });
-    setApiType(profile.defaultApiType);
+    setApiType(selection.apiType);
   }
 
   function addModel() {
@@ -1389,6 +1397,8 @@ export function TokenCheckApp({
         ...current.filter((item) => item.id !== data.profile.id),
       ]);
       setSelectedProfileId(data.profile.id);
+      rememberConnection(data.profile.id);
+      rememberConnectionSelection(data.profile.id, { apiType, model: data.profile.configs[apiType].model });
       setConnections({
         anthropic: {
           baseUrl: data.profile.configs.anthropic.baseUrl,
