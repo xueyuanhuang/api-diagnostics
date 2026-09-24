@@ -6,6 +6,8 @@ import { getDb } from '@/db';
 import { rpmRuns, rpmStages, rpmRunSecrets } from '@/db/schema';
 import {
   concurrencyPlan,
+  concurrencyLevelsForRun,
+  CONCURRENCY_MAX_LEVELS,
   concurrencyUsesStreaming,
   CONCURRENCY_WINDOW_MS,
   CONCURRENCY_CHUNK_SIZE,
@@ -45,17 +47,11 @@ export async function POST(request: NextRequest, context: Context) {
   if (
     ![stageIndex, shardIndex, chunk].every(Number.isInteger) ||
     stageIndex < 0 ||
-    stageIndex > 5 ||
+    stageIndex >= CONCURRENCY_MAX_LEVELS ||
     shardIndex < 0 ||
     chunk < 0
   )
     return noStore({ error: 'Invalid dispatcher.' }, { status: 400 });
-  const plan = concurrencyPlan(stageIndex);
-  if (
-    shardIndex >= plan.shards ||
-    chunk >= Math.ceil(plan.shardCap / CONCURRENCY_CHUNK_SIZE)
-  )
-    return noStore({ error: 'Outside the test budget.' }, { status: 400 });
   try {
     const rows = await getDb()
       .select({ run: rpmRuns, stage: rpmStages, secret: rpmRunSecrets })
@@ -80,6 +76,16 @@ export async function POST(request: NextRequest, context: Context) {
       row.status !== 'running'
     )
       return noStore({ error: 'This level is not running.' }, { status: 409 });
+    const levels = concurrencyLevelsForRun(run.automaticMetricsJson);
+    if (stageIndex >= levels.length)
+      return noStore({ error: 'Invalid concurrency level.' }, { status: 400 });
+    const plan = concurrencyPlan(stageIndex, levels);
+    const shardPlan = plan.shardPlans[shardIndex];
+    if (
+      !shardPlan ||
+      chunk >= Math.ceil(shardPlan.requestCap / CONCURRENCY_CHUNK_SIZE)
+    )
+      return noStore({ error: 'Outside the test budget.' }, { status: 400 });
     const part = String(stageIndex).padStart(2, '0'),
       shardPart = String(shardIndex).padStart(3, '0');
     const root = `rpm/v1/${id}`;
@@ -211,7 +217,11 @@ export async function POST(request: NextRequest, context: Context) {
             start: startAt,
             deadline: startAt + CONCURRENCY_WINDOW_MS,
             first: offset,
-            count: Math.min(CONCURRENCY_CHUNK_SIZE, plan.shardCap - offset),
+            count: Math.min(
+              CONCURRENCY_CHUNK_SIZE,
+              shardPlan.requestCap - offset,
+            ),
+            concurrency: shardPlan.concurrency,
             signal: abort.signal,
             stopped: () => stopped,
             request: (ordinal) =>
@@ -276,7 +286,7 @@ export async function POST(request: NextRequest, context: Context) {
             !measured.observedError &&
             !stopped &&
             Date.now() < startAt + CONCURRENCY_WINDOW_MS &&
-            samples.length < plan.shardCap;
+            samples.length < shardPlan.requestCap;
           const manifest: ConcurrencyManifest = {
             stageIndex,
             shardIndex,

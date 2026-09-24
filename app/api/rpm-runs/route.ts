@@ -1,4 +1,4 @@
-import { CONCURRENCY_LEVELS, CONCURRENCY_RUNNER_VERSION, concurrencyPlan } from '@/lib/concurrency-test';
+import { CONCURRENCY_LEVELS, CONCURRENCY_RUNNER_VERSION, concurrencyPlan, validateConcurrencyLevels } from '@/lib/concurrency-test';
 import { openRouterRoute } from '@/lib/openrouter';
 import { env } from 'cloudflare:workers';
 import { validateOutboundUrl } from '@/lib/server/connection';
@@ -32,6 +32,7 @@ type StartPayload = {
   thresholdPercent?: unknown;
   rampMode?: unknown;
   runnerVersion?: unknown;
+  concurrencyLevels?: unknown;
   durationSeconds?: unknown;
   openRouterTier?: unknown;
 };
@@ -75,6 +76,15 @@ export async function POST(request: NextRequest) {
     return noStore({ error: 'This test page is out of date. Refresh the page before starting a test. No provider requests were sent.' }, { status: 409 });
 
   if (payload.rampMode === 'concurrency' && payload.runnerVersion !== CONCURRENCY_RUNNER_VERSION) return noStore({error: 'Refresh this page before starting a concurrency test. No provider requests were sent.'}, {status:409});
+
+  let concurrencyLevels: number[] = [...CONCURRENCY_LEVELS];
+  if (payload.rampMode === 'concurrency' && payload.concurrencyLevels !== undefined) {
+    try {
+      concurrencyLevels = validateConcurrencyLevels(payload.concurrencyLevels);
+    } catch (error) {
+      return noStore({ error: (error as Error).message }, { status: 400 });
+    }
+  }
 
   const profileId =
     typeof payload.profileId === 'string' ? payload.profileId : '';
@@ -142,7 +152,7 @@ export async function POST(request: NextRequest) {
   );
   if ('error' in outbound)
     return noStore({ error: outbound.error }, { status: 400 });
-  const targets = rampMode === 'concurrency' ? CONCURRENCY_LEVELS.map((_, i) => { const plan = concurrencyPlan(i); return {percentage:100, targetRpm:0, scheduledCount:plan.requestCap}; }) : (rampMode === 'automatic' ? [{percentage:100,targetRpm:0}] : buildRampTargets(targetRpm, rampMode)).map((stage) => ({
+  const targets = rampMode === 'concurrency' ? concurrencyLevels.map((_, i) => { const plan = concurrencyPlan(i, concurrencyLevels); return {percentage:100, targetRpm:0, scheduledCount:plan.requestCap}; }) : (rampMode === 'automatic' ? [{percentage:100,targetRpm:0}] : buildRampTargets(targetRpm, rampMode)).map((stage) => ({
     ...stage,
     scheduledCount: Math.max(
       1,
@@ -262,7 +272,7 @@ export async function POST(request: NextRequest) {
         'preflight',
         totalPlanned,
         now,
-        rampMode === 'concurrency' ? JSON.stringify({ version: CONCURRENCY_RUNNER_VERSION, stages: [], conclusion: '' }) : null,
+        rampMode === 'concurrency' ? JSON.stringify({ version: CONCURRENCY_RUNNER_VERSION, levels: concurrencyLevels, stages: [], conclusion: '' }) : null,
       ),
       ...targets.map((stage, stageIndex) =>
         env.DB.prepare(
@@ -274,7 +284,7 @@ export async function POST(request: NextRequest) {
           stage.percentage,
           stage.targetRpm,
           stage.scheduledCount,
-          rampMode === 'concurrency' ? concurrencyPlan(stageIndex).shards : rpmShardCount(stage.scheduledCount),
+          rampMode === 'concurrency' ? concurrencyPlan(stageIndex, concurrencyLevels).shards : rpmShardCount(stage.scheduledCount),
           'pending',
         ),
       ),

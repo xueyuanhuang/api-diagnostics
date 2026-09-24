@@ -1,22 +1,89 @@
 // Bounded exploration of concurrency, not a claim about a provider's hard limit.
 export const CONCURRENCY_LEVELS = [5, 10, 25, 50, 100, 200] as const;
+export const CONCURRENCY_MAX_LEVEL = 200;
+export const CONCURRENCY_MAX_LEVELS = 12;
 export const CONCURRENCY_WINDOW_MS = 60_000;
 export const CONCURRENCY_CHUNK_SIZE = 25;
-export const CONCURRENCY_RUNNER_VERSION = 2;
+export const CONCURRENCY_RUNNER_VERSION = 3;
+export function validateConcurrencyLevels(value: unknown): number[] {
+  if (
+    !Array.isArray(value) ||
+    !value.length ||
+    value.length > CONCURRENCY_MAX_LEVELS
+  )
+    throw new Error(
+      `Choose between 1 and ${CONCURRENCY_MAX_LEVELS} concurrency levels.`,
+    );
+  if (
+    value.some(
+      (level) =>
+        typeof level !== 'number' ||
+        !Number.isInteger(level) ||
+        level < 1 ||
+        level > CONCURRENCY_MAX_LEVEL,
+    )
+  )
+    throw new Error(
+      `Each concurrency level must be a whole number from 1 to ${CONCURRENCY_MAX_LEVEL}.`,
+    );
+  if (value.some((level, index) => index > 0 && level <= value[index - 1]))
+    throw new Error('Enter distinct concurrency levels in increasing order.');
+  return [...value];
+}
+export function parseConcurrencyLevels(text: string): number[] {
+  const parts = text.trim().split(/[\s,，]+/);
+  if (parts.some((part) => !/^\d+$/.test(part)))
+    throw new Error(
+      'Enter whole numbers separated by commas, for example: 60, 61, 70.',
+    );
+  return validateConcurrencyLevels(parts.map(Number));
+}
+// Missing levels belong to legacy runs, which used the fixed six-level plan.
+export function concurrencyLevelsForRun(metricsJson: string | null): number[] {
+  const metrics = metricsJson ? JSON.parse(metricsJson) : null;
+  return metrics?.levels === undefined
+    ? [...CONCURRENCY_LEVELS]
+    : validateConcurrencyLevels(metrics.levels);
+}
 export function concurrencyUsesStreaming(metricsJson: string | null) {
   if (!metricsJson) return false;
   try {
-    return JSON.parse(metricsJson).version === 2;
+    return [2, 3].includes(JSON.parse(metricsJson).version);
   } catch {
     return false;
   }
 }
-export function concurrencyPlan(index: number) {
-  const concurrency = CONCURRENCY_LEVELS[index];
+export function concurrencyPlan(
+  index: number,
+  levels: readonly number[] = CONCURRENCY_LEVELS,
+) {
+  const concurrency = levels[index];
   if (!concurrency) throw new Error('Invalid concurrency level.');
-  const shards = concurrency / 5;
+  const shards = Math.ceil(concurrency / 5);
   const requestCap = Math.max(100, concurrency * 5);
-  return { concurrency, shards, requestCap, shardCap: requestCap / shards };
+  const shardPlans = Array.from({ length: shards }, (_, shardIndex) => {
+    const firstSlot = shardIndex * 5;
+    const slots = Math.min(5, concurrency - firstSlot);
+    return {
+      concurrency: slots,
+      requestCap:
+        Math.floor(((firstSlot + slots) * requestCap) / concurrency) -
+        Math.floor((firstSlot * requestCap) / concurrency),
+    };
+  });
+  return {
+    concurrency,
+    shards,
+    requestCap,
+    shardCap: Math.max(...shardPlans.map((shard) => shard.requestCap)),
+    shardPlans,
+  };
+}
+export function concurrencyRequestBudget(levels: readonly number[]) {
+  return levels.reduce(
+    (total, _, index) => total + concurrencyPlan(index, levels).requestCap,
+    0,
+  );
 }
 export const CONCURRENCY_REQUEST_BUDGET = CONCURRENCY_LEVELS.reduce(
   (n, _, i) => n + concurrencyPlan(i).requestCap,
@@ -67,7 +134,8 @@ export type ConcurrencyStageMetrics = {
     | 'tester_incomplete';
 };
 export type ConcurrencyMetrics = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
+  levels?: number[];
   stages: ConcurrencyStageMetrics[];
   conclusion: string;
 };
@@ -75,8 +143,9 @@ export function summarizeConcurrencyStage(
   stageIndex: number,
   start: number,
   manifests: ConcurrencyManifest[],
+  levels: readonly number[] = CONCURRENCY_LEVELS,
 ): ConcurrencyStageMetrics {
-  const plan = concurrencyPlan(stageIndex);
+  const plan = concurrencyPlan(stageIndex, levels);
   const valid =
     manifests.length === plan.shards &&
     new Set(manifests.map((m) => m.shardIndex)).size === plan.shards &&
@@ -188,7 +257,10 @@ export function summarizeConcurrencyStage(
           : 'no_limit_observed',
   };
 }
-export function concurrencyConclusion(stages: ConcurrencyStageMetrics[]) {
+export function concurrencyConclusion(
+  stages: ConcurrencyStageMetrics[],
+  levels: readonly number[] = CONCURRENCY_LEVELS,
+) {
   const last = stages.at(-1);
   if (!last) return 'No concurrency measurement yet.';
   if (last.outcome === 'tester_incomplete')
@@ -197,7 +269,7 @@ export function concurrencyConclusion(stages: ConcurrencyStageMetrics[]) {
     return `HTTP 429 observed at target concurrency ${last.concurrency}. Higher load was stopped. The rate limit may depend on this key, route, token quota or a rolling window; this is not the model’s hard limit.`;
   if (last.outcome === 'request_failures')
     return `Request failures observed at target concurrency ${last.concurrency}. Higher load was stopped; the cause and a sustainable limit are not established.`;
-  return `Limit not reached: no request failures observed through target concurrency ${last.concurrency} (actual peak ${last.peakConcurrency}). ${last.peakConcurrency < last.concurrency ? 'The runner did not achieve the requested overlap. ' : ''}${last.budgetReached ? 'The request budget shortened this level. ' : ''}${stages.length === CONCURRENCY_LEVELS.length ? 'The tester’s concurrency ceiling was reached.' : 'Higher concurrency remains untested.'} This is a short-workload result, not a maximum-capacity claim.`;
+  return `Limit not reached: no request failures observed through target concurrency ${last.concurrency} (actual peak ${last.peakConcurrency}). ${last.peakConcurrency < last.concurrency ? 'The runner did not achieve the requested overlap. ' : ''}${last.budgetReached ? 'The request budget shortened this level. ' : ''}${stages.length === levels.length ? (last.concurrency === CONCURRENCY_MAX_LEVEL ? 'The tester’s concurrency ceiling was reached.' : 'All selected levels were tested; higher concurrency remains untested.') : 'Higher concurrency remains untested.'} This is a short-workload result, not a maximum-capacity claim.`;
 }
 // One invocation uses at most 25 provider calls and five simultaneous fetches.
 // Saving happens after the bounded chunk, outside the request replacement path.
@@ -208,6 +280,7 @@ export async function runConcurrencyChunk<
   deadline: number;
   first: number;
   count: number;
+  concurrency?: number;
   signal: AbortSignal;
   stopped: () => boolean;
   request: (ordinal: number) => Promise<T>;
@@ -215,12 +288,17 @@ export async function runConcurrencyChunk<
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
+  const slots = options.concurrency ?? 5;
+  if (!Number.isInteger(slots) || slots < 1 || slots > 5)
+    throw new Error(
+      'A dispatcher must use between one and five concurrent requests.',
+    );
   let next = options.first,
     failed = false,
     observedError = false;
   const samples: T[] = [];
   await Promise.all(
-    Array.from({ length: 5 }, async () => {
+    Array.from({ length: slots }, async () => {
       try {
         while (
           !failed &&

@@ -8,6 +8,10 @@ import {
   concurrencyConclusion,
   runConcurrencyChunk,
   concurrencyUsesStreaming,
+  concurrencyLevelsForRun,
+  parseConcurrencyLevels,
+  validateConcurrencyLevels,
+  concurrencyRequestBudget,
 } from '../lib/concurrency-test.ts';
 
 const sample = (sequence, start, end, outcome = 'success') => ({
@@ -44,6 +48,61 @@ test('TTFT median excludes missing, invalid, failed and late samples without reu
   assert.equal(concurrencyUsesStreaming(null), false);
   assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 1 })), false);
   assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 2 })), true);
+  assert.equal(concurrencyUsesStreaming(JSON.stringify({ version: 3 })), true);
+});
+test('custom levels validate exact integers and retain historical default plans', () => {
+  assert.deepEqual(parseConcurrencyLevels('60, 61, 70'), [60, 61, 70]);
+  assert.deepEqual(parseConcurrencyLevels('60，61 70'), [60, 61, 70]);
+  assert.deepEqual(parseConcurrencyLevels('61'), [61]);
+  assert.deepEqual(concurrencyLevelsForRun(null), [...CONCURRENCY_LEVELS]);
+  assert.deepEqual(concurrencyLevelsForRun('{"version":2,"stages":[]}'), [
+    ...CONCURRENCY_LEVELS,
+  ]);
+  assert.deepEqual(
+    concurrencyLevelsForRun('{"version":3,"levels":[60,61,70]}'),
+    [60, 61, 70],
+  );
+  for (const input of [
+    '',
+    '60.5',
+    '0',
+    '-1',
+    '201',
+    '1e2',
+    '61,60',
+    '60,60',
+    '60,abc',
+    '1,2,3,4,5,6,7,8,9,10,11,12,13',
+  ])
+    assert.throws(() => parseConcurrencyLevels(input), input);
+  for (const input of [null, [], ['61'], [Infinity], [NaN], [true]])
+    assert.throws(() => validateConcurrencyLevels(input));
+  assert.throws(() => concurrencyLevelsForRun('{"version":3,"levels":[201]}'));
+});
+test('custom plans allocate exactly the requested slots and budget, including a one-slot remainder at 61', () => {
+  for (let target = 1; target <= 200; target++) {
+    const plan = concurrencyPlan(0, [target]);
+    assert.equal(
+      plan.shardPlans.reduce((n, shard) => n + shard.concurrency, 0),
+      target,
+    );
+    assert.equal(
+      plan.shardPlans.reduce((n, shard) => n + shard.requestCap, 0),
+      plan.requestCap,
+    );
+    assert.ok(
+      plan.shardPlans.every(
+        (shard) =>
+          shard.concurrency >= 1 &&
+          shard.concurrency <= 5 &&
+          Number.isInteger(shard.requestCap),
+      ),
+    );
+  }
+  const plan = concurrencyPlan(1, [60, 61, 70]);
+  assert.equal(plan.shards, 13);
+  assert.deepEqual(plan.shardPlans.at(-1), { concurrency: 1, requestCap: 5 });
+  assert.equal(concurrencyRequestBudget([60, 61, 70]), 955);
 });
 const manifest = (samples, extra = {}) => ({
   stageIndex: 0,

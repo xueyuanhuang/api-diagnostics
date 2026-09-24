@@ -1,15 +1,17 @@
 'use client';
-import { useEffect, useRef, useState, type ComponentProps } from 'react';
+import { useEffect, useId, useRef, useState, type ComponentProps } from 'react';
 import type { RpmRampTest } from './rpm-ramp-test';
 import type { RpmRunDetail, RpmRunSummary } from '@/lib/rpm-types';
 import {
   CONCURRENCY_LEVELS,
-  CONCURRENCY_REQUEST_BUDGET,
   CONCURRENCY_RUNNER_VERSION,
   concurrencyPlan,
+  concurrencyRequestBudget,
+  parseConcurrencyLevels,
   type ConcurrencyMetrics,
 } from '@/lib/concurrency-test';
 import { Button } from './ui/button';
+import { Input } from './ui/input';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -32,6 +34,18 @@ export function ConcurrencyThroughputTest(
   const idRef = useRef('');
   const [clock, setClock] = useState(0);
   const [started, setStarted] = useState(0);
+  const [customLevels, setCustomLevels] = useState(false);
+  const [levelsText, setLevelsText] = useState('60, 61, 70');
+  const levelsId = useId();
+  let selectedLevels: readonly number[] = CONCURRENCY_LEVELS;
+  let levelsError = '';
+  if (customLevels) {
+    try {
+      selectedLevels = parseConcurrencyLevels(levelsText);
+    } catch (e) {
+      levelsError = (e as Error).message;
+    }
+  }
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => setClock(Date.now()), 250);
@@ -101,6 +115,10 @@ export function ConcurrencyThroughputTest(
     }
   }
   async function start() {
+    if (levelsError) {
+      setError(levelsError);
+      return;
+    }
     if (!props.selectedProfileId || props.profileDirty) {
       setError('Select a saved connection with no unsaved changes.');
       return;
@@ -130,6 +148,7 @@ export function ConcurrencyThroughputTest(
           allowInsecureHttp: isInsecureHttp(props.baseUrl),
           rampMode: 'concurrency',
           runnerVersion: CONCURRENCY_RUNNER_VERSION,
+          concurrencyLevels: selectedLevels,
         }),
       });
       id = created.run.id;
@@ -137,6 +156,8 @@ export function ConcurrencyThroughputTest(
       setActiveId(id);
       setDetail(created);
       props.onRunSaved?.(created.run);
+      const runLevels =
+        created.run.concurrencyMetrics?.levels ?? selectedLevels;
       const preflight = await json<RpmRunDetail>(
         `/api/rpm-runs/${id}/preflight`,
         { method: 'POST', signal: abort.signal },
@@ -148,12 +169,8 @@ export function ConcurrencyThroughputTest(
         );
       setStarted(Date.now());
       setClock(Date.now());
-      for (
-        let stageIndex = 0;
-        stageIndex < CONCURRENCY_LEVELS.length;
-        stageIndex++
-      ) {
-        const plan = concurrencyPlan(stageIndex);
+      for (let stageIndex = 0; stageIndex < runLevels.length; stageIndex++) {
+        const plan = concurrencyPlan(stageIndex, runLevels);
         setMessage(`Preparing ${plan.concurrency} concurrent requests…`);
         await json(`/api/rpm-runs/${id}/stages/${stageIndex}/start`, {
           method: 'POST',
@@ -289,28 +306,87 @@ export function ConcurrencyThroughputTest(
   const number = (value: number) =>
     value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   const last = metrics?.stages.at(-1);
+  const shownLevels =
+    props.readOnly || running
+      ? (detail?.run.concurrencyMetrics?.levels ?? CONCURRENCY_LEVELS)
+      : selectedLevels;
   return (
     <section className="space-y-5 rounded-2xl border border-border bg-card p-5">
       <div>
-        <h2 className="text-xl font-semibold">
-          Automatic RPM / RPS & concurrency test
-        </h2>
+        <h2 className="text-xl font-semibold">RPM / RPS & concurrency test</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          One click to explore higher concurrency and measure successful
-          RPM/RPS, TTFT and errors.
+          Explore automatic levels or choose exact concurrency levels to measure
+          successful RPM/RPS, TTFT and errors.
         </p>
       </div>
+      {!props.readOnly && (
+        <div className="space-y-3">
+          <label className="block text-sm font-medium">
+            Concurrency levels
+            <select
+              className="mt-2 block h-10 w-full rounded-lg border border-input bg-background px-3 text-sm sm:max-w-sm"
+              value={customLevels ? 'custom' : 'automatic'}
+              disabled={running || Boolean(activeId)}
+              onChange={(event) =>
+                setCustomLevels(event.target.value === 'custom')
+              }
+            >
+              <option value="automatic">Automatic levels</option>
+              <option value="custom">Custom levels</option>
+            </select>
+          </label>
+          {customLevels && (
+            <div className="space-y-2">
+              <label htmlFor={levelsId} className="block text-sm font-medium">
+                Concurrent requests at each level
+              </label>
+              <Input
+                id={levelsId}
+                value={levelsText}
+                onChange={(event) => setLevelsText(event.target.value)}
+                disabled={running || Boolean(activeId)}
+                placeholder="60, 61, 70"
+                aria-invalid={Boolean(levelsError)}
+                aria-describedby={`${levelsId}-help${levelsError ? ` ${levelsId}-error` : ''}`}
+              />
+              <p
+                id={`${levelsId}-help`}
+                className="text-sm text-muted-foreground"
+              >
+                Run only these levels, in increasing order. Enter up to 12 whole
+                numbers from 1 to 200, separated by commas. Use one number to
+                test a single level, or edit the list to add intermediate
+                levels.
+              </p>
+              {levelsError && (
+                <p
+                  id={`${levelsId}-error`}
+                  role="alert"
+                  className="text-sm text-destructive"
+                >
+                  {levelsError}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div className="rounded-xl bg-muted/50 p-4 text-sm leading-6">
         <strong>
-          Automatic load levels: 5 → 10 → 25 → 50 → 100 → 200 concurrent
-          requests
+          Load levels:{' '}
+          {levelsError && !props.readOnly && !running
+            ? 'Enter valid levels above'
+            : `${shownLevels.join(' → ')} concurrent requests`}
         </strong>
         <p>
           Up to 60 seconds per level, within a total budget of{' '}
-          {CONCURRENCY_REQUEST_BUDGET.toLocaleString()} requests plus one
-          connection check. Fast responses may reach the request budget sooner.
-          New requests replace completed requests; higher levels stop after any
-          request failure. Each request has a 20-second timeout.
+          {levelsError && !props.readOnly && !running
+            ? '—'
+            : concurrencyRequestBudget(shownLevels).toLocaleString()}{' '}
+          requests plus one connection check. Fast responses may reach the
+          request budget sooner. New requests replace completed requests; higher
+          levels stop after any request failure. Each request has a 20-second
+          timeout.
         </p>
         <p>
           Uses your selected connection, model and Standard/Flex resource. These
@@ -337,10 +413,11 @@ export function ConcurrencyThroughputTest(
                   Boolean(activeId) ||
                   props.startBlocked ||
                   !props.selectedProfileId ||
-                  props.profileDirty
+                  props.profileDirty ||
+                  Boolean(levelsError)
                 }
               >
-                Start automatic test
+                {customLevels ? 'Start custom test' : 'Start automatic test'}
               </Button>
               {activeId && (
                 <Button variant="outline" onClick={() => void stop()}>
@@ -364,6 +441,10 @@ export function ConcurrencyThroughputTest(
       )}
       {metrics && (
         <>
+          <p className="text-sm text-muted-foreground">
+            Levels saved with this run:{' '}
+            {(metrics.levels ?? CONCURRENCY_LEVELS).join(' → ')}
+          </p>
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
             <p className="font-semibold">
               {detail &&

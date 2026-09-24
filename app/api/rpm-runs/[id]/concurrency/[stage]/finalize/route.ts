@@ -6,9 +6,10 @@ import { getDb } from '@/db';
 import { rpmRuns, rpmStages } from '@/db/schema';
 import {
   concurrencyPlan,
+  concurrencyLevelsForRun,
   summarizeConcurrencyStage,
   concurrencyConclusion,
-  CONCURRENCY_LEVELS,
+  CONCURRENCY_MAX_LEVELS,
   type ConcurrencyManifest,
   type ConcurrencyMetrics,
 } from '@/lib/concurrency-test';
@@ -27,11 +28,7 @@ export async function POST(request: NextRequest, context: Context) {
     return noStore({ error: 'Invalid origin.' }, { status: 403 });
   const { id, stage } = await context.params;
   const index = Number(stage);
-  if (
-    !Number.isInteger(index) ||
-    index < 0 ||
-    index >= CONCURRENCY_LEVELS.length
-  )
+  if (!Number.isInteger(index) || index < 0 || index >= CONCURRENCY_MAX_LEVELS)
     return noStore({ error: 'Invalid level.' }, { status: 400 });
   try {
     const rows = await getDb()
@@ -57,7 +54,10 @@ export async function POST(request: NextRequest, context: Context) {
       run.currentStage !== index
     )
       return noStore(await runDetail(run));
-    const plan = concurrencyPlan(index);
+    const levels = concurrencyLevelsForRun(run.automaticMetricsJson);
+    if (index >= levels.length)
+      return noStore({ error: 'Invalid concurrency level.' }, { status: 400 });
+    const plan = concurrencyPlan(index, levels);
     const manifests: ConcurrencyManifest[] = [];
     // At most 40 small manifests; sequential reads avoid exhausting connection slots.
     for (let shard = 0; shard < plan.shards; shard++) {
@@ -73,6 +73,7 @@ export async function POST(request: NextRequest, context: Context) {
       index,
       row.scheduledStartAt ?? Date.now(),
       manifests,
+      levels,
     );
     if (row.scheduledStartAt === null) {
       current.complete = false;
@@ -87,12 +88,12 @@ export async function POST(request: NextRequest, context: Context) {
     ];
     const metrics: ConcurrencyMetrics = {
       version: prior.version,
+      ...(prior.levels ? { levels } : {}),
       stages,
-      conclusion: concurrencyConclusion(stages),
+      conclusion: concurrencyConclusion(stages, levels),
     };
     const continueTest =
-      current.outcome === 'no_limit_observed' &&
-      index < CONCURRENCY_LEVELS.length - 1;
+      current.outcome === 'no_limit_observed' && index < levels.length - 1;
     const status =
       current.outcome === 'tester_incomplete' ? 'inconclusive' : 'passed';
     const samples = manifests.flatMap((m) => m.samples);

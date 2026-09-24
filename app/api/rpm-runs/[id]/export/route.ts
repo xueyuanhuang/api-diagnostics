@@ -6,6 +6,7 @@ import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { getDb } from '@/db';
 import { rpmRuns } from '@/db/schema';
 import { RPM_REQUEST_TIMEOUT_MS } from '@/lib/rpm-types';
+import { concurrencyUsesStreaming } from '@/lib/concurrency-test';
 import { listR2Keys, runDetail } from '@/lib/server/rpm-store';
 import { RPM_MAX_RESPONSE_BYTES } from '@/lib/server/rpm-provider';
 
@@ -98,7 +99,7 @@ export async function GET(_request: NextRequest, context: Context) {
     evidenceScope:
       'Every preflight, dispatcher manifest, and request/response evidence object present when this export snapshot began. Responses stored after the verdict freeze are retained with verdictEligible=false. Re-export an active or partial run after it settles to include later raw evidence. API keys and sensitive response headers are redacted.',
     requestPolicy: {
-      stream: false,
+      stream: detail.run.rampMode === 'concurrency' && concurrencyUsesStreaming(rows[0].automaticMetricsJson),
       maxTokens: detail.run.openRouterTier ? 512 : 8,
       requestedServiceTier: detail.run.openRouterTier ?? null,
       clientRetries: 0,

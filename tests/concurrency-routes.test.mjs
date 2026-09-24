@@ -24,6 +24,7 @@ function fixture({
   outcome = 'success',
   failSave = false,
   streaming = true,
+  levels,
 } = {}) {
   const objects = new Map(),
     writes = [];
@@ -38,7 +39,12 @@ function fixture({
     currentStage: index,
     stopReason: null,
     automaticMetricsJson: streaming
-      ? JSON.stringify({ version: 2, stages: [], conclusion: '' })
+      ? JSON.stringify({
+          version: levels ? 3 : 2,
+          ...(levels ? { levels } : {}),
+          stages: [],
+          conclusion: '',
+        })
       : null,
     baseUrl: 'https://openrouter.ai/api/v1',
     apiType: 'openai',
@@ -50,7 +56,7 @@ function fixture({
     stageIndex: index,
     scheduledStartAt: Date.now() - 1,
   };
-  const plan = concurrency.concurrencyPlan(index);
+  const plan = concurrency.concurrencyPlan(index, levels);
   const env = {
     EVIDENCE: {
       async get(key) {
@@ -379,4 +385,69 @@ test('finalizer refuses unauthenticated and cross-origin access and marks missin
   );
   const detail = await (await g.finalize(req(), ctx())).json();
   assert.equal(detail.run.status, 'inconclusive');
+});
+test('custom 60, 61 and 70 levels deliver exact overlap, exact budgets and retain their plan when finalized', async () => {
+  const levels = [60, 61, 70];
+  for (let index = 0; index < levels.length; index++) {
+    const f = fixture({ index, levels });
+    await Promise.all(
+      f.plan.shardPlans.map(async (shard, shardIndex) => {
+        for (let chunk = 0; chunk < Math.ceil(shard.requestCap / 25); chunk++)
+          await events(await f.post(req(chunk), ctx(index, shardIndex)));
+      }),
+    );
+    assert.equal(f.peak(), levels[index]);
+    assert.equal(f.calls(), levels[index] * 5);
+    const raw = [...f.objects]
+      .filter(([key]) => key.includes('/results/'))
+      .flatMap(([, value]) => JSON.parse(value).requests);
+    assert.equal(new Set(raw.map((sample) => sample.sequence)).size, f.calls());
+    const detail = await (await f.finalize(req(), ctx(index))).json();
+    const metrics = detail.run.concurrencyMetrics;
+    assert.deepEqual(metrics.levels, levels);
+    assert.equal(metrics.version, 3);
+    assert.equal(metrics.stages.at(-1).concurrency, levels[index]);
+    assert.equal(metrics.stages.at(-1).peakConcurrency, levels[index]);
+    assert.equal(metrics.stages.at(-1).attempts, levels[index] * 5);
+    assert.equal(detail.run.status, index === 2 ? 'passed' : 'running');
+    assert.doesNotMatch(metrics.conclusion, /tester’s concurrency ceiling/);
+  }
+});
+test('a seventh custom level is runnable, and single-level tests finish at their own boundary', async () => {
+  for (const levels of [[61], [1, 2, 3, 4, 5, 60, 61]]) {
+    const index = levels.length - 1;
+    const f = fixture({ index, levels });
+    await Promise.all(
+      f.plan.shardPlans.map((_, shard) =>
+        f.post(req(), ctx(index, shard)).then(events),
+      ),
+    );
+    assert.equal(f.peak(), 61);
+    const detail = await (await f.finalize(req(), ctx(index))).json();
+    assert.equal(detail.run.status, 'passed');
+    assert.equal(detail.run.concurrencyMetrics.stages.at(-1).concurrency, 61);
+  }
+});
+test('partial dispatchers cannot exceed their saved budget and custom failures still stop later levels', async () => {
+  const f = fixture({ levels: [61, 70], outcome: 'rate_limited' });
+  assert.equal((await f.post(req(1), ctx(0, 12))).status, 400);
+  assert.equal((await f.post(req(), ctx(0, 13))).status, 400);
+  assert.equal(f.calls(), 0);
+  await Promise.all(
+    f.plan.shardPlans.map((_, shard) =>
+      f.post(req(), ctx(0, shard)).then(events),
+    ),
+  );
+  assert.ok(f.calls() <= 61);
+  const detail = await (await f.finalize(req(), ctx())).json();
+  assert.equal(detail.run.status, 'passed');
+  assert.equal(
+    detail.run.concurrencyMetrics.stages.at(-1).outcome,
+    'rate_limit_observed',
+  );
+  assert.match(
+    detail.run.concurrencyMetrics.conclusion,
+    /concurrency 61.*Higher load was stopped/,
+  );
+  assert.ok(f.writes.some((q) => q.sql.includes("status='skipped'")));
 });
