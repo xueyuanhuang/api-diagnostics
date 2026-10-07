@@ -76,7 +76,7 @@ export function ModelPicker({ models, value, onChange, disabled = false, connect
       setError(cause instanceof Error ? cause.message : 'Could not save models. Try again.');
     } finally { savingRef.current = false; setSaving(false); }
   }
-  return <div className="mt-2 space-y-2">
+  return <div className="relative mt-2 space-y-2">
     <Input type="search" aria-label="Search models" placeholder={onAddModels ? `Search ${sorted.length} models or paste an ID…` : `Search ${sorted.length} models…`} value={query} disabled={disabled || saving}
       onChange={event => changeQuery(event.target.value)}
       onKeyDown={event => {
@@ -112,7 +112,7 @@ export function ModelPicker({ models, value, onChange, disabled = false, connect
     {copyFailed && <output className="block text-xs font-normal text-muted-foreground">Could not copy automatically. Select and copy the model name: <span className="select-text break-all">{value}</span></output>}
     {query && !saving && <output className="block text-xs font-normal text-muted-foreground">{matches.length ? `${matches.length} matching model${matches.length === 1 ? '' : 's'}` : onAddModels ? 'No matching saved models.' : 'No matching models. Try another search.'}</output>}
     {onAddModels && newCandidates.length > 0 && !pendingModels && <Button type="button" variant="outline" disabled={disabled || saving} onClick={() => requestSelection(query)}><Plus aria-hidden="true" />{newCandidates.length === 1 ? 'Add & use model' : `Add ${newCandidates.length} models`}</Button>}
-    {onAddModels && pendingModels && <section aria-label="Confirm adding models" className="space-y-3 rounded-lg border border-border bg-muted/50 p-3 text-sm">
+    {onAddModels && pendingModels && <section aria-label="Confirm adding models" className="absolute inset-x-0 top-full z-30 mt-2 space-y-3 rounded-lg border border-border bg-card p-4 text-sm shadow-lg">
       <p className="font-semibold">{pendingModels.length === 1 ? 'Add this model' : `Add these ${pendingModels.length} models`} to {connectionName || 'this connection'}?</p>
       <ul className="max-h-36 space-y-1 overflow-y-auto text-xs font-normal">{pendingModels.map(model => <li key={model} className="break-all font-mono">{model}</li>)}</ul>
       <p className="text-xs font-normal text-muted-foreground">{pendingModels.length === 1 ? 'It will be saved and selected' : 'They will be saved, and the first new model selected'} for testing.</p>
@@ -120,8 +120,9 @@ export function ModelPicker({ models, value, onChange, disabled = false, connect
         <Button type="button" disabled={disabled || saving} onClick={() => void confirmAddition()}>{saving ? 'Saving…' : 'Confirm & add'}</Button>
         <Button type="button" variant="outline" disabled={disabled || saving} onClick={() => changeQuery('')}>Cancel</Button>
       </div>
+      {error && <p role="alert" className="break-words text-xs font-normal text-destructive">{error}</p>}
     </section>}
-    {error && <p role="alert" className="break-words text-xs font-normal text-destructive">{error}</p>}
+    {error && !pendingModels && <p role="alert" className="break-words text-xs font-normal text-destructive">{error}</p>}
     {message && <output className="block text-xs font-normal text-muted-foreground">{message}</output>}
   </div>;
 }
