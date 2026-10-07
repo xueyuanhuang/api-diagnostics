@@ -15,6 +15,11 @@ const config = {
   models: ['live-model', 'model-b', 'model-c', 'model-d', 'model-e', 'model-f'],
   hasSavedKey: true,
 };
+const modelFixtureKey = 'api-diagnostics:model-picker-fixture';
+try {
+  const saved = JSON.parse(localStorage.getItem(modelFixtureKey) || '[]');
+  if (Array.isArray(saved)) config.models = [...new Set([...config.models, ...saved.filter((model): model is string => typeof model === 'string')])];
+} catch { /* Fixture storage is optional. */ }
 const profile = {
   id: 'fixture',
   name: 'Fixture connection',
@@ -122,6 +127,7 @@ const counters = {
   rpmCancels: 0,
   dispatched: 0,
   unexpected: 0,
+  modelSaves: 0,
 };
 let finishNormal = false;
 const response = (value: unknown) =>
@@ -143,8 +149,18 @@ window.fetch = async (input, init = {}) => {
       user: { displayName: 'Fixture user', email: 'fixture@example.invalid' },
     });
   if (path === '/api/animations') return response({ results: [], nextBefore: null });
+  if (path === '/api/animation-preferences') return response({ maxOutputTokens: 25600 });
   if (path === '/api/diagnostic-runs') return response({ runs: [] });
   if (path === '/api/profiles') return response({ profiles: [profile] });
+  if (path === '/api/profiles/fixture/models' && method === 'POST') {
+    counters.modelSaves++;
+    const payload = JSON.parse(typeof init.body === 'string' ? init.body : '{}');
+    if (payload.models?.includes('fixture-rejected-model')) return new Response(JSON.stringify({ error: 'Fixture save failed. Retry with another model.' }), { status: 409, headers: { 'content-type': 'application/json' } });
+    const before = config.models.length;
+    config.models = [...new Set([...config.models, ...payload.models])];
+    localStorage.setItem(modelFixtureKey, JSON.stringify(config.models));
+    return response({ models: config.models, added: config.models.length - before });
+  }
   if (path === '/api/runs' && method === 'GET')
     return response({ runs: [mixed, normal] });
   if (path === '/api/runs/saved-mixed')

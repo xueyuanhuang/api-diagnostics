@@ -44,3 +44,14 @@ Verified in the in-app browser:
   Pelican and Connections sections using real browser history events.
 - On the deployed build, the Pelican card opens the animation form and loads all
   nine saved connections, with no new navigation errors and no paid requests.
+
+## Inline model additions (2026-10-07)
+
+Verified with the local fixture and real All tests/Pelican components:
+
+- Pasting a missing model opens a confirmation with the complete ID and connection name; no save or test is sent until Confirm & add.
+- Cancel preserves the catalog and selected model. Repeated Enter in the search only opens confirmation and cannot submit the test form.
+- Confirm saves once, selects the new model, and preserves the existing catalog. Pasting that exact model again selects it without another save.
+- Switching API formats and navigating between All tests and Pelican retains the shared catalog. Reloading the fixture retains saved models and the last selection.
+- Comma/newline-separated duplicate IDs show only the distinct new models for confirmation, then save together.
+- A simulated save failure keeps the previous model, pasted IDs and confirmation available for retry; no provider test starts.

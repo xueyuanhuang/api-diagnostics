@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { AnimationPreview } from '@/components/animation-preview';
 import { OpenRouterSelector, useOpenRouterTier, selectedRoute } from '@/components/openrouter-selector';
 import { ModelPicker } from '@/components/model-picker';
+import { shareProfileModels } from '@/lib/profile-models';
 import { PELICAN_PROMPT, PELICAN_MAX_TOKENS, PELICAN_OUTPUT_CEILING, adjustPelicanOutputLimit, pelicanOutputLimit, extractAnimationHtml, animationWarning } from '@/lib/pelican-test';
 import { validateBaseUrl } from '@/lib/server/connection';
 import { confirmHttpRisk, isInsecureHttp } from '@/lib/http-consent';
@@ -21,6 +22,8 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   const [apiType, setApiType] = useState('openai');
   const [profiles, setProfiles] = useState<SavedConnection[]>([]);
   const [profileId, setProfileId] = useState('');
+  const [modelSaving, setModelSaving] = useState(false);
+  const modelSavingRef = useRef(false);
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [openRouterTier,setOpenRouterTier]=useOpenRouterTier();
@@ -82,6 +85,21 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
     setModel(value);
     if (profileId) rememberConnectionSelection(profileId, { apiType: apiType as ConnectionApiType, model: value });
   }
+  async function addModelsFromPicker(models: string[]) {
+    if (!profileId || controller.current || modelSavingRef.current)
+      throw new Error('Wait for the current operation to finish, then try again.');
+    modelSavingRef.current = true; setModelSaving(true);
+    try {
+      const saved = await connectionRequest<{ models: string[]; added: number }>(`/api/profiles/${encodeURIComponent(profileId)}/models`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiType, baseUrl, models }),
+      });
+      setProfiles(current => current.map(profile => profile.id === profileId
+        ? { ...profile, configs: shareProfileModels(profile.configs, saved.models) }
+        : profile));
+      return saved;
+    } finally { modelSavingRef.current = false; setModelSaving(false); }
+  }
   useEffect(() => {
     let alive = true;
     void connectionRequest<{ user: unknown }>('/api/session').then(async session => {
@@ -103,13 +121,13 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
     const refresh = () => {
-      if (controller.current) return;
+      if (controller.current || modelSavingRef.current) return;
       void connectionRequest<{ user: unknown }>('/api/session').then(async session => {
         if (!session.user) return;
         void loadHistory().catch(() => setSaveMessage('Could not refresh saved animations. Try again later.'));
         const data = await connectionRequest<{ profiles: SavedConnection[] }>('/api/profiles');
         // Navigation refresh must never alter a request that started meanwhile.
-        if (controller.current) return;
+        if (controller.current || modelSavingRef.current) return;
         setProfiles(data.profiles);
         const id = activeConnectionId();
         if (data.profiles.some(item => item.id === id)) chooseConnection(id, data.profiles);
@@ -146,7 +164,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
 
   async function start(event: React.FormEvent) {
     event.preventDefault();
-    if (controller.current || outputLimitSaving || !preferencesReady) return;
+    if (controller.current || modelSavingRef.current || outputLimitSaving || !preferencesReady) return;
     setError('');
     const checked = validateBaseUrl(baseUrl.trim());
     if ('error' in checked) { setError(checked.error); return; }
@@ -256,7 +274,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
         </header>
         <div className="space-y-5">
           <form onSubmit={start} className="space-y-5 rounded-2xl border border-border bg-card p-5 shadow-sm">
-            <fieldset disabled={running} className="grid gap-4 md:grid-cols-3">
+            <fieldset disabled={running || modelSaving} className="grid gap-4 md:grid-cols-3">
               <label className="block text-sm font-medium">Connection
                 <select value={profileId} onChange={event => chooseConnection(event.target.value)} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
                   <option value="">One-time connection</option>
@@ -279,7 +297,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
                 </select>
               </label>
               <div className="block text-sm font-medium">Model name
-                {profileId ? <ModelPicker key={`${profileId}:${apiType}`} value={model} onChange={chooseModel} disabled={running} models={profiles.find(item => item.id === profileId)?.configs[apiType as ConnectionApiType].models ?? []} /> : <Input aria-label="Model name" className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />}
+                {profileId ? <ModelPicker key={`${profileId}:${apiType}`} value={model} onChange={chooseModel} disabled={running || modelSaving} models={profiles.find(item => item.id === profileId)?.configs[apiType as ConnectionApiType].models ?? []} connectionName={profiles.find(item => item.id === profileId)?.name} onAddModels={addModelsFromPicker} /> : <Input aria-label="Model name" className="mt-2 h-10" required maxLength={120} value={model} onChange={event => setModel(event.target.value)} placeholder="Exact model ID from your provider" />}
               </div>
             </fieldset>
             {!profileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><fieldset disabled={running} className="mt-4 grid gap-4 md:grid-cols-2"><label className="block text-sm font-medium">Base URL
@@ -305,7 +323,7 @@ export function PelicanTest({ onRunningChange }: { onRunningChange?: (running: b
             <p className="text-sm leading-6 text-muted-foreground">Changes save automatically {signedIn ? 'to your account' : 'on this device'} and apply to future tests until you change them. One request · up to {maxOutputTokens.toLocaleString('en-US')} output tokens · 5-minute limit.</p>
             {outputLimitMessage && <p role="status" className="text-sm text-muted-foreground">{outputLimitMessage}</p>}
             <div className="flex gap-2">
-              <Button type="submit" disabled={running || outputLimitSaving || !preferencesReady || outputLimitDraft !== String(maxOutputTokens)} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
+              <Button type="submit" disabled={running || modelSaving || outputLimitSaving || !preferencesReady || outputLimitDraft !== String(maxOutputTokens)} className="h-11 flex-1">{running ? 'Generating animation…' : 'Run animation test'}</Button>
               {running && <Button type="button" variant="outline" className="h-11" onClick={() => controller.current?.abort()}>Stop</Button>}
             </div>
             {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}

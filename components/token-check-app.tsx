@@ -1484,6 +1484,20 @@ export function TokenCheckApp({
     return data;
   }
 
+  async function addModelsFromPicker(models: string[]) {
+    if (!selectedProfileId || controlsLocked || profileBusy || queueStartingRef.current)
+      throw new Error('Wait for the current operation to finish, then try again.');
+    queueStartingRef.current = true;
+    connectionRefreshLocked.current = true;
+    setProfileBusy(true);
+    try {
+      return await rememberProfileModels(selectedProfileId, apiType, baseUrl, models);
+    } finally {
+      queueStartingRef.current = false;
+      setProfileBusy(false);
+    }
+  }
+
   async function restoreHistoryModels() {
     if (
       !selectedProfileId ||
@@ -2017,7 +2031,7 @@ export function TokenCheckApp({
                 <select value={apiType} onChange={event => chooseType(event.target.value as ApiType)} disabled={controlsLocked || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
               </label>
               <div className="min-w-48 flex-1 text-sm font-medium">Model
-                {selectedProfileId ? <ModelPicker key={`${selectedProfileId}:${apiType}`} value={model} onChange={model => updateConnection({ model })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} models={activeProfileModels} /> : <Input aria-label="Model name" className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} placeholder="Model name" />}
+                {selectedProfileId ? <ModelPicker key={`${selectedProfileId}:${apiType}`} value={model} onChange={model => updateConnection({ model })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} models={activeProfileModels} connectionName={selectedProfile?.name} onAddModels={isRunning ? undefined : addModelsFromPicker} /> : <Input aria-label="Model name" className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy} placeholder="Model name" />}
               </div>
               <Link href="/connections" className="inline-flex h-10 items-center rounded-lg border border-border px-4 text-sm font-semibold text-primary hover:bg-muted">Manage connections</Link>
               {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
