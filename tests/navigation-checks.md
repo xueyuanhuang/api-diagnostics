@@ -55,3 +55,12 @@ Verified with the local fixture and real All tests/Pelican components:
 - Switching API formats and navigating between All tests and Pelican retains the shared catalog. Reloading the fixture retains saved models and the last selection.
 - Comma/newline-separated duplicate IDs show only the distinct new models for confirmation, then save together.
 - A simulated save failure keeps the previous model, pasted IDs and confirmation available for retry; no provider test starts.
+
+## Tool Choice Test (local fixtures only)
+
+- Choose Tool Choice Test, inspect the expanded request preview, and verify a weather tool AND `tool_choice: none` (Messages uses an object). Switch API format and verify the preview updates.
+- Start the test. Connection/model controls lock; browse another test or history and return without interrupting the two serial requests.
+- The fixture returns HTTP 200 for both: non-streaming passes, streaming returns a tool call and fails. Both actual requests and raw responses are expanded; inspect/copy the forbidden field, and download evidence. No provider request leaves the fixture.
+- Open Saved runs, filter to Tool Choice Test, reopen its evidence, then return to the live result. Confirm the label, violation count, modes and exact request/response are retained. Delete the fixture history entry.
+- Start another test and stop during its first request: second stays stopped, controls unlock, no success is fabricated.
+- Check the page at narrow width; long tool IDs and stream data must scroll/wrap within their cards.

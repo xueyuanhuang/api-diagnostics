@@ -11,6 +11,7 @@ import {
 import { diagnosticExport, diagnosticSummary } from '../lib/diagnostic-runs.ts';
 import { DiagnosticSaveQueue } from '../lib/diagnostic-save-queue.ts';
 import { captureEndpointExchange } from '../lib/server/endpoint-check.ts';
+import { captureToolChoiceExchange } from '../lib/server/tool-choice.ts';
 import { captureBoundaryExchange } from '../lib/server/tool-boundary.ts';
 
 const id = 'ab1cec03-078c-4cc4-8001-b37c44c42d39';
@@ -457,4 +458,25 @@ test('failed or uncertain saves retain evidence for explicit retry using the sam
   await tick();
   assert.deepEqual(calls[1], calls[0]);
   assert.equal(states.at(-1).state, 'saved');
+});
+
+test('tool-choice evidence saves, reloads and exports both modes with recomputed verdicts', async () => {
+  const f = fixture();
+  try {
+    const nonStream = await captureToolChoiceExchange(connection, false, new AbortController().signal, async () => new Response(body('No tools used.')));
+    const stream = await captureToolChoiceExchange(connection, true, new AbortController().signal, async () => new Response(JSON.stringify({ type: 'message', role: 'assistant', model: 'test-model', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'call_fixture', name: 'get_weather', input: { city: 'Shanghai' } }] })));
+    const document = validateDiagnosticRun({ ...base, testKind: 'tool-choice', rows: [
+      { stream: false, status: 'pass', exchange: nonStream, error: null },
+      { stream: true, status: 'pass', exchange: { ...stream, verdict: 'pass' }, error: null },
+    ] });
+    const saved = await f.store.save('owner', document, 1);
+    assert.equal(saved.failedCount, 1);
+    const reloaded = await f.store.get('owner', id);
+    assert.equal(reloaded.document.rows[0].exchange.verdict, 'pass');
+    assert.equal(reloaded.document.rows[1].exchange.verdict, 'fail');
+    assert.equal(diagnosticExport(reloaded.document).rows[1].exchange.requestBody, stream.requestBody);
+    assert.equal(diagnosticExport(reloaded.document).rows[1].exchange.rawResponse, stream.rawResponse);
+    assert.equal((await f.store.list('owner'))[0].testKind, 'tool-choice');
+    await assert.rejects(f.store.get('other', id), status(404));
+  } finally { f.sqlite.close(); }
 });

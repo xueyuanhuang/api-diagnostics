@@ -6,6 +6,8 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { SiteWorkspace } from '../components/site-workspace';
+import { toolChoiceRequestBody, assessToolChoice } from '../lib/tool-choice';
+import { diagnosticSummary, type DiagnosticRun } from '../lib/diagnostic-runs';
 import { NORMAL_QUESTIONS } from '../lib/questions';
 import '../app/globals.css';
 
@@ -136,6 +138,7 @@ const response = (value: unknown) =>
   });
 let stage: Record<string, unknown>;
 
+const fixtureDiagnostics = new Map<string, DiagnosticRun>();
 window.fetch = async (input, init = {}) => {
   const path =
     typeof input === 'string'
@@ -150,7 +153,54 @@ window.fetch = async (input, init = {}) => {
     });
   if (path === '/api/animations') return response({ results: [], nextBefore: null });
   if (path === '/api/animation-preferences') return response({ maxOutputTokens: 25600 });
-  if (path === '/api/diagnostic-runs') return response({ runs: [] });
+  if (path === '/api/diagnostic-runs') {
+    if (method === 'POST') {
+      const payload = JSON.parse(String(init.body));
+      fixtureDiagnostics.set(payload.document.id, payload.document);
+      return response({ run: diagnosticSummary(payload.document) });
+    }
+    return response({ runs: [...fixtureDiagnostics.values()].map(diagnosticSummary) });
+  }
+  if (path.startsWith('/api/diagnostic-runs/')) {
+    const id = path.split('/')[3];
+    const document = fixtureDiagnostics.get(id);
+    if (method === 'DELETE') { fixtureDiagnostics.delete(id); return response({ deleted: true }); }
+    if (document) return response({ run: diagnosticSummary(document), document });
+  }
+  if (path === '/api/tool-choice') {
+    const payload = JSON.parse(String(init.body));
+    const { stream, apiType, model } = payload;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 1500);
+      init.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('Stopped')); }, { once: true });
+    });
+    // Deliberately demonstrate the client's reported bug in streaming only.
+    const content = apiType === 'openai'
+      ? { object: 'chat.completion', model, choices: [{ index: 0, message: { role: 'assistant', content: 'I cannot check live weather in this request.' }, finish_reason: 'stop' }] }
+      : { type: 'message', role: 'assistant', model, content: [{ type: 'text', text: 'I cannot check live weather in this request.' }], stop_reason: 'end_turn' };
+    const events = apiType === 'openai' ? [
+      { object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Shanghai"}' } }] }, finish_reason: null }] },
+      { object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+      '[DONE]',
+    ] : [
+      { type: 'message_start', message: { type: 'message', role: 'assistant', model, content: [] } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tool_fixture', name: 'get_weather', input: { city: 'Shanghai' } } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+      { type: 'message_stop' },
+    ];
+    const rawResponse = stream ? events.map(e => `data: ${typeof e === 'string' ? e : JSON.stringify(e)}\n\n`).join('') : JSON.stringify(content);
+    const exchange = {
+      requestedModel: model, originalBaseUrl: config.baseUrl, requestMethod: 'POST' as const,
+      requestUrl: `${config.baseUrl}/v1/${apiType === 'openai' ? 'chat/completions' : 'messages'}`,
+      requestHeaders: [['authorization', 'Bearer $API_KEY']] as [string, string][],
+      requestBody: JSON.stringify(toolChoiceRequestBody(apiType, model, stream)),
+      httpStatus: 200, responseHeaders: [['content-type', stream ? 'text/event-stream' : 'application/json']] as [string, string][],
+      requestId: 'fixture-only', rawResponse, captureComplete: true,
+      startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), totalTimeMs: 1500, error: null,
+    };
+    return response({ exchange: { ...exchange, ...assessToolChoice(exchange, apiType, stream) } });
+  }
   if (path === '/api/profiles') return response({ profiles: [profile] });
   if (path === '/api/profiles/fixture/models' && method === 'POST') {
     counters.modelSaves++;

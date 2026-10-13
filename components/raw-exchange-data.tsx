@@ -3,10 +3,21 @@ import { useState } from 'react';
 import { Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-export function RawData({ title, text }: { title: string; text: string }) {
+export function RawData({
+  title,
+  text,
+  defaultOpen = false,
+}: {
+  title: string;
+  text: string;
+  defaultOpen?: boolean;
+}) {
   const [message, setMessage] = useState('');
   return (
-    <details className="group rounded-xl border border-border bg-background">
+    <details
+      open={defaultOpen || undefined}
+      className="group rounded-xl border border-border bg-background"
+    >
       <summary className="cursor-pointer px-4 py-3 text-xs font-semibold">
         {title}
       </summary>

@@ -26,6 +26,7 @@ test('actual batch handler freezes the entered history name for every model', as
     isRpmRunning: false,
     isBoundaryRunning: false,
     isEndpointRunning: false,
+    isToolChoiceRunning: false,
     profileBusy: false,
     queueStartingRef: { current: false },
     setFormError: () => {},
@@ -81,6 +82,10 @@ test('actual batch handler freezes the entered history name for every model', as
   scope.isEndpointRunning = true;
   await scope.runTests({ preventDefault() {} });
   assert.equal(tasks, null, 'normal tests cannot start during an endpoint comparison');
+  scope.isEndpointRunning = false;
+  scope.isToolChoiceRunning = true;
+  await scope.runTests({ preventDefault() {} });
+  assert.equal(tasks, null, 'normal tests cannot start during a tool-choice test');
 });
 
 test('saved-profile batch persists every model before dispatch; failed persistence sends nothing', async () => {
@@ -96,6 +101,7 @@ test('saved-profile batch persists every model before dispatch; failed persisten
     isRpmRunning: false,
     isBoundaryRunning: false,
     isEndpointRunning: false,
+    isToolChoiceRunning: false,
     profileBusy: false,
     queueStartingRef: { current: false },
     setFormError: (message) => events.push(['error', message]),

@@ -27,7 +27,7 @@ export const diagnosticRuns = sqliteTable(
   {
     userId: text('user_id').notNull(),
     id: text('id').notNull(),
-    testKind: text('test_kind', { enum: ['boundary', 'endpoints'] }).notNull(),
+    testKind: text('test_kind', { enum: ['boundary', 'endpoints', 'tool-choice'] }).notNull(),
     summaryJson: text('summary_json').notNull(),
     evidenceKey: text('evidence_key').notNull(),
     revision: integer('revision').notNull(),

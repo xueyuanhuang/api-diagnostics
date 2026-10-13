@@ -1,3 +1,4 @@
+import { assessToolChoice } from '../tool-choice';
 import {
   diagnosticSummary,
   type DiagnosticRun,
@@ -95,12 +96,14 @@ function exchange(value: unknown): HttpExchange | null {
 export function validateDiagnosticRun(value: unknown): DiagnosticRun {
   const d = object(value);
   if (
-    !oneOf(d.testKind, ['boundary', 'endpoints']) ||
+    !oneOf(d.testKind, ['boundary', 'endpoints', 'tool-choice']) ||
     !oneOf(d.apiType, ['anthropic', 'openai']) ||
     typeof d.id !== 'string' ||
     !/^[a-f0-9-]{36}$/i.test(d.id) ||
     !Array.isArray(d.rows) ||
-    ![1, 3].includes(d.rows.length) ||
+    !(d.testKind === 'tool-choice'
+      ? d.rows.length === 2
+      : [1, 3].includes(d.rows.length)) ||
     (d.testKind === 'boundary' && d.rows.length !== 3)
   ) {
     throw new DiagnosticError('Invalid diagnostic run.');
@@ -117,6 +120,39 @@ export function validateDiagnosticRun(value: unknown): DiagnosticRun {
     profileId: nullable(d.profileId),
     createdAt,
   };
+  if (d.testKind === 'tool-choice') {
+    const seen = new Set<boolean>();
+    return {
+      ...base,
+      testKind: 'tool-choice',
+      rows: d.rows.map((value) => {
+        const row = object(value);
+        if (
+          typeof row.stream !== 'boolean' ||
+          seen.has(row.stream) ||
+          !oneOf(row.status, ['pass', 'issue', 'stopped'])
+        )
+          throw new DiagnosticError('Invalid finished tool-choice result.');
+        seen.add(row.stream);
+        const e = exchange(row.exchange);
+        const result = e
+          ? { ...e, ...assessToolChoice(e, base.apiType, row.stream) }
+          : null;
+        const error = nullable(row.error) || e?.error || null;
+        return {
+          stream: row.stream,
+          status:
+            row.status === 'stopped'
+              ? 'stopped'
+              : !error && result?.verdict === 'pass'
+                ? 'pass'
+                : 'issue',
+          exchange: result,
+          error,
+        };
+      }),
+    };
+  }
   if (d.testKind === 'boundary')
     return {
       ...base,
