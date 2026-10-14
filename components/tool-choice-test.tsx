@@ -267,7 +267,6 @@ export function ToolChoiceTest(props: {
               null,
               2,
             )}
-            defaultOpen
           />
           <p className="text-xs leading-5 text-muted-foreground">
             Uses{' '}
@@ -412,7 +411,6 @@ export function ToolChoiceTest(props: {
                       <RawData
                         title="Returned tool-call fields · exact evidence"
                         text={JSON.stringify(e.toolCallEvidence, null, 2)}
-                        defaultOpen
                       />
                     )}
                     {e.issues.length > 0 && (
@@ -427,14 +425,12 @@ export function ToolChoiceTest(props: {
                         <RawData
                           title="Sent request · actual tool definition and tool_choice"
                           text={`${e.requestMethod} ${e.requestUrl}\n${e.requestHeaders.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${e.requestBody}`}
-                          defaultOpen
                         />
                       </div>
                       <div className="min-w-0">
                         <RawData
                           title="Received response · raw body and headers"
                           text={`HTTP ${e.httpStatus ?? '(no response)'}\n${e.responseHeaders.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${e.rawResponse}`}
-                          defaultOpen
                         />
                       </div>
                     </div>
