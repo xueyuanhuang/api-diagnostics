@@ -62,5 +62,6 @@ Verified with the local fixture and real All tests/Pelican components:
 - Start the test. Connection/model controls lock; browse another test or history and return without interrupting the two serial requests.
 - The fixture returns HTTP 200 for both: non-streaming passes, streaming returns a tool call and fails. Sent requests, raw responses, and returned tool-call fields stay collapsed as responses arrive. Click each disclosure to inspect/copy the evidence; other disclosures stay closed. No provider request leaves the fixture.
 - Open Saved runs, filter to Tool Choice Test, reopen its evidence, then return to the live result. Confirm the label, violation count, modes and exact request/response are retained, with saved evidence initially collapsed.
+- Saved Tool Choice rows show a prominent verdict with an icon, a colored left border, and a short explanation: green Passed only for two complete compliant responses, red Failed for any observed violation, and amber Inconclusive for incomplete or uncertain results. A stopped run with an observed violation remains Failed.
 - Start another test and stop during its first request: second stays stopped, controls unlock, no success is fabricated.
 - Check the page at narrow width; long tool IDs and stream data must scroll/wrap within their cards.

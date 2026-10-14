@@ -2455,10 +2455,14 @@ export function TokenCheckApp({
                     {filteredRuns.map((run) => {
                       const runVerdict =
                         run.testKind === 'rpm' ? savedRpmVerdict(run) : null;
+                      const toolChoiceOutcome = run.testKind !== 'tool-choice' ? null
+                        : (run.failedCount ?? 0) > 0 ? 'fail'
+                        : run.status === 'complete' && run.totalCount === 2 && run.capturedCount === 2 && run.issueCount === 0 && run.failedCount === 0 && run.inconclusiveCount === 0 ? 'pass'
+                        : 'inconclusive';
                       return (
                         <div
                           key={run.id}
-                          className="flex flex-wrap items-center gap-4 px-5 py-4 hover:bg-muted/35"
+                          className={`flex flex-wrap items-center gap-4 px-5 py-4 hover:bg-muted/35 ${toolChoiceOutcome === 'fail' ? 'border-l-4 border-l-red-500 bg-red-50/50' : toolChoiceOutcome === 'pass' ? 'border-l-4 border-l-emerald-500 bg-emerald-50/50' : toolChoiceOutcome ? 'border-l-4 border-l-amber-500 bg-amber-50/50' : ''}`}
                         >
                           <button
                             type="button"
@@ -2467,6 +2471,12 @@ export function TokenCheckApp({
                             className="min-w-0 flex-1 text-left"
                           >
                             <div className="flex flex-wrap items-center gap-2">
+                              {toolChoiceOutcome && (
+                                <Badge variant="outline" className={`gap-1.5 px-2.5 py-1 font-semibold ${toolChoiceOutcome === 'fail' ? 'border-red-300 bg-red-100 text-red-900' : toolChoiceOutcome === 'pass' ? 'border-emerald-300 bg-emerald-100 text-emerald-900' : 'border-amber-300 bg-amber-100 text-amber-900'}`}>
+                                  {toolChoiceOutcome === 'fail' ? <XCircle aria-hidden="true" className="size-4" /> : toolChoiceOutcome === 'pass' ? <CheckCircle2 aria-hidden="true" className="size-4" /> : <AlertTriangle aria-hidden="true" className="size-4" />}
+                                  {toolChoiceOutcome === 'fail' ? 'Failed' : toolChoiceOutcome === 'pass' ? 'Passed' : 'Inconclusive'}
+                                </Badge>
+                              )}
                               <span className="font-semibold">
                                 {run.profileName ?? 'One-time connection'}
                               </span>
@@ -2524,6 +2534,21 @@ export function TokenCheckApp({
                                   </>
                                 )}
                               </p>
+                            ) : run.testKind === 'tool-choice' ? (
+                              <>
+                                <p className={`mt-2 text-sm font-medium ${toolChoiceOutcome === 'fail' ? 'text-red-800' : toolChoiceOutcome === 'pass' ? 'text-emerald-800' : 'text-amber-800'}`}>
+                                  {toolChoiceOutcome === 'fail'
+                                    ? `${run.failedCount} / ${run.totalCount} responses returned tool calls despite none.`
+                                    : toolChoiceOutcome === 'pass'
+                                      ? 'Both responses passed — no tool calls returned.'
+                                      : run.status === 'stopped' ? 'Test stopped — compliance not fully checked.' : 'Compliance could not be confirmed. Open the evidence for details.'}
+                                </p>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  Non-streaming + streaming · {run.capturedCount} / {run.totalCount} captured
+                                  {(run.inconclusiveCount ?? 0) > 0 ? ` · ${run.inconclusiveCount} inconclusive` : ''}
+                                  {run.status === 'stopped' ? ' · Stopped' : ''}
+                                </p>
+                              </>
                             ) : run.testKind !== 'normal' ? (
                               <p className="mt-1 text-xs text-muted-foreground">
                                 {run.status === 'stopped'
@@ -2533,7 +2558,6 @@ export function TokenCheckApp({
                                     : 'Completed'}{' '}
                                 · {run.capturedCount} / {run.totalCount}{' '}
                                 responses captured · {run.issueCount} issues
-                                {run.testKind === 'tool-choice' ? ` · ${run.failedCount ?? 0} none violations · ${run.inconclusiveCount ?? 0} inconclusive` : ''}
                                 {run.testKind === 'boundary'
                                   ? ` · ${run.reviewedCount} / ${run.totalCount} reviewed`
                                   : ''}
