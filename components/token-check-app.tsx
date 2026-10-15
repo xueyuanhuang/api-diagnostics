@@ -56,6 +56,7 @@ import {
   type DiagnosticRunSummary,
 } from '@/lib/diagnostic-runs';
 import { EndpointCheck } from '@/components/endpoint-check';
+import { TpmTest } from '@/components/tpm-test';
 import { ToolChoiceTest } from '@/components/tool-choice-test';
 import { ToolBoundaryTest } from '@/components/tool-boundary-test';
 import { OpenRouterSelector, useOpenRouterTier, selectedRoute } from '@/components/openrouter-selector';
@@ -96,7 +97,7 @@ type ResultStatus =
   | 'error';
 type ViewMode = 'current' | 'saved' | 'detail';
 type ResultsView = 'tokens' | 'performance';
-type TestMode = 'normal' | 'rpm' | 'boundary' | 'endpoints' | 'tool-choice' | 'availability';
+type TestMode = 'normal' | 'rpm' | 'boundary' | 'endpoints' | 'tool-choice' | 'tpm' | 'availability';
 type NormalPhase =
   | 'idle'
   | 'queued'
@@ -686,6 +687,7 @@ export function TokenCheckApp({
   const [isRpmRunning, setIsRpmRunning] = useState(false);
   const [isBoundaryRunning, setIsBoundaryRunning] = useState(false);
   const [isEndpointRunning, setIsEndpointRunning] = useState(false);
+  const [isTpmRunning, setIsTpmRunning] = useState(false);
   const [isToolChoiceRunning, setIsToolChoiceRunning] = useState(false);
   const [testMode, setTestMode] = useState<TestMode>('normal');
   const [formError, setFormError] = useState('');
@@ -731,7 +733,7 @@ export function TokenCheckApp({
   const deletedDiagnosticIds = useRef(new Set<string>());
   const queueStartingRef = useRef(false);
   const controlsLocked =
-    isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning;
+    isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || isTpmRunning;
   const connectionRefreshLocked = useRef(false);
   connectionRefreshLocked.current = controlsLocked || profileBusy;
   useEffect(() => { onRunningChange?.(controlsLocked); }, [controlsLocked, onRunningChange]);
@@ -1598,7 +1600,7 @@ export function TokenCheckApp({
   }
 
   async function exportSavedRun(run: SavedRunSummary) {
-    if (run.testKind === 'boundary' || run.testKind === 'endpoints' || run.testKind === 'tool-choice') {
+    if (run.testKind === 'boundary' || run.testKind === 'endpoints' || run.testKind === 'tool-choice' || run.testKind === 'tpm') {
       window.location.href = `/api/diagnostic-runs/${run.id}/export`;
       return;
     }
@@ -1640,7 +1642,7 @@ export function TokenCheckApp({
     if (
       isRpmRunning ||
       isBoundaryRunning ||
-      isEndpointRunning || isToolChoiceRunning ||
+      isEndpointRunning || isToolChoiceRunning || isTpmRunning ||
       profileBusy ||
       queueStartingRef.current
     )
@@ -1764,7 +1766,7 @@ export function TokenCheckApp({
     }
     setHistoryBusy(true);
     try {
-      if (run.testKind === 'boundary' || run.testKind === 'endpoints' || run.testKind === 'tool-choice') {
+      if (run.testKind === 'boundary' || run.testKind === 'endpoints' || run.testKind === 'tool-choice' || run.testKind === 'tpm') {
         const data = await jsonFetch<{
           run: DiagnosticRunSummary;
           document: DiagnosticRun;
@@ -1820,7 +1822,7 @@ export function TokenCheckApp({
           method: 'DELETE',
         },
       );
-      if (run.testKind === 'boundary' || run.testKind === 'endpoints' || run.testKind === 'tool-choice')
+      if (run.testKind === 'boundary' || run.testKind === 'endpoints' || run.testKind === 'tool-choice' || run.testKind === 'tpm')
         deletedDiagnosticIds.current.add(run.id);
       setRuns((current) => current.filter((item) => item.id !== run.id));
       if (savedPreview?.run.id === run.id) {
@@ -1962,6 +1964,28 @@ export function TokenCheckApp({
           </button>
           <button
             type="button"
+            aria-pressed={testMode === 'tpm'}
+            onClick={() => showCurrent('tpm')}
+            className={`flex items-start gap-4 rounded-2xl border p-4 text-left shadow-sm transition-colors ${testMode === 'tpm' ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:border-primary/40'}`}
+          >
+            <span
+              className={`grid size-10 shrink-0 place-items-center rounded-xl ${testMode === 'tpm' ? 'bg-white/15' : 'bg-muted'}`}
+            >
+              <Gauge className="size-5" />
+            </span>
+            <span>
+              <span className="block text-sm font-semibold">
+                TPM Test
+              </span>
+              <span
+                className={`mt-1 block text-xs leading-5 ${testMode === 'tpm' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
+              >
+                Input/output tokens per minute · usage and limits
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
             aria-pressed={testMode === 'tool-choice'}
             onClick={() => showCurrent('tool-choice')}
             className={`flex items-start gap-4 rounded-2xl border p-4 text-left shadow-sm transition-colors ${testMode === 'tool-choice' ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:border-primary/40'}`}
@@ -2055,13 +2079,13 @@ export function TokenCheckApp({
                 <select value={apiType} onChange={event => chooseType(event.target.value as ApiType)} disabled={controlsLocked || profileBusy} className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
               </label>
               <div className="min-w-48 flex-1 text-sm font-medium">Model
-                {selectedProfileId ? <ModelPicker key={`${selectedProfileId}:${apiType}`} value={model} onChange={model => updateConnection({ model })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || profileBusy} models={activeProfileModels} connectionName={selectedProfile?.name} onAddModels={isRunning ? undefined : addModelsFromPicker} /> : <Input aria-label="Model name" className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || profileBusy} placeholder="Model name" />}
+                {selectedProfileId ? <ModelPicker key={`${selectedProfileId}:${apiType}`} value={model} onChange={model => updateConnection({ model })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || isTpmRunning || profileBusy} models={activeProfileModels} connectionName={selectedProfile?.name} onAddModels={isRunning ? undefined : addModelsFromPicker} /> : <Input aria-label="Model name" className="mt-2 h-10" value={model} onChange={event => updateConnection({ model: event.target.value })} disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || isTpmRunning || profileBusy} placeholder="Model name" />}
               </div>
               <Link href="/connections" className="inline-flex h-10 items-center rounded-lg border border-border px-4 text-sm font-semibold text-primary hover:bg-muted">Manage connections</Link>
-              {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
+              {testMode === 'normal' && <Button key="normal-run" type="submit" disabled={isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || isTpmRunning || profileBusy || !modelsToEnqueue.length} className="h-10 gap-2 bg-[#f3a712] text-[#172033] hover:bg-[#e99a02]"><Play className="size-4" />{isRunning ? `Add to queue (${modelsToEnqueue.length})` : selectedModels.length ? `Test selected models (${selectedModels.length})` : 'Run 12-question check'}</Button>}
               {testMode === 'normal' && ['running', 'queued', 'stopping'].includes(liveNormalPhase) && <Button key="normal-stop" type="button" variant="outline" className="h-10" onClick={stopNormalTest} disabled={liveNormalPhase === 'stopping'}>{liveNormalPhase === 'stopping' ? 'Stopping…' : 'Stop selected model'}</Button>}
             </div>
-            <OpenRouterSelector baseUrl={baseUrl} model={model} tier={openRouterTier} onChange={setOpenRouterTier} disabled={controlsLocked || isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning} />
+            <OpenRouterSelector baseUrl={baseUrl} model={model} tier={openRouterTier} onChange={setOpenRouterTier} disabled={controlsLocked || isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || isTpmRunning} />
             {!selectedProfileId && <details><summary className="cursor-pointer text-sm font-medium text-primary">One-time connection details</summary><div className="mt-3 grid gap-4 md:grid-cols-3">
               <label className="text-sm font-medium">Base URL<Input className="mt-2 h-10" value={baseUrl} onChange={event => updateConnection({ baseUrl: event.target.value })} disabled={controlsLocked} placeholder="https://your-provider.com/v1" /></label>
               <label className="text-sm font-medium">API key<Input className="mt-2 h-10" type="password" autoComplete="off" value={apiKey} onChange={event => updateApiKey(event.target.value)} disabled={controlsLocked} placeholder="Enter your key for this test" /></label>
@@ -2072,7 +2096,7 @@ export function TokenCheckApp({
                   disabled={
                     isRpmRunning ||
                     isBoundaryRunning ||
-                    isEndpointRunning || isToolChoiceRunning ||
+                    isEndpointRunning || isToolChoiceRunning || isTpmRunning ||
                     profileBusy
                   }
                   className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/50 p-3"
@@ -2175,8 +2199,9 @@ export function TokenCheckApp({
                           ? 'Tool-boundary probe running'
                           : isEndpointRunning
                             ? 'Three-endpoint comparison running'
+                            : isTpmRunning ? 'TPM test running'
                             : isToolChoiceRunning ? 'Tool-choice test running'
-                            : `${lastRunMode === 'rpm' ? 'RPM test' : lastRunMode === 'boundary' ? 'Tool-boundary probe' : lastRunMode === 'endpoints' ? 'Three-endpoint comparison' : lastRunMode === 'tool-choice' ? 'Tool-choice test' : 'Normal check'} is no longer running — results available`}
+                            : `${lastRunMode === 'rpm' ? 'RPM test' : lastRunMode === 'boundary' ? 'Tool-boundary probe' : lastRunMode === 'endpoints' ? 'Three-endpoint comparison' : lastRunMode === 'tool-choice' ? 'Tool-choice test' : lastRunMode === 'tpm' ? 'TPM test' : 'Normal check'} is no longer running — results available`}
                   </output>
                   {controlsLocked ? (
                     <p className="mt-1 leading-5">
@@ -2202,7 +2227,7 @@ export function TokenCheckApp({
                             ? 'boundary'
                             : isEndpointRunning
                               ? 'endpoints'
-                              : isToolChoiceRunning ? 'tool-choice' : (lastRunMode ?? testMode),
+                              : isTpmRunning ? 'tpm' : isToolChoiceRunning ? 'tool-choice' : (lastRunMode ?? testMode),
                     )
                   }
                 >
@@ -2347,6 +2372,7 @@ export function TokenCheckApp({
                           <option value="rpm">RPM / RPS test</option>
                           <option value="boundary">Tool Boundary Probe</option>
                           <option value="tool-choice">Tool Choice Test</option>
+                          <option value="tpm">TPM Test</option>
                           <option value="endpoints">Three Endpoints</option>
                         </select>
                       </label>
@@ -2534,6 +2560,12 @@ export function TokenCheckApp({
                                   </>
                                 )}
                               </p>
+                            ) : run.testKind === 'tpm' ? (
+                              <div className="mt-2 space-y-1 text-sm">
+                                <Badge variant="outline" className={run.tpm?.errors || run.tpm?.limitObserved ? 'border-red-300 bg-red-50 text-red-900' : run.status === 'stopped' || !run.tpm?.coverage || run.tpm?.missingUsage ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-emerald-300 bg-emerald-50 text-emerald-900'}>{run.tpm?.tokenLimit ? 'Provider reports a token limit' : run.tpm?.limitObserved ? 'Other or unspecified limit' : run.status === 'stopped' || !run.tpm?.coverage || run.tpm?.missingUsage || run.tpm?.errors ? 'Incomplete measurement' : 'Measured · limit not reached'}</Badge>
+                                <p>Input {run.tpm?.inputTpm?.toLocaleString(undefined, { maximumFractionDigits: 1 }) ?? '—'} TPM · Output {run.tpm?.outputTpm?.toLocaleString(undefined, { maximumFractionDigits: 1 }) ?? '—'} TPM</p>
+                                <p className="text-xs text-muted-foreground">{run.tpm?.succeeded ?? 0} / {run.totalCount} successful · Usage coverage {run.tpm?.coverage ?? 0} · {run.tpm?.errors ?? 0} errors · HTTP 429 {run.tpm?.http429 ?? 0} · {((run.tpm?.elapsedMs ?? 0) / 1000).toFixed(2)} s observed</p>
+                              </div>
                             ) : run.testKind === 'tool-choice' ? (
                               <>
                                 <p className={`mt-2 text-sm font-medium ${toolChoiceOutcome === 'fail' ? 'text-red-800' : toolChoiceOutcome === 'pass' ? 'text-emerald-800' : 'text-amber-800'}`}>
@@ -3032,6 +3064,11 @@ export function TokenCheckApp({
                   startBlocked
                   onRunningChange={() => {}}
                 />
+              ) : savedPreview.diagnostic.testKind === 'tpm' ? (
+                <TpmTest key={`saved-${savedPreview.run.id}`} savedRun={savedPreview.diagnostic}
+                  apiType={savedPreview.run.apiType} baseUrl={savedPreview.run.baseUrl} model={savedPreview.run.modelName}
+                  apiKey="" selectedProfileId="" profileName={savedPreview.run.profileName || ''}
+                  profileDirty={false} startBlocked onRunningChange={() => {}} />
               ) : savedPreview.diagnostic.testKind === 'tool-choice' ? (
                 <ToolChoiceTest
                   key={`saved-${savedPreview.run.id}`}
@@ -3060,6 +3097,16 @@ export function TokenCheckApp({
               )
             ) : null}
 
+            <div hidden={viewMode !== 'current' || testMode !== 'tpm'}>
+              <TpmTest signedIn={Boolean(user)} onSaved={upsertDiagnosticRun}
+                apiType={apiType} baseUrl={baseUrl} model={model}
+                openRouterTier={selectedRoute(baseUrl, model, openRouterTier)}
+                apiKey={apiKey} selectedProfileId={selectedProfileId}
+                profileName={selectedProfile?.name || profileName} profileDirty={profileDirty}
+                startBlocked={isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning || isToolChoiceRunning || profileBusy}
+                onRunningChange={running => { setIsTpmRunning(running); if (running) setLastRunMode('tpm'); }} />
+            </div>
+
             <div hidden={viewMode !== 'current' || testMode !== 'tool-choice'}>
               <ToolChoiceTest
                 signedIn={Boolean(user)} onSaved={upsertDiagnosticRun}
@@ -3067,7 +3114,7 @@ export function TokenCheckApp({
                 openRouterTier={selectedRoute(baseUrl, model, openRouterTier)}
                 apiKey={apiKey} selectedProfileId={selectedProfileId}
                 profileName={selectedProfile?.name || profileName} profileDirty={profileDirty}
-                startBlocked={isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning || profileBusy}
+                startBlocked={isRunning || isRpmRunning || isBoundaryRunning || isEndpointRunning || isTpmRunning || profileBusy}
                 onRunningChange={running => { setIsToolChoiceRunning(running); if (running) setLastRunMode('tool-choice'); }}
               />
             </div>
@@ -3085,7 +3132,7 @@ export function TokenCheckApp({
                 profileName={selectedProfile?.name || profileName}
                 profileDirty={profileDirty}
                 startBlocked={
-                  isRunning || isRpmRunning || isBoundaryRunning || isToolChoiceRunning || profileBusy
+                  isRunning || isRpmRunning || isBoundaryRunning || isToolChoiceRunning || isTpmRunning || profileBusy
                 }
                 onRunningChange={(running) => {
                   setIsEndpointRunning(running);
@@ -3107,7 +3154,7 @@ export function TokenCheckApp({
                 profileName={selectedProfile?.name || profileName}
                 profileDirty={profileDirty}
                 startBlocked={
-                  isRunning || isRpmRunning || isEndpointRunning || isToolChoiceRunning || profileBusy
+                  isRunning || isRpmRunning || isEndpointRunning || isToolChoiceRunning || isTpmRunning || profileBusy
                 }
                 onRunningChange={(running) => {
                   setIsBoundaryRunning(running);
@@ -3135,7 +3182,7 @@ export function TokenCheckApp({
                 startBlocked={
                   isRunning ||
                   isBoundaryRunning ||
-                  isEndpointRunning || isToolChoiceRunning ||
+                  isEndpointRunning || isToolChoiceRunning || isTpmRunning ||
                   profileBusy
                 }
                 discoverActiveRun={testMode === 'rpm'}

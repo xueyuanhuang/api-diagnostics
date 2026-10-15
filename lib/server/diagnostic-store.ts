@@ -1,3 +1,9 @@
+import {
+  assessTpm,
+  isTpmWorkload,
+  TPM_MAX_REQUESTS,
+  type TpmMeasurement,
+} from '../tpm-test';
 import { assessToolChoice } from '../tool-choice';
 import {
   diagnosticSummary,
@@ -96,14 +102,16 @@ function exchange(value: unknown): HttpExchange | null {
 export function validateDiagnosticRun(value: unknown): DiagnosticRun {
   const d = object(value);
   if (
-    !oneOf(d.testKind, ['boundary', 'endpoints', 'tool-choice']) ||
+    !oneOf(d.testKind, ['boundary', 'endpoints', 'tool-choice', 'tpm']) ||
     !oneOf(d.apiType, ['anthropic', 'openai']) ||
     typeof d.id !== 'string' ||
     !/^[a-f0-9-]{36}$/i.test(d.id) ||
     !Array.isArray(d.rows) ||
-    !(d.testKind === 'tool-choice'
-      ? d.rows.length === 2
-      : [1, 3].includes(d.rows.length)) ||
+    !(d.testKind === 'tpm'
+      ? d.rows.length <= TPM_MAX_REQUESTS
+      : d.testKind === 'tool-choice'
+        ? d.rows.length === 2
+        : [1, 3].includes(d.rows.length)) ||
     (d.testKind === 'boundary' && d.rows.length !== 3)
   ) {
     throw new DiagnosticError('Invalid diagnostic run.');
@@ -120,6 +128,52 @@ export function validateDiagnosticRun(value: unknown): DiagnosticRun {
     profileId: nullable(d.profileId),
     createdAt,
   };
+  if (d.testKind === 'tpm') {
+    if (
+      !isTpmWorkload(d.workload) ||
+      d.finished !== true ||
+      typeof d.elapsedMs !== 'number' ||
+      !Number.isFinite(d.elapsedMs) ||
+      d.elapsedMs <= 0 ||
+      !oneOf(d.stopReason, [
+        'window',
+        'budget',
+        'provider',
+        'tester',
+        'cancelled',
+      ])
+    )
+      throw new DiagnosticError('Invalid finished TPM measurement.');
+    return {
+      ...base,
+      testKind: 'tpm',
+      workload: d.workload,
+      elapsedMs: d.elapsedMs,
+      finished: true,
+      stopReason: d.stopReason as TpmMeasurement['stopReason'],
+      rows: d.rows.map((value, index) => {
+        const row = object(value);
+        if (
+          row.sequence !== index + 1 ||
+          !oneOf(row.status, ['pass', 'issue', 'stopped'])
+        )
+          throw new DiagnosticError('Invalid TPM request result.');
+        const e = exchange(row.exchange);
+        const result = e ? { ...e, ...assessTpm(e, base.apiType) } : null;
+        return {
+          sequence: index + 1,
+          status:
+            row.status === 'stopped'
+              ? 'stopped'
+              : result?.success
+                ? 'pass'
+                : 'issue',
+          exchange: result,
+          error: nullable(row.error),
+        };
+      }),
+    };
+  }
   if (d.testKind === 'tool-choice') {
     const seen = new Set<boolean>();
     return {

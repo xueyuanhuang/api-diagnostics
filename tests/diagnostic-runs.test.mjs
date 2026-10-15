@@ -1,3 +1,4 @@
+import { assessTpm } from '../lib/tpm-test.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import ts from 'typescript';
@@ -478,5 +479,21 @@ test('tool-choice evidence saves, reloads and exports both modes with recomputed
     assert.equal(diagnosticExport(reloaded.document).rows[1].exchange.rawResponse, stream.rawResponse);
     assert.equal((await f.store.list('owner'))[0].testKind, 'tool-choice');
     await assert.rejects(f.store.get('other', id), status(404));
+  } finally { f.sqlite.close(); }
+});
+
+
+test('TPM history round-trips through the migrated database and remains owner-only', async () => {
+  const f = fixture();
+  try {
+    const e = (await endpoint()).rows[0].exchange;
+    const run = validateDiagnosticRun({ ...base, testKind: 'tpm', workload: 'balanced', elapsedMs: 60000, finished: true, stopReason: 'window', rows: [{ sequence: 1, status: 'pass', error: null, exchange: { ...e, ...assessTpm(e, 'anthropic') } }] });
+    const summary = await f.store.save('owner', run, 1);
+    assert.equal(summary.tpm.inputTpm, 3);
+    assert.equal(summary.tpm.outputTpm, 1);
+    assert.equal((await f.store.list('owner'))[0].testKind, 'tpm');
+    assert.deepEqual((await f.store.get('owner', id)).document, run);
+    assert.deepEqual(await f.store.list('stranger'), []);
+    await assert.rejects(f.store.get('stranger', id), status(404));
   } finally { f.sqlite.close(); }
 });

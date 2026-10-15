@@ -1,3 +1,4 @@
+import { tpmMetrics, type TpmMeasurement } from './tpm-test';
 import type { ToolChoiceExchange } from './tool-choice';
 import { TOOL_CHOICE_PROMPT } from './tool-choice';
 import type { HttpExchange } from './http-exchange';
@@ -53,9 +54,14 @@ export type ToolChoiceRun = ConnectionSnapshot & {
   testKind: 'tool-choice';
   rows: ToolChoiceRow[];
 };
-export type DiagnosticRun = EndpointRun | BoundaryRun | ToolChoiceRun;
+export type TpmRun = ConnectionSnapshot & TpmMeasurement & { testKind: 'tpm' };
+export type DiagnosticRun = EndpointRun | BoundaryRun | ToolChoiceRun | TpmRun;
 export type DiagnosticRunSummary = {
-  testKind: 'boundary' | 'endpoints' | 'tool-choice';
+  testKind: 'boundary' | 'endpoints' | 'tool-choice' | 'tpm';
+  tpm?: ReturnType<typeof tpmMetrics> & {
+    elapsedMs: number;
+    stopReason: TpmMeasurement['stopReason'];
+  };
   id: string;
   profileId: string | null;
   profileName: string;
@@ -75,9 +81,11 @@ export const DIAGNOSTIC_LABELS = {
   boundary: 'Tool Boundary Probe',
   endpoints: 'Three Endpoints',
   'tool-choice': 'Tool Choice Test',
+  tpm: 'TPM Test',
 } as const;
 
 export function diagnosticFinished(run: DiagnosticRun) {
+  if (run.testKind === 'tpm') return run.finished;
   return (
     run.rows.length > 0 &&
     run.rows.every((row) => !['waiting', 'running'].includes(row.status))
@@ -90,6 +98,15 @@ export function diagnosticSummary(run: DiagnosticRun): DiagnosticRunSummary {
   ).length;
   return {
     testKind: run.testKind,
+    ...(run.testKind === 'tpm'
+      ? {
+          tpm: {
+            ...tpmMetrics(run),
+            elapsedMs: run.elapsedMs,
+            stopReason: run.stopReason,
+          },
+        }
+      : {}),
     id: run.id,
     profileId: run.profileId,
     profileName: run.label,
@@ -97,11 +114,13 @@ export function diagnosticSummary(run: DiagnosticRun): DiagnosticRunSummary {
     baseUrl: run.baseUrl,
     modelName: run.model,
     createdAt: Date.parse(run.createdAt),
-    status: run.rows.some((row) => row.status === 'stopped')
-      ? 'stopped'
-      : issueCount
-        ? 'issues'
-        : 'complete',
+    status:
+      (run.testKind === 'tpm' && run.stopReason === 'cancelled') ||
+      run.rows.some((row) => row.status === 'stopped')
+        ? 'stopped'
+        : issueCount
+          ? 'issues'
+          : 'complete',
     totalCount: run.rows.length,
     capturedCount: run.rows.filter((row) => row.exchange !== null).length,
     issueCount,
@@ -125,6 +144,16 @@ export function diagnosticSummary(run: DiagnosticRun): DiagnosticRunSummary {
 }
 
 export function diagnosticExport(run: DiagnosticRun) {
+  if (run.testKind === 'tpm')
+    return {
+      ...run,
+      format: 'tpm-throughput-v1',
+      metrics: tpmMetrics(run),
+      stream: false,
+      methodology:
+        'Up to 60 seconds of dispatch, 30 requests, 5 concurrent, 45 seconds per request. Initial connection check included. No retries. Successful complete responses with both usage fields contribute to rates. Elapsed time includes connection check, client/relay overhead and final responses after dispatch ends. Cache tokens are included in input; reasoning tokens are included in output. Missing usage is not zero. No provider maximum is established. Quota accounting may differ. API keys and sensitive headers are redacted.',
+    };
+
   return {
     format:
       run.testKind === 'tool-choice'

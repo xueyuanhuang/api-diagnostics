@@ -1,3 +1,4 @@
+import { assessTpm, tpmRequestBody } from '../lib/tpm-test';
 // Local-only manual regression fixture: no API request leaves this module.
 // Run: pnpm exec vite --config tests/navigation.vite.config.ts
 // Open /tests/navigation.html, start each test, browse both kinds of history,
@@ -166,6 +167,22 @@ window.fetch = async (input, init = {}) => {
     const document = fixtureDiagnostics.get(id);
     if (method === 'DELETE') { fixtureDiagnostics.delete(id); return response({ deleted: true }); }
     if (document) return response({ run: diagnosticSummary(document), document });
+  }
+  if (path === '/api/tpm-test') {
+    const payload = JSON.parse(typeof init.body === 'string' ? init.body : '{}');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 350);
+      init.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('Stopped')); }, { once: true });
+    });
+    const usage = payload.apiType === 'openai' ? { prompt_tokens: 1000, completion_tokens: 800, prompt_tokens_details: { cached_tokens: 0 } } : { input_tokens: 1000, output_tokens: 800, cache_read_input_tokens: 0 };
+    const raw = payload.apiType === 'openai' ? { choices: [{ message: { content: 'Fixture planning guide.' }, finish_reason: 'length' }], usage } : { type: 'message', content: [{ type: 'text', text: 'Fixture planning guide.' }], stop_reason: 'max_tokens', usage };
+    const exchange = {
+      requestedModel: payload.model, originalBaseUrl: config.baseUrl, requestMethod: 'POST' as const, requestUrl: `${config.baseUrl}/v1/chat/completions`,
+      requestHeaders: [['authorization', 'Bearer $API_KEY']] as [string, string][], requestBody: JSON.stringify(tpmRequestBody(payload.apiType, payload.model, payload.workload, payload.nonce)),
+      responseHeaders: [] as [string,string][], httpStatus: 200, requestId: 'fixture-only', rawResponse: JSON.stringify(raw), captureComplete: true,
+      startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), totalTimeMs: 350, error: null,
+    };
+    return response({ exchange: { ...exchange, ...assessTpm(exchange, payload.apiType) } });
   }
   if (path === '/api/tool-choice') {
     const payload = JSON.parse(String(init.body));
