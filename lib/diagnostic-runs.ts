@@ -1,4 +1,4 @@
-import { tpmMetrics, type TpmMeasurement } from './tpm-test';
+import { tpmMetrics, tpmVerdict, type TpmMeasurement } from './tpm-test';
 import type { ToolChoiceExchange } from './tool-choice';
 import { TOOL_CHOICE_PROMPT } from './tool-choice';
 import type { HttpExchange } from './http-exchange';
@@ -59,6 +59,7 @@ export type DiagnosticRun = EndpointRun | BoundaryRun | ToolChoiceRun | TpmRun;
 export type DiagnosticRunSummary = {
   testKind: 'boundary' | 'endpoints' | 'tool-choice' | 'tpm';
   tpm?: ReturnType<typeof tpmMetrics> & {
+    verdict: string;
     elapsedMs: number;
     stopReason: TpmMeasurement['stopReason'];
   };
@@ -102,6 +103,7 @@ export function diagnosticSummary(run: DiagnosticRun): DiagnosticRunSummary {
       ? {
           tpm: {
             ...tpmMetrics(run),
+            verdict: tpmVerdict(run),
             elapsedMs: run.elapsedMs,
             stopReason: run.stopReason,
           },
@@ -147,11 +149,14 @@ export function diagnosticExport(run: DiagnosticRun) {
   if (run.testKind === 'tpm')
     return {
       ...run,
-      format: 'tpm-throughput-v1',
+      format:
+        run.method === 'adaptive-v2' ? 'tpm-adaptive-v2' : 'tpm-throughput-v1',
       metrics: tpmMetrics(run),
       stream: false,
       methodology:
-        'Up to 60 seconds of dispatch, 30 requests, 5 concurrent, 45 seconds per request. Initial connection check included. No retries. Successful complete responses with both usage fields contribute to rates. Elapsed time includes connection check, client/relay overhead and final responses after dispatch ends. Cache tokens are included in input; reasoning tokens are included in output. Missing usage is not zero. No provider maximum is established. Quota accounting may differ. API keys and sensitive headers are redacted.',
+        run.method === 'adaptive-v2'
+          ? 'Adaptive load levels 2, 5, 10, 20. Each level sends for up to 15 seconds or its request allowance, then drains. One initial check is excluded from rates but counted in budgets. Global limits: 120 attempts, 250000 estimated reserved tokens, 180 seconds to start requests; 45-second upstream timeout, final drain can extend elapsed time. After explicit token errors only, one same-load confirmation may run after all supplied cooldowns, within the remaining budgets. No exact numeric quota is inferred. Measured rates exclude warm-up and cooldown and include stage drain/client overhead; only successful complete responses with both usage fields count. Provider headers report configured limits separately. Input includes cache reads/writes; output includes reasoning. Uncached input is shown only where cache counts exist. Quota rules vary. Captures are redacted.'
+          : 'Up to 60 seconds of dispatch, 30 requests, 5 concurrent, 45 seconds per request. Initial connection check included. No retries. Successful complete responses with both usage fields contribute to rates. Elapsed time includes connection check, client/relay overhead and final responses after dispatch ends. Cache tokens are included in input; reasoning tokens are included in output. Missing usage is not zero. No provider maximum is established. Quota accounting may differ. API keys and sensitive headers are redacted.',
     };
 
   return {

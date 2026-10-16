@@ -7,7 +7,14 @@ import {
   tpmRequestBody,
   runTpmMeasurement,
   TPM_MAX_REQUESTS,
+  TPM_TOKEN_BUDGET,
+  tpmStageMetrics,
 } from '../lib/tpm-test.ts';
+import {
+  tpmLimitHeaders,
+  tpmCooldownMs,
+  parseResetMs,
+} from '../lib/tpm-limits.ts';
 import { captureTpmExchange } from '../lib/server/tpm-test.ts';
 import { validateDiagnosticRun } from '../lib/server/diagnostic-store.ts';
 import {
@@ -141,6 +148,8 @@ test('TPM, RPM, quota and ambiguous 429 errors remain distinct', () => {
     ['requests per minute exceeded', 'request'],
     ['insufficient_quota', 'quota'],
     ['Too many requests', 'unspecified'],
+    ['slow_down: token rate increasing too quickly', 'acceleration'],
+    ['Maximum concurrent requests exceeded', 'concurrency'],
   ]) {
     const e = exchange(null, {
       httpStatus: 429,
@@ -179,7 +188,7 @@ test('HTTP 200 does not count malformed, incomplete, or error results as token t
     assert.equal(tpmMetrics(measurement([e])).totalTpm, null);
   }
 });
-test('runner caps calls including its first check and drains existing requests before reporting', async () => {
+test('adaptive runner increases load, excludes calibration and drains each level', async () => {
   let active = 0,
     peak = 0,
     calls = 0,
@@ -202,13 +211,20 @@ test('runner caps calls including its first check and drains existing requests b
       return exchange();
     },
   });
-  assert.equal(calls, TPM_MAX_REQUESTS);
-  assert.equal(peak, 5);
+  assert.equal(calls, 79);
+  assert.ok(calls <= TPM_MAX_REQUESTS);
+  assert.deepEqual(
+    final.stages.map((s) => s.concurrency),
+    [2, 5, 10, 20],
+  );
+  assert.ok(tpmStageMetrics(final).every((s) => s.clean));
+  assert.equal(peak, 20);
   assert.equal(active, 0);
   assert.equal(final.finished, true);
-  assert.equal(final.stopReason, 'budget');
-  assert.equal(final.elapsedMs, 3000);
-  assert.equal(tpmMetrics(final).coverage, 30);
+  assert.equal(final.stopReason, 'complete');
+  assert.equal(final.elapsedMs, 7900);
+  assert.equal(tpmMetrics(final).measuredMs, 7800);
+  assert.equal(tpmMetrics(final).coverage, 78);
 });
 test('failed first check or missing usage prevents load fan-out', async () => {
   for (const result of [exchange(null, { httpStatus: 403 }), exchange(null)]) {
@@ -243,13 +259,13 @@ test('sending deadline includes initial request, final drain is measured, failur
     },
     request: async () => {
       calls++;
-      clock += 30000;
+      clock += 45000;
       return exchange();
     },
   });
-  assert.ok(calls <= 6);
+  assert.ok(calls <= 7);
   assert.equal(final.stopReason, 'window');
-  assert.ok(final.elapsedMs >= 60000);
+  assert.ok(final.elapsedMs >= 180000);
   let failures = 0;
   await runTpmMeasurement({
     workload: 'output',
@@ -343,5 +359,167 @@ test('saved TPM runs rederive usage and verdicts from raw evidence, preserving m
   assert.throws(() => validateDiagnosticRun({ ...run, workload: 'unbounded' }));
   assert.throws(() =>
     validateDiagnosticRun({ ...run, rows: Array(31).fill(run.rows[0]) }),
+  );
+});
+
+test('estimated-token reservation stops new dispatch without dropping in-flight evidence', async () => {
+  let final;
+  await runTpmMeasurement({
+    workload: 'balanced',
+    signal: new AbortController().signal,
+    publish: (r) => {
+      final = r;
+    },
+    request: async () =>
+      exchange({ prompt_tokens: 100000, completion_tokens: 200 }),
+  });
+  assert.equal(final.stopReason, 'token-budget');
+  assert.equal(final.rows.length, 2);
+  assert.ok(final.reservedTokens <= TPM_TOKEN_BUDGET);
+  assert.equal(final.rows.filter((r) => r.status === 'running').length, 0);
+  assert.equal(tpmMetrics(final).best, null);
+});
+
+test('provider headers preserve scopes, parse reset times and never turn a configured limit into a reached limit', () => {
+  const e = exchange(undefined, {
+    endedAt: '2026-10-16T00:00:00Z',
+    responseHeaders: [
+      ['X-RateLimit-Limit-Tokens', '100000'],
+      ['x-ratelimit-remaining-tokens', '0'],
+      ['x-ratelimit-reset-tokens', '1m2.5s'],
+      ['retry-after', '2'],
+      ['anthropic-ratelimit-input-tokens-limit', '50000'],
+      ['anthropic-ratelimit-input-tokens-reset', '2026-10-16T00:00:03Z'],
+      ['x-ratelimit-limit-project-tokens', '20000'],
+    ],
+  });
+  assert.equal(tpmLimitHeaders(e).length, 3);
+  assert.equal(tpmLimitHeaders(e)[0].resetMs, 62500);
+  assert.equal(tpmCooldownMs(e), 62500);
+  assert.equal(tpmMetrics(measurement([e])).tokenLimit, false);
+  assert.equal(parseResetMs('nonsense', Date.now()), null);
+  assert.equal(parseResetMs('1s500ms', Date.now()), 1500);
+  assert.equal(
+    parseResetMs(
+      'Fri, 16 Oct 2026 00:00:10 GMT',
+      Date.parse('2026-10-16T00:00:00Z'),
+    ),
+    10000,
+  );
+});
+
+async function limitRun({
+  repeated = true,
+  headers = [['retry-after', '2']],
+  abortDuringWait = false,
+  missingDuringRepeat = false,
+} = {}) {
+  let clock = 0,
+    waited = 0,
+    final,
+    repeating = false;
+  const controller = new AbortController();
+  const base = Date.parse('2026-10-16T00:00:00Z');
+  await runTpmMeasurement({
+    workload: 'balanced',
+    signal: controller.signal,
+    now: () => clock,
+    wallNow: () => base + clock,
+    publish: (r) => {
+      final = r;
+    },
+    wait: async (ms) => {
+      waited += ms;
+      clock += ms;
+      repeating = true;
+      if (abortDuringWait) controller.abort();
+    },
+    request: async (seq) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      clock += 100;
+      if (seq < 10 || (repeating && !repeated))
+        return exchange(missingDuringRepeat && repeating ? null : undefined);
+      return exchange(null, {
+        httpStatus: 429,
+        endedAt: new Date(base + clock).toISOString(),
+        responseHeaders: headers,
+        rawResponse: JSON.stringify({
+          error: { message: 'tokens per minute limit exceeded' },
+        }),
+      });
+    },
+  });
+  return { final, waited };
+}
+
+test('token throttling repeats the same load once after the complete cooldown; cooldown is excluded from rates', async () => {
+  const { final, waited } = await limitRun();
+  assert.equal(waited, 3000);
+  assert.deepEqual(
+    final.stages.map((s) => [s.concurrency, s.kind]),
+    [
+      [2, 'load'],
+      [5, 'load'],
+      [5, 'confirmation'],
+    ],
+  );
+  assert.equal(tpmMetrics(final).verification, 'repeated');
+  assert.equal(tpmVerdict(final), 'Token throttling repeated after cooldown');
+  assert.ok(final.rows.length <= TPM_MAX_REQUESTS);
+  assert.equal(final.elapsedMs - tpmMetrics(final).measuredMs, waited + 100);
+});
+
+test('clean repeat, missing usage and cancellation produce distinct verification results', async () => {
+  const clean = await limitRun({ repeated: false });
+  assert.equal(tpmMetrics(clean.final).verification, 'not-repeated');
+  assert.equal(tpmVerdict(clean.final), 'Provider reports a token limit');
+  const missing = await limitRun({
+    repeated: false,
+    missingDuringRepeat: true,
+  });
+  assert.equal(tpmMetrics(missing.final).verification, 'inconclusive');
+  const cancelled = await limitRun({ abortDuringWait: true });
+  assert.equal(cancelled.final.stopReason, 'cancelled');
+  assert.equal(cancelled.final.stages.length, 2);
+});
+
+test('missing or excessive cooldown never triggers a speculative retry', async () => {
+  for (const headers of [
+    [],
+    [['retry-after', '120']],
+    [['retry-after', 'bogus']],
+  ]) {
+    const { final, waited } = await limitRun({ headers });
+    assert.equal(waited, 0);
+    assert.equal(final.stages.length, 2);
+    assert.match(final.confirmationNote, /Not repeated/);
+  }
+});
+
+test('adaptive history preserves stages and recomputes verification from raw responses', async () => {
+  const { final } = await limitRun();
+  const data = {
+    ...final,
+    testKind: 'tpm',
+    id: '00000000-0000-4000-8000-000000000001',
+    label: 'fixture',
+    model: 'fixture',
+    apiType: 'openai',
+    baseUrl: 'https://fixture.invalid',
+    profileId: null,
+    createdAt: '2026-10-16T00:00:00Z',
+  };
+  const saved = validateDiagnosticRun(data);
+  assert.deepEqual(saved.stages, final.stages);
+  assert.equal(diagnosticSummary(saved).tpm.verification, 'repeated');
+  assert.equal(diagnosticExport(saved).format, 'tpm-adaptive-v2');
+  assert.throws(() =>
+    validateDiagnosticRun({
+      ...data,
+      stages: [{ ...data.stages[0], concurrency: 999 }],
+    }),
+  );
+  assert.throws(() =>
+    validateDiagnosticRun({ ...data, rows: [{ ...data.rows[0], stage: 2 }] }),
   );
 });

@@ -1980,7 +1980,7 @@ export function TokenCheckApp({
               <span
                 className={`mt-1 block text-xs leading-5 ${testMode === 'tpm' ? 'text-primary-foreground/75' : 'text-muted-foreground'}`}
               >
-                Input/output tokens per minute · usage and limits
+                Adaptive token load · input/output TPM and limits
               </span>
             </span>
           </button>
@@ -2562,9 +2562,10 @@ export function TokenCheckApp({
                               </p>
                             ) : run.testKind === 'tpm' ? (
                               <div className="mt-2 space-y-1 text-sm">
-                                <Badge variant="outline" className={run.tpm?.errors || run.tpm?.limitObserved ? 'border-red-300 bg-red-50 text-red-900' : run.status === 'stopped' || !run.tpm?.coverage || run.tpm?.missingUsage ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-emerald-300 bg-emerald-50 text-emerald-900'}>{run.tpm?.tokenLimit ? 'Provider reports a token limit' : run.tpm?.limitObserved ? 'Other or unspecified limit' : run.status === 'stopped' || !run.tpm?.coverage || run.tpm?.missingUsage || run.tpm?.errors ? 'Incomplete measurement' : 'Measured · limit not reached'}</Badge>
+                                <Badge variant="outline" className={run.tpm?.errors || run.tpm?.limitObserved ? 'border-red-300 bg-red-50 text-red-900' : run.status === 'stopped' || !run.tpm?.coverage || run.tpm?.missingUsage ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-emerald-300 bg-emerald-50 text-emerald-900'}>{run.tpm?.verdict || (run.tpm?.tokenLimit ? 'Provider reports a token limit' : run.tpm?.limitObserved ? 'Other or unspecified limit' : run.status === 'stopped' || !run.tpm?.coverage || run.tpm?.missingUsage || run.tpm?.errors ? 'Incomplete measurement' : 'Measured · limit not reached')}</Badge>
                                 <p>Input {run.tpm?.inputTpm?.toLocaleString(undefined, { maximumFractionDigits: 1 }) ?? '—'} TPM · Output {run.tpm?.outputTpm?.toLocaleString(undefined, { maximumFractionDigits: 1 }) ?? '—'} TPM</p>
-                                <p className="text-xs text-muted-foreground">{run.tpm?.succeeded ?? 0} / {run.totalCount} successful · Usage coverage {run.tpm?.coverage ?? 0} · {run.tpm?.errors ?? 0} errors · HTTP 429 {run.tpm?.http429 ?? 0} · {((run.tpm?.elapsedMs ?? 0) / 1000).toFixed(2)} s observed</p>
+                                {run.tpm?.best && <p className="text-xs text-emerald-800">Highest clean level: {run.tpm.best.concurrency} concurrent · Input {run.tpm.best.inputTpm?.toLocaleString(undefined, { maximumFractionDigits: 0 })} / Output {run.tpm.best.outputTpm?.toLocaleString(undefined, { maximumFractionDigits: 0 })} TPM</p>}
+                                <p className="text-xs text-muted-foreground">{run.tpm?.totalSucceeded ?? run.tpm?.succeeded ?? 0} / {run.totalCount} successful · Usage coverage {run.tpm?.coverage ?? 0} · {run.tpm?.errors ?? 0} errors · HTTP 429 {run.tpm?.http429 ?? 0} · {((run.tpm?.elapsedMs ?? 0) / 1000).toFixed(2)} s observed</p>
                               </div>
                             ) : run.testKind === 'tool-choice' ? (
                               <>

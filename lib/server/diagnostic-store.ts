@@ -2,7 +2,9 @@ import {
   assessTpm,
   isTpmWorkload,
   TPM_MAX_REQUESTS,
+  TPM_LEVELS,
   type TpmMeasurement,
+  type TpmStage,
 } from '../tpm-test';
 import { assessToolChoice } from '../tool-choice';
 import {
@@ -108,7 +110,7 @@ export function validateDiagnosticRun(value: unknown): DiagnosticRun {
     !/^[a-f0-9-]{36}$/i.test(d.id) ||
     !Array.isArray(d.rows) ||
     !(d.testKind === 'tpm'
-      ? d.rows.length <= TPM_MAX_REQUESTS
+      ? d.rows.length <= (d.method === 'adaptive-v2' ? TPM_MAX_REQUESTS : 30)
       : d.testKind === 'tool-choice'
         ? d.rows.length === 2
         : [1, 3].includes(d.rows.length)) ||
@@ -141,15 +143,86 @@ export function validateDiagnosticRun(value: unknown): DiagnosticRun {
         'provider',
         'tester',
         'cancelled',
+        'complete',
+        'token-budget',
       ])
     )
       throw new DiagnosticError('Invalid finished TPM measurement.');
+    let adaptive: Partial<TpmMeasurement> = {};
+    if (d.method !== undefined) {
+      if (
+        d.method !== 'adaptive-v2' ||
+        !Array.isArray(d.stages) ||
+        d.stages.length > 5 ||
+        typeof d.reservedTokens !== 'number' ||
+        !Number.isFinite(d.reservedTokens) ||
+        d.reservedTokens < 0
+      )
+        throw new DiagnosticError('Invalid adaptive TPM measurement.');
+      let previousEnd = 0;
+      let previousConcurrency = 0;
+      const stages: TpmStage[] = d.stages.map((value, index) => {
+        const s = object(value);
+        if (
+          s.id !== index + 1 ||
+          !oneOf(s.kind, ['load', 'confirmation']) ||
+          !TPM_LEVELS.includes(s.concurrency as (typeof TPM_LEVELS)[number]) ||
+          s.finished !== true ||
+          typeof s.startedMs !== 'number' ||
+          !Number.isFinite(s.startedMs) ||
+          s.startedMs < previousEnd ||
+          typeof s.elapsedMs !== 'number' ||
+          !Number.isFinite(s.elapsedMs) ||
+          s.elapsedMs <= 0 ||
+          s.startedMs + s.elapsedMs > Number(d.elapsedMs) + 2 ||
+          !Number.isInteger(s.peakPending) ||
+          Number(s.peakPending) < 0 ||
+          Number(s.peakPending) > Number(s.concurrency) ||
+          !oneOf(s.stopReason, [
+            'complete',
+            'window',
+            'budget',
+            'token-budget',
+            'provider',
+            'tester',
+            'cancelled',
+          ]) ||
+          (s.kind === 'confirmation'
+            ? index === 0 ||
+              index !== (d.stages as unknown[]).length - 1 ||
+              s.concurrency !== previousConcurrency
+            : Number(s.concurrency) <= previousConcurrency)
+        )
+          throw new DiagnosticError('Invalid TPM load level.');
+        previousEnd = s.startedMs + s.elapsedMs;
+        previousConcurrency = Number(s.concurrency);
+        return {
+          id: index + 1,
+          kind: s.kind as TpmStage['kind'],
+          concurrency: Number(s.concurrency),
+          startedMs: s.startedMs,
+          elapsedMs: s.elapsedMs,
+          peakPending: Number(s.peakPending),
+          finished: true,
+          stopReason: s.stopReason as TpmStage['stopReason'],
+        };
+      });
+      adaptive = {
+        method: 'adaptive-v2',
+        stages,
+        phase: 'finished',
+        reservedTokens: d.reservedTokens,
+        confirmationNote: string(d.confirmationNote ?? '', 512),
+        cooldownUntil: null,
+      };
+    }
     return {
       ...base,
       testKind: 'tpm',
       workload: d.workload,
       elapsedMs: d.elapsedMs,
       finished: true,
+      ...adaptive,
       stopReason: d.stopReason as TpmMeasurement['stopReason'],
       rows: d.rows.map((value, index) => {
         const row = object(value);
@@ -158,10 +231,19 @@ export function validateDiagnosticRun(value: unknown): DiagnosticRun {
           !oneOf(row.status, ['pass', 'issue', 'stopped'])
         )
           throw new DiagnosticError('Invalid TPM request result.');
+        if (
+          d.method === 'adaptive-v2' &&
+          (!Number.isInteger(row.stage) ||
+            Number(row.stage) < 0 ||
+            Number(row.stage) > (adaptive.stages?.length ?? 0) ||
+            (index === 0 ? row.stage !== 0 : row.stage === 0))
+        )
+          throw new DiagnosticError('Invalid TPM request load level.');
         const e = exchange(row.exchange);
         const result = e ? { ...e, ...assessTpm(e, base.apiType) } : null;
         return {
           sequence: index + 1,
+          ...(d.method === 'adaptive-v2' ? { stage: Number(row.stage) } : {}),
           status:
             row.status === 'stopped'
               ? 'stopped'
