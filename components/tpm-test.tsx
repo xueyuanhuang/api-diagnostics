@@ -235,8 +235,8 @@ export function TpmTest(props: {
               responses. At most {TPM_MAX_REQUESTS} requests and{' '}
               {TPM_TOKEN_BUDGET.toLocaleString()} estimated tokens, including
               the first check and any confirmation. New requests stop after 3
-              minutes; final responses can take up to 45 seconds longer. Stop is
-              available throughout.
+              minutes; final responses can arrive later. Each upstream request
+              has a 45-second timeout. Stop is available throughout.
             </p>
           </div>
           <p className="text-sm leading-6 text-muted-foreground">
@@ -380,7 +380,10 @@ export function TpmTest(props: {
               {number(metrics.output)} output tokens. Cache reads:{' '}
               {number(metrics.cacheRead)} reported across{' '}
               {metrics.cacheReadReported} measured responses. Cache writes:{' '}
-              {number(metrics.cacheWrite)} tokens.
+              {metrics.cacheWriteReported
+                ? `${number(metrics.cacheWrite)} tokens across ${metrics.cacheWriteReported} responses`
+                : 'not reported'}
+              .
               {metrics.uncachedInputTpm !== null && (
                 <>
                   {' '}
